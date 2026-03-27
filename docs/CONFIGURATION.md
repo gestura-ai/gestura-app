@@ -122,7 +122,7 @@ pipeline:
 | Field | Type | Description |
 |-------|------|-------------|
 | `primary` | string | Active LLM provider: `"openai"`, `"anthropic"`, `"grok"`, `"ollama"` |
-| `openai` | object | OpenAI configuration (api_key, model) |
+| `openai` | object | OpenAI configuration (api_key, model). Gestura automatically routes supported models to `/v1/chat/completions` or `/v1/responses` based on model capabilities, so modern GPT-5/Codex models can be configured directly by model id. |
 | `anthropic` | object | Anthropic configuration (api_key, model) |
 | `grok` | object | Grok configuration (api_key, model) |
 | `ollama` | object | Ollama configuration (endpoint, model, temperature, context_length) |

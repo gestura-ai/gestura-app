@@ -86,7 +86,7 @@ impl Default for ListeningState {
 /// - The primary LLM provider has credentials (or is a local provider like ollama), AND
 /// - The STT/voice provider is assigned to something other than empty/`"none"`.
 ///
-/// When this returns `false`, the "New Agent Session" and "Start Listening" tray
+/// When this returns `false`, the "New Agent" and "Start Listening" tray
 /// items are grayed-out so the user is guided to finish onboarding first.
 /// Returns `true` when the app is fully configured and agent sessions can start.
 ///
@@ -266,7 +266,7 @@ pub fn init_tray(app: &AppHandle) -> tauri::Result<()> {
     });
 
     // Listen for onboarding-complete events so that the tray menu re-enables
-    // the "New Agent Session" and "Start Listening" items once the user finishes
+    // the "New Agent" and "Start Listening" items once the user finishes
     // onboarding and the configuration file has been written to disk.
     let app_handle = app.clone();
     app.listen("onboarding-complete", move |_event| {
@@ -311,11 +311,18 @@ fn build_tray_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
         app_configured,
         Option::<&str>::None,
     )?;
-    // "New Agent Session" is only available after full configuration.
+    // "New Agent" and project-based agent sessions are only available after full configuration.
     let new_agent = MenuItem::with_id(
         app,
         "new_agent",
-        "New Agent Session",
+        "New Agent",
+        app_configured,
+        Option::<&str>::None,
+    )?;
+    let open_agent_project = MenuItem::with_id(
+        app,
+        "open_agent_project",
+        "Open Agent Project",
         app_configured,
         Option::<&str>::None,
     )?;
@@ -361,6 +368,11 @@ fn build_tray_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
     // Separators
     let separator1 = PredefinedMenuItem::separator(app)?;
     let separator2 = PredefinedMenuItem::separator(app)?;
+    let shell_separator = if cli_installed {
+        Some(PredefinedMenuItem::separator(app)?)
+    } else {
+        None
+    };
     #[cfg(debug_assertions)]
     let separator3 = PredefinedMenuItem::separator(app)?;
 
@@ -371,7 +383,11 @@ fn build_tray_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
     menu.append(&listen)?;
     menu.append(&separator1)?;
     menu.append(&new_agent)?;
+    menu.append(&open_agent_project)?;
     menu.append(&sessions_menu)?;
+    if let Some(ref separator) = shell_separator {
+        menu.append(separator)?;
+    }
     if let Some(ref shell_item) = new_shell {
         menu.append(shell_item)?;
     }
@@ -585,6 +601,9 @@ fn handle_menu_event(app: &AppHandle, event: tauri::menu::MenuEvent) {
                 tracing::error!("Failed to create agent session: {}", e);
             }
         }
+        "open_agent_project" => {
+            open_agent_project_picker(app);
+        }
         "config" => {
             if let Err(e) = window_manager::open_config_window() {
                 tracing::error!("Failed to open config window: {}", e);
@@ -657,6 +676,53 @@ fn handle_menu_event(app: &AppHandle, event: tauri::menu::MenuEvent) {
             tracing::debug!("Unhandled menu event: {:?}", event.id());
         }
     }
+}
+
+fn open_agent_project_picker(app: &AppHandle) {
+    use tauri_plugin_dialog::DialogExt;
+    use tokio::sync::oneshot;
+
+    let app_handle = app.clone();
+    tauri::async_runtime::spawn(async move {
+        let (tx, rx) = oneshot::channel();
+
+        app_handle
+            .dialog()
+            .file()
+            .set_title("Select Agent Project Directory")
+            .pick_folder(move |result| {
+                let _ = tx.send(result);
+            });
+
+        match rx.await {
+            Ok(Some(path)) => {
+                let path_buf_original = std::path::PathBuf::from(path.to_string());
+                let path_buf = path_buf_original
+                    .canonicalize()
+                    .unwrap_or(path_buf_original);
+
+                if let Err(e) = window_manager::create_new_agent_session_in_directory(path_buf) {
+                    tracing::error!("Failed to create agent session for selected project: {}", e);
+                    show_system_notification(
+                        &app_handle,
+                        "Open Agent Project Error",
+                        &format!("Failed to open project: {}", e),
+                    );
+                }
+            }
+            Ok(None) => {
+                tracing::info!("Open Agent Project dialog cancelled");
+            }
+            Err(_) => {
+                tracing::error!("Open Agent Project dialog response channel failed");
+                show_system_notification(
+                    &app_handle,
+                    "Open Agent Project Error",
+                    "Failed to receive directory selection from dialog",
+                );
+            }
+        }
+    });
 }
 
 /// Handle tray icon events (clicks)

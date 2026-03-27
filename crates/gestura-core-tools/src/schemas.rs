@@ -10,11 +10,16 @@
 use crate::registry::ToolDefinition;
 use serde_json::Value;
 
+const OPENAI_DISALLOWED_TOP_LEVEL_SCHEMA_KEYWORDS: &[&str] =
+    &["oneOf", "anyOf", "allOf", "enum", "not"];
+
 /// Provider-specific tool schema bundles.
 #[derive(Debug, Clone, Default)]
 pub struct ProviderToolSchemas {
     /// OpenAI-compatible `tools: [{type:"function", function:{...}}]`.
     pub openai: Vec<Value>,
+    /// OpenAI Responses `tools: [{type:"function", name, description, parameters}]`.
+    pub openai_responses: Vec<Value>,
     /// Anthropic `tools: [{name, description, input_schema}]`.
     pub anthropic: Vec<Value>,
     /// Gemini `functionDeclarations: [{name, description, parameters}]`.
@@ -25,8 +30,100 @@ impl ProviderToolSchemas {
     /// Merge another set of schemas into this one.
     pub fn merge(&mut self, other: ProviderToolSchemas) {
         self.openai.extend(other.openai);
+        self.openai_responses.extend(other.openai_responses);
         self.anthropic.extend(other.anthropic);
         self.gemini.extend(other.gemini);
+    }
+}
+
+fn build_openai_chat_tool_schema(name: &str, description: &str, parameters: Value) -> Value {
+    serde_json::json!({
+        "type": "function",
+        "function": {
+            "name": name,
+            "description": description,
+            "parameters": parameters
+        }
+    })
+}
+
+fn build_openai_responses_tool_schema(name: &str, description: &str, parameters: Value) -> Value {
+    serde_json::json!({
+        "type": "function",
+        "name": name,
+        "description": description,
+        "parameters": parameters
+    })
+}
+
+/// Normalize a JSON Schema into the stricter top-level object shape required by
+/// OpenAI-compatible function calling APIs.
+///
+/// OpenAI rejects top-level combinators such as `oneOf`/`anyOf` on
+/// `function.parameters`, even when the schema is otherwise valid JSON Schema.
+/// We therefore keep the richer schema for providers that accept it, but strip
+/// only the disallowed top-level keywords for OpenAI requests.
+pub fn normalize_openai_parameters_schema(input_schema: Value) -> Value {
+    match input_schema {
+        Value::Object(mut schema) => {
+            let mut stripped_keyword = false;
+            for keyword in OPENAI_DISALLOWED_TOP_LEVEL_SCHEMA_KEYWORDS {
+                stripped_keyword |= schema.remove(*keyword).is_some();
+            }
+
+            let original_type = schema
+                .get("type")
+                .and_then(Value::as_str)
+                .map(str::to_string);
+            let had_properties = matches!(schema.get("properties"), Some(Value::Object(_)));
+
+            if original_type.as_deref() != Some("object") {
+                schema.insert("type".to_string(), Value::String("object".to_string()));
+            }
+
+            if !had_properties {
+                schema.insert("properties".to_string(), serde_json::json!({}));
+            }
+
+            if (!had_properties || original_type.as_deref() != Some("object"))
+                && !schema.contains_key("additionalProperties")
+            {
+                schema.insert("additionalProperties".to_string(), Value::Bool(true));
+            }
+
+            if stripped_keyword || original_type.as_deref() != Some("object") {
+                let note = match original_type.as_deref() {
+                    Some("object") => {
+                        "OpenAI compatibility note: top-level combinator keywords were removed from this schema; rely on field descriptions/examples for operation-specific constraints.".to_string()
+                    }
+                    Some(other) => format!(
+                        "OpenAI compatibility note: the original top-level schema type was `{other}`; it was normalized to an object wrapper for function calling."
+                    ),
+                    None => "OpenAI compatibility note: the schema was normalized to an object wrapper for function calling.".to_string(),
+                };
+
+                let description = schema
+                    .get("description")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default();
+                if description.is_empty() {
+                    schema.insert("description".to_string(), Value::String(note));
+                } else if !description.contains("OpenAI compatibility note:") {
+                    schema.insert(
+                        "description".to_string(),
+                        Value::String(format!("{description}\n\n{note}")),
+                    );
+                }
+            }
+
+            Value::Object(schema)
+        }
+        _ => serde_json::json!({
+            "type": "object",
+            "properties": {},
+            "additionalProperties": true,
+            "description": "OpenAI compatibility note: the original schema was not an object, so a permissive top-level object wrapper was used for function calling."
+        }),
     }
 }
 
@@ -39,17 +136,20 @@ pub fn build_provider_tool_schemas(tools: &[&'static ToolDefinition]) -> Provide
 
     for tool in tools {
         if tool.name == "file" {
-            if let Some((openai, anthropic, gemini)) = schema_for_tool(tool.name, tool.description)
+            if let Some((openai, openai_responses, anthropic, gemini)) =
+                schema_for_tool(tool.name, tool.description)
             {
                 out.openai.push(openai);
+                out.openai_responses.push(openai_responses);
                 out.anthropic.push(anthropic);
                 out.gemini.push(gemini);
             }
 
             for (name, description, input_schema) in split_file_tool_schemas() {
-                let (openai, anthropic, gemini) =
+                let (openai, openai_responses, anthropic, gemini) =
                     build_provider_schema(name.as_str(), description.as_str(), input_schema);
                 out.openai.push(openai);
+                out.openai_responses.push(openai_responses);
                 out.anthropic.push(anthropic);
                 out.gemini.push(gemini);
             }
@@ -57,25 +157,31 @@ pub fn build_provider_tool_schemas(tools: &[&'static ToolDefinition]) -> Provide
         }
 
         if tool.name == "task" || tool.name == "tasks" {
-            if let Some((openai, anthropic, gemini)) = schema_for_tool(tool.name, tool.description)
+            if let Some((openai, openai_responses, anthropic, gemini)) =
+                schema_for_tool(tool.name, tool.description)
             {
                 out.openai.push(openai);
+                out.openai_responses.push(openai_responses);
                 out.anthropic.push(anthropic);
                 out.gemini.push(gemini);
             }
 
             for (name, description, input_schema) in split_task_tool_schemas() {
-                let (openai, anthropic, gemini) =
+                let (openai, openai_responses, anthropic, gemini) =
                     build_provider_schema(name.as_str(), description.as_str(), input_schema);
                 out.openai.push(openai);
+                out.openai_responses.push(openai_responses);
                 out.anthropic.push(anthropic);
                 out.gemini.push(gemini);
             }
             continue;
         }
 
-        if let Some((openai, anthropic, gemini)) = schema_for_tool(tool.name, tool.description) {
+        if let Some((openai, openai_responses, anthropic, gemini)) =
+            schema_for_tool(tool.name, tool.description)
+        {
             out.openai.push(openai);
+            out.openai_responses.push(openai_responses);
             out.anthropic.push(anthropic);
             out.gemini.push(gemini);
         }
@@ -84,7 +190,7 @@ pub fn build_provider_tool_schemas(tools: &[&'static ToolDefinition]) -> Provide
     out
 }
 
-fn schema_for_tool(name: &str, summary: &str) -> Option<(Value, Value, Value)> {
+fn schema_for_tool(name: &str, summary: &str) -> Option<(Value, Value, Value, Value)> {
     // Keep schemas precise enough that models can infer required call shapes reliably.
     let (description, input_schema) = match name {
         "shell" => (
@@ -900,15 +1006,10 @@ fn build_provider_schema(
     name: &str,
     description: &str,
     input_schema: Value,
-) -> (Value, Value, Value) {
-    let openai = serde_json::json!({
-        "type": "function",
-        "function": {
-            "name": name,
-            "description": description,
-            "parameters": input_schema
-        }
-    });
+) -> (Value, Value, Value, Value) {
+    let openai_parameters = normalize_openai_parameters_schema(input_schema.clone());
+    let openai = build_openai_chat_tool_schema(name, description, openai_parameters.clone());
+    let openai_responses = build_openai_responses_tool_schema(name, description, openai_parameters);
 
     let anthropic = serde_json::json!({
         "name": name,
@@ -922,7 +1023,7 @@ fn build_provider_schema(
         "parameters": input_schema
     });
 
-    (openai, anthropic, gemini)
+    (openai, openai_responses, anthropic, gemini)
 }
 
 fn split_file_tool_schemas() -> Vec<(String, String, Value)> {
@@ -1099,7 +1200,7 @@ fn split_task_tool_schemas() -> Vec<(String, String, Value)> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::registry::find_tool;
+    use crate::registry::{ToolDefinition, all_tools, find_tool};
 
     #[test]
     fn builds_shell_schema_for_all_providers() {
@@ -1140,7 +1241,7 @@ mod tests {
     fn task_schema_requires_name_for_create_operation() {
         let task = find_tool("task").unwrap();
         let schemas = build_provider_tool_schemas(&[task]);
-        let parameters = &schemas.openai[0]["function"]["parameters"];
+        let parameters = &schemas.anthropic[0]["input_schema"];
 
         let branches = parameters["oneOf"]
             .as_array()
@@ -1198,7 +1299,7 @@ mod tests {
                 .expect("task status enum should exist");
         assert!(status_enum.iter().any(|value| value == "blocked"));
 
-        let update_status_branch = schemas.openai[0]["function"]["parameters"]["oneOf"]
+        let update_status_branch = schemas.anthropic[0]["input_schema"]["oneOf"]
             .as_array()
             .expect("task schema should define oneOf branches")
             .iter()
@@ -1236,7 +1337,7 @@ mod tests {
             "For `update`, provide `task_id` plus at least one of `name` or `description`"
         ));
 
-        let update_branch = schemas.openai[0]["function"]["parameters"]["oneOf"]
+        let update_branch = schemas.anthropic[0]["input_schema"]["oneOf"]
             .as_array()
             .expect("task schema should define oneOf branches")
             .iter()
@@ -1344,7 +1445,7 @@ mod tests {
         let file = find_tool("file").unwrap();
         let schemas = build_provider_tool_schemas(&[file]);
 
-        let parameters = &schemas.openai[0]["function"]["parameters"];
+        let parameters = &schemas.anthropic[0]["input_schema"];
         let branches = parameters["oneOf"]
             .as_array()
             .expect("file schema should define oneOf branches");
@@ -1441,5 +1542,31 @@ mod tests {
         assert!(examples.iter().any(|example| {
             example["edits"].is_array() && example["edits"][0]["old_str"].is_string()
         }));
+    }
+
+    #[test]
+    fn openai_tool_schemas_avoid_top_level_combinators() {
+        let tools: Vec<&'static ToolDefinition> = all_tools().iter().collect();
+        let schemas = build_provider_tool_schemas(&tools);
+
+        for schema in &schemas.openai {
+            let name = schema["function"]["name"]
+                .as_str()
+                .expect("openai schema should include a function name");
+            let parameters = &schema["function"]["parameters"];
+
+            assert_eq!(
+                parameters["type"],
+                serde_json::json!("object"),
+                "openai parameters for {name} must use a top-level object schema"
+            );
+
+            for keyword in OPENAI_DISALLOWED_TOP_LEVEL_SCHEMA_KEYWORDS {
+                assert!(
+                    parameters.get(*keyword).is_none(),
+                    "openai parameters for {name} must not expose top-level {keyword}"
+                );
+            }
+        }
     }
 }

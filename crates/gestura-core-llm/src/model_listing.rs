@@ -9,6 +9,8 @@ use gestura_core_foundation::AppError;
 use serde::{Deserialize, Serialize};
 
 use crate::default_models::{DEFAULT_GEMINI_BASE_URL, DEFAULT_OLLAMA_BASE_URL};
+#[cfg(feature = "openai")]
+use crate::openai::is_agent_capable_openai_model;
 
 /// Timeout for model-listing HTTP calls (shorter than inference calls).
 const MODEL_LIST_TIMEOUT_SECS: u64 = 10;
@@ -81,6 +83,11 @@ pub fn static_models_for_provider(_provider: &str) -> Vec<ModelInfo> {
 // ---------------------------------------------------------------------------
 
 #[cfg(feature = "openai")]
+fn is_agent_capable_openai_model_id(model_id: &str) -> bool {
+    is_agent_capable_openai_model(model_id)
+}
+
+#[cfg(feature = "openai")]
 async fn list_openai(
     api_key: Option<&str>,
     base_url: Option<&str>,
@@ -114,12 +121,7 @@ async fn list_openai(
             arr.iter()
                 .filter_map(|m| {
                     let id = m.get("id")?.as_str()?;
-                    let is_agent_capable = (id.starts_with("gpt-") && !id.contains("instruct"))
-                        || id.starts_with("o1-")
-                        || id.starts_with("o3-")
-                        || id.starts_with("o4-")
-                        || id.starts_with("o5-");
-                    if !is_agent_capable {
+                    if !is_agent_capable_openai_model_id(id) {
                         return None;
                     }
                     Some(ModelInfo {
@@ -416,5 +418,39 @@ mod tests {
             .await
             .unwrap();
         assert!(models.is_empty());
+    }
+
+    #[test]
+    #[cfg(feature = "openai")]
+    fn filters_openai_models_to_agent_capable_session_models() {
+        for allowed in [
+            "gpt-4o",
+            "gpt-4.1",
+            "o4-mini",
+            "gpt-5.4",
+            "gpt-5.3-codex",
+            "codex-1",
+            "chatgpt-4o-latest",
+            "codex-mini-latest",
+        ] {
+            assert!(
+                is_agent_capable_openai_model_id(allowed),
+                "expected {allowed} to be allowed"
+            );
+        }
+
+        for blocked in [
+            "gpt-3.5-turbo-instruct",
+            "gpt-4o-transcribe",
+            "gpt-4o-audio-preview",
+            "gpt-realtime",
+            "gpt-image-1",
+            "text-davinci-003",
+        ] {
+            assert!(
+                !is_agent_capable_openai_model_id(blocked),
+                "expected {blocked} to be filtered out"
+            );
+        }
     }
 }

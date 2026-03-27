@@ -7083,6 +7083,9 @@ impl AgentPipeline {
             .openai
             .retain(|entry| !should_remove(openai_name(entry)));
         filtered
+            .openai_responses
+            .retain(|entry| !should_remove(named_entry(entry)));
+        filtered
             .anthropic
             .retain(|entry| !should_remove(named_entry(entry)));
         filtered
@@ -10042,8 +10045,41 @@ impl AgentPipeline {
     ) -> Result<crate::llm_provider::LlmCallResponse, AppError> {
         let agent_ctx = AgentContext::default();
         let provider = select_provider(&self.config, &agent_ctx);
-        let tools_for_primary =
-            tool_schemas.map(|s| tools_slice_for_provider(&self.config.llm.primary, s));
+        let primary_model = match self.config.llm.primary.as_str() {
+            "openai" => self
+                .config
+                .llm
+                .openai
+                .as_ref()
+                .map(|config| config.model.as_str()),
+            "anthropic" => self
+                .config
+                .llm
+                .anthropic
+                .as_ref()
+                .map(|config| config.model.as_str()),
+            "grok" => self
+                .config
+                .llm
+                .grok
+                .as_ref()
+                .map(|config| config.model.as_str()),
+            "gemini" => self
+                .config
+                .llm
+                .gemini
+                .as_ref()
+                .map(|config| config.model.as_str()),
+            "ollama" => self
+                .config
+                .llm
+                .ollama
+                .as_ref()
+                .map(|config| config.model.as_str()),
+            _ => None,
+        };
+        let tools_for_primary = tool_schemas
+            .map(|s| tools_slice_for_provider(&self.config.llm.primary, primary_model, s));
 
         // Try primary provider with retries
         let retry_delays = [1, 2, 4]; // seconds
@@ -10082,8 +10118,41 @@ impl AgentPipeline {
                 "Primary LLM exhausted retries, trying fallback provider"
             );
 
-            let tools_for_fallback =
-                tool_schemas.map(|s| tools_slice_for_provider(fallback_provider_name, s));
+            let fallback_model = match fallback_provider_name.as_str() {
+                "openai" => self
+                    .config
+                    .llm
+                    .openai
+                    .as_ref()
+                    .map(|config| config.model.as_str()),
+                "anthropic" => self
+                    .config
+                    .llm
+                    .anthropic
+                    .as_ref()
+                    .map(|config| config.model.as_str()),
+                "grok" => self
+                    .config
+                    .llm
+                    .grok
+                    .as_ref()
+                    .map(|config| config.model.as_str()),
+                "gemini" => self
+                    .config
+                    .llm
+                    .gemini
+                    .as_ref()
+                    .map(|config| config.model.as_str()),
+                "ollama" => self
+                    .config
+                    .llm
+                    .ollama
+                    .as_ref()
+                    .map(|config| config.model.as_str()),
+                _ => None,
+            };
+            let tools_for_fallback = tool_schemas
+                .map(|s| tools_slice_for_provider(fallback_provider_name, fallback_model, s));
 
             // Create a modified config with fallback as primary
             let mut fallback_config = self.config.clone();
@@ -10491,9 +10560,11 @@ mod tests {
         let filtered = AgentPipeline::without_tool_schema(&schemas, "task");
 
         assert_eq!(filtered.openai.len(), 1);
+        assert_eq!(filtered.openai_responses.len(), 1);
         assert_eq!(filtered.anthropic.len(), 1);
         assert_eq!(filtered.gemini.len(), 1);
         assert_eq!(filtered.openai[0]["function"]["name"], "shell");
+        assert_eq!(filtered.openai_responses[0]["name"], "shell");
         assert_eq!(filtered.anthropic[0]["name"], "shell");
         assert_eq!(filtered.gemini[0]["name"], "shell");
     }
@@ -10510,9 +10581,11 @@ mod tests {
         let filtered = AgentPipeline::required_verification_retry_schemas(&schemas);
 
         assert_eq!(filtered.openai.len(), 1);
+        assert_eq!(filtered.openai_responses.len(), 1);
         assert_eq!(filtered.anthropic.len(), 1);
         assert_eq!(filtered.gemini.len(), 1);
         assert_eq!(filtered.openai[0]["function"]["name"], "shell");
+        assert_eq!(filtered.openai_responses[0]["name"], "shell");
         assert_eq!(filtered.anthropic[0]["name"], "shell");
         assert_eq!(filtered.gemini[0]["name"], "shell");
     }

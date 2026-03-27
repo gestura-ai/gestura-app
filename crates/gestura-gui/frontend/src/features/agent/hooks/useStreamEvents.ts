@@ -516,10 +516,16 @@ export function useStreamEvents(sessionId: string, dispatch: StreamEventDispatch
         const r = accept<Record<string, unknown>>('agent-message', e.payload);
         if (!r.ok) return;
         const p = r.value as Record<string, unknown>;
+        const content = typeof p['content'] === 'string'
+          ? p['content']
+          : typeof p['message'] === 'string'
+            ? p['message']
+            : '';
+        if (!content.trim()) return;
         dispatchNow({
           type: 'agent-message',
-          role: String(p['role'] ?? 'assistant'),
-          content: String(p['content'] ?? ''),
+          role: String(p['role'] ?? p['type'] ?? 'assistant'),
+          content,
         });
       });
 

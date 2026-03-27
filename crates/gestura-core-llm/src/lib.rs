@@ -47,11 +47,18 @@
 
 pub mod default_models;
 pub mod model_listing;
+pub mod openai;
 pub mod token_tracker;
 
 use gestura_core_foundation::AppError;
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
+
+#[cfg(feature = "openai")]
+use crate::openai::{
+    OpenAiApi, is_openai_model_incompatible_with_agent_session, openai_agent_session_model_message,
+    openai_api_for_model,
+};
 
 /// Default timeout for LLM API calls (2 minutes for slow local models)
 const LLM_TIMEOUT_SECS: u64 = 120;
@@ -127,7 +134,7 @@ impl TokenUsage {
 }
 
 /// A structured tool call returned by the LLM when using native function calling.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ToolCallInfo {
     /// Provider-assigned call ID (e.g. `call_abc123` for OpenAI, `toolu_xxx` for Anthropic)
     pub id: String,
@@ -241,11 +248,46 @@ pub struct OpenAiProvider {
 
 #[cfg(feature = "openai")]
 impl OpenAiProvider {
+    fn endpoint_path(api: OpenAiApi) -> &'static str {
+        match api {
+            OpenAiApi::ChatCompletions => "/v1/chat/completions",
+            OpenAiApi::Responses => "/v1/responses",
+        }
+    }
+
+    fn enrich_openai_error(
+        &self,
+        api: OpenAiApi,
+        status: reqwest::StatusCode,
+        body: &str,
+    ) -> String {
+        if status == reqwest::StatusCode::NOT_FOUND && body.contains("This is not a chat model") {
+            return format!(
+                "OpenAI model '{}' appears to require /v1/responses, but Gestura selected {}. Raw OpenAI error: {body}",
+                self.model,
+                Self::endpoint_path(api)
+            );
+        }
+
+        format!(
+            "OpenAI {} HTTP {}: {}",
+            Self::endpoint_path(api),
+            status,
+            body
+        )
+    }
+
     /// Parse token usage from OpenAI API response
     fn parse_usage(&self, response: &serde_json::Value) -> TokenUsage {
         let usage = &response["usage"];
-        let input_tokens = usage["prompt_tokens"].as_u64().unwrap_or(0) as u32;
-        let output_tokens = usage["completion_tokens"].as_u64().unwrap_or(0) as u32;
+        let input_tokens = usage["prompt_tokens"]
+            .as_u64()
+            .or_else(|| usage["input_tokens"].as_u64())
+            .unwrap_or(0) as u32;
+        let output_tokens = usage["completion_tokens"]
+            .as_u64()
+            .or_else(|| usage["output_tokens"].as_u64())
+            .unwrap_or(0) as u32;
 
         let mut token_usage = TokenUsage::new(input_tokens, output_tokens)
             .with_model(self.model.clone())
@@ -268,6 +310,92 @@ impl OpenAiProvider {
 }
 
 #[cfg(feature = "openai")]
+fn build_openai_chat_request_body(
+    model: &str,
+    prompt: &str,
+    tools: Option<&[serde_json::Value]>,
+) -> serde_json::Value {
+    let mut body = serde_json::json!({
+        "model": model,
+        "messages": [{"role":"user","content": prompt}]
+    });
+
+    if let Some(tools) = tools
+        && !tools.is_empty()
+    {
+        body["tools"] = serde_json::Value::Array(tools.to_vec());
+        body["tool_choice"] = serde_json::json!("auto");
+    }
+
+    body
+}
+
+#[cfg(feature = "openai")]
+fn build_openai_responses_request_body(
+    model: &str,
+    prompt: &str,
+    tools: Option<&[serde_json::Value]>,
+) -> serde_json::Value {
+    let mut body = serde_json::json!({
+        "model": model,
+        "input": [{"role":"user","content": prompt}]
+    });
+
+    if let Some(tools) = tools
+        && !tools.is_empty()
+    {
+        body["tools"] = serde_json::Value::Array(tools.to_vec());
+        body["tool_choice"] = serde_json::json!("auto");
+    }
+
+    body
+}
+
+#[cfg(feature = "openai")]
+fn extract_openai_responses_text(response: &serde_json::Value) -> String {
+    if let Some(text) = response["output_text"].as_str() {
+        return text.to_string();
+    }
+
+    response["output"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|item| item["type"].as_str() == Some("message"))
+        .flat_map(|item| item["content"].as_array().into_iter().flatten())
+        .filter_map(|content| match content["type"].as_str() {
+            Some("output_text") => content["text"].as_str(),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join("")
+}
+
+#[cfg(feature = "openai")]
+fn extract_openai_responses_tool_calls(response: &serde_json::Value) -> Vec<ToolCallInfo> {
+    let Some(output) = response["output"].as_array() else {
+        return Vec::new();
+    };
+
+    output
+        .iter()
+        .filter(|item| item["type"].as_str() == Some("function_call"))
+        .filter_map(|item| {
+            let name = item["name"].as_str()?;
+            Some(ToolCallInfo {
+                id: item["call_id"]
+                    .as_str()
+                    .or_else(|| item["id"].as_str())
+                    .unwrap_or_default()
+                    .to_string(),
+                name: name.to_string(),
+                arguments: item["arguments"].as_str().unwrap_or("{}").to_string(),
+            })
+        })
+        .collect()
+}
+
+#[cfg(feature = "openai")]
 #[async_trait::async_trait]
 impl LlmProvider for OpenAiProvider {
     async fn call(&self, prompt: &str) -> Result<String, AppError> {
@@ -284,24 +412,28 @@ impl LlmProvider for OpenAiProvider {
         prompt: &str,
         tools: Option<&[serde_json::Value]>,
     ) -> Result<LlmCallResponse, AppError> {
+        if is_openai_model_incompatible_with_agent_session(&self.model) {
+            return Err(AppError::Llm(openai_agent_session_model_message(
+                &self.model,
+            )));
+        }
+
+        let api = openai_api_for_model(&self.model);
+
         let url = format!(
-            "{}/v1/chat/completions",
-            self.base_url.trim_end_matches('/')
+            "{}{}",
+            self.base_url.trim_end_matches('/'),
+            Self::endpoint_path(api)
         );
         // NOTE: We intentionally omit `temperature`.
         // Some OpenAI(-compatible) models only support the default value and will
         // return HTTP 400 if a non-default temperature is provided.
-        let mut body = serde_json::json!({
-            "model": self.model,
-            "messages": [{"role":"user","content": prompt}]
-        });
-
-        if let Some(tools) = tools
-            && !tools.is_empty()
-        {
-            body["tools"] = serde_json::Value::Array(tools.to_vec());
-            body["tool_choice"] = serde_json::json!("auto");
-        }
+        let body = match api {
+            OpenAiApi::ChatCompletions => {
+                build_openai_chat_request_body(&self.model, prompt, tools)
+            }
+            OpenAiApi::Responses => build_openai_responses_request_body(&self.model, prompt, tools),
+        };
 
         let client = create_http_client();
         let resp = client
@@ -314,19 +446,26 @@ impl LlmProvider for OpenAiProvider {
         if !resp.status().is_success() {
             let status = resp.status();
             let body = resp.text().await.unwrap_or_default();
-            return Err(AppError::Llm(format!("openai http {}: {}", status, body)));
+            return Err(AppError::Llm(self.enrich_openai_error(api, status, &body)));
         }
         let v: serde_json::Value = resp.json().await?;
-        let text = v["choices"][0]["message"]["content"]
-            .as_str()
-            .unwrap_or("")
-            .to_string();
-
-        // Extract structured tool calls from the response.
-        let tool_calls = extract_openai_tool_calls(&v["choices"][0]["message"]);
+        let (text, tool_calls) = match api {
+            OpenAiApi::ChatCompletions => (
+                v["choices"][0]["message"]["content"]
+                    .as_str()
+                    .unwrap_or("")
+                    .to_string(),
+                extract_openai_tool_calls(&v["choices"][0]["message"]),
+            ),
+            OpenAiApi::Responses => (
+                extract_openai_responses_text(&v),
+                extract_openai_responses_tool_calls(&v),
+            ),
+        };
 
         let usage = self.parse_usage(&v);
         tracing::debug!(
+            endpoint = Self::endpoint_path(api),
             "OpenAI token usage: {} input, {} output, ${:.6} estimated, {} tool calls",
             usage.input_tokens,
             usage.output_tokens,
@@ -933,6 +1072,33 @@ mod tests {
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert!(err.to_string().contains("not configured"));
+    }
+
+    #[test]
+    #[cfg(feature = "openai")]
+    fn test_openai_responses_output_extraction() {
+        let response = serde_json::json!({
+            "output_text": "final answer",
+            "output": [
+                {
+                    "type": "function_call",
+                    "id": "fc_123",
+                    "call_id": "call_123",
+                    "name": "shell",
+                    "arguments": "{\"command\":\"pwd\"}"
+                }
+            ]
+        });
+
+        assert_eq!(extract_openai_responses_text(&response), "final answer");
+        assert_eq!(
+            extract_openai_responses_tool_calls(&response),
+            vec![ToolCallInfo {
+                id: "call_123".to_string(),
+                name: "shell".to_string(),
+                arguments: "{\"command\":\"pwd\"}".to_string(),
+            }]
+        );
     }
 
     #[test]

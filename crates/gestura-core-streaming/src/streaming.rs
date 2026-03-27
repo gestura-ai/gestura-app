@@ -7,6 +7,10 @@ use crate::config::StreamingConfig;
 use futures_util::StreamExt;
 use gestura_core_foundation::AppError;
 use gestura_core_llm::TokenUsage;
+use gestura_core_llm::openai::{
+    OpenAiApi, is_openai_model_incompatible_with_agent_session, openai_agent_session_model_message,
+    openai_api_for_model,
+};
 use gestura_core_tools::schemas::ProviderToolSchemas;
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -881,8 +885,8 @@ fn collect_complete_lines(buffer: &mut String, incoming: &str) -> Vec<String> {
     out
 }
 
-/// Build the JSON request body for an OpenAI-compatible API call.
-fn build_openai_request_body(
+/// Build the JSON request body for an OpenAI Chat Completions streaming call.
+fn build_openai_chat_request_body(
     model: &str,
     prompt: &str,
     tools: Option<&[serde_json::Value]>,
@@ -904,11 +908,72 @@ fn build_openai_request_body(
     body
 }
 
+/// Build the JSON request body for an OpenAI Responses streaming call.
+fn build_openai_responses_request_body(
+    model: &str,
+    prompt: &str,
+    tools: Option<&[serde_json::Value]>,
+) -> serde_json::Value {
+    let mut body = serde_json::json!({
+        "model": model,
+        "input": [{"role": "user", "content": prompt}],
+        "stream": true
+    });
+
+    if let Some(tools) = tools
+        && !tools.is_empty()
+    {
+        body["tools"] = serde_json::Value::Array(tools.to_vec());
+        body["tool_choice"] = serde_json::json!("auto");
+    }
+
+    body
+}
+
+fn openai_endpoint_path(api: OpenAiApi) -> &'static str {
+    match api {
+        OpenAiApi::ChatCompletions => "/v1/chat/completions",
+        OpenAiApi::Responses => "/v1/responses",
+    }
+}
+
+fn format_openai_http_error(
+    status: reqwest::StatusCode,
+    provider_name: &str,
+    model: &str,
+    api: OpenAiApi,
+    body: &str,
+) -> String {
+    if status == reqwest::StatusCode::NOT_FOUND && body.contains("This is not a chat model") {
+        return format!(
+            "{provider_name} model '{}' appears to require /v1/responses, but Gestura selected {}. Raw provider error: {}",
+            model.trim(),
+            openai_endpoint_path(api),
+            body
+        );
+    }
+
+    format!(
+        "{provider_name} {} HTTP {}: {}",
+        openai_endpoint_path(api),
+        status,
+        body
+    )
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 struct PendingOpenAiToolCall {
     id: String,
     name: String,
     arguments: String,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct PendingOpenAiResponsesToolCall {
+    id: String,
+    name: String,
+    arguments: String,
+    finished: bool,
 }
 
 fn merge_openai_tool_call_delta(
@@ -978,7 +1043,157 @@ async fn emit_openai_tool_calls(
     }
 }
 
-pub async fn stream_openai(
+fn merge_openai_responses_tool_item(
+    pending: &mut BTreeMap<usize, PendingOpenAiResponsesToolCall>,
+    event: &serde_json::Value,
+    fallback_index: usize,
+) {
+    let index = event
+        .get("output_index")
+        .and_then(|value| value.as_u64())
+        .map(|value| value as usize)
+        .unwrap_or(fallback_index);
+
+    let item = event.get("item").unwrap_or(event);
+    let entry = pending.entry(index).or_default();
+
+    if let Some(id) = item["call_id"].as_str().or_else(|| item["id"].as_str())
+        && !id.is_empty()
+    {
+        entry.id = id.to_string();
+    }
+
+    if let Some(name) = item["name"].as_str()
+        && !name.is_empty()
+    {
+        entry.name = name.to_string();
+    }
+
+    if let Some(arguments) = item["arguments"].as_str()
+        && !arguments.is_empty()
+    {
+        entry.arguments = arguments.to_string();
+    }
+
+    if event["type"].as_str() == Some("response.output_item.done")
+        || item["status"].as_str() == Some("completed")
+    {
+        entry.finished = true;
+    }
+}
+
+fn merge_openai_responses_tool_argument_delta(
+    pending: &mut BTreeMap<usize, PendingOpenAiResponsesToolCall>,
+    event: &serde_json::Value,
+    fallback_index: usize,
+) {
+    let index = event
+        .get("output_index")
+        .and_then(|value| value.as_u64())
+        .map(|value| value as usize)
+        .unwrap_or(fallback_index);
+
+    let entry = pending.entry(index).or_default();
+
+    if let Some(id) = event["call_id"].as_str()
+        && !id.is_empty()
+    {
+        entry.id = id.to_string();
+    } else if entry.id.is_empty()
+        && let Some(id) = event["item_id"].as_str()
+        && !id.is_empty()
+    {
+        entry.id = id.to_string();
+    }
+
+    if let Some(delta) = event["delta"].as_str()
+        && !delta.is_empty()
+    {
+        entry.arguments.push_str(delta);
+    }
+}
+
+fn complete_openai_responses_tool_arguments(
+    pending: &mut BTreeMap<usize, PendingOpenAiResponsesToolCall>,
+    event: &serde_json::Value,
+    fallback_index: usize,
+) {
+    let index = event
+        .get("output_index")
+        .and_then(|value| value.as_u64())
+        .map(|value| value as usize)
+        .unwrap_or(fallback_index);
+
+    let entry = pending.entry(index).or_default();
+
+    if let Some(id) = event["call_id"].as_str()
+        && !id.is_empty()
+    {
+        entry.id = id.to_string();
+    } else if entry.id.is_empty()
+        && let Some(id) = event["item_id"].as_str()
+        && !id.is_empty()
+    {
+        entry.id = id.to_string();
+    }
+
+    if let Some(arguments) = event["arguments"].as_str()
+        && !arguments.is_empty()
+    {
+        entry.arguments = arguments.to_string();
+    }
+
+    entry.finished = true;
+}
+
+async fn emit_ready_openai_responses_tool_calls(
+    tx: &mpsc::Sender<StreamChunk>,
+    pending: &mut BTreeMap<usize, PendingOpenAiResponsesToolCall>,
+    flush_all: bool,
+) {
+    let mut ready = Vec::new();
+
+    for (&index, call) in pending.iter() {
+        if call.name.is_empty() {
+            if flush_all {
+                continue;
+            }
+            break;
+        }
+
+        if flush_all || call.finished {
+            ready.push(index);
+            continue;
+        }
+
+        break;
+    }
+
+    for index in ready {
+        if let Some(call) = pending.remove(&index) {
+            let id = if call.id.is_empty() {
+                format!("openai-response-tool-{index}")
+            } else {
+                call.id
+            };
+
+            let _ = tx
+                .send(StreamChunk::ToolCallStart {
+                    id,
+                    name: call.name,
+                })
+                .await;
+
+            if !call.arguments.is_empty() {
+                let _ = tx.send(StreamChunk::ToolCallArgs(call.arguments)).await;
+            }
+
+            let _ = tx.send(StreamChunk::ToolCallEnd).await;
+        }
+    }
+}
+
+async fn stream_openai_chat_compatible(
     api_key: &str,
     base_url: &str,
     model: &str,
@@ -986,9 +1201,14 @@ pub async fn stream_openai(
     tools: Option<&[serde_json::Value]>,
     tx: mpsc::Sender<StreamChunk>,
     cancel_token: CancellationToken,
+    provider_name: &str,
 ) -> Result<(), AppError> {
-    let url = format!("{}/v1/chat/completions", base_url.trim_end_matches('/'));
-    let body = build_openai_request_body(model, prompt, tools);
+    let url = format!(
+        "{}{}",
+        base_url.trim_end_matches('/'),
+        openai_endpoint_path(OpenAiApi::ChatCompletions)
+    );
+    let body = build_openai_chat_request_body(model, prompt, tools);
 
     let client = create_streaming_client();
     let response = client
@@ -997,22 +1217,23 @@ pub async fn stream_openai(
         .json(&body)
         .send()
         .await
-        .map_err(|e| AppError::Llm(format!("OpenAI streaming request failed: {}", e)))?;
+        .map_err(|e| AppError::Llm(format!("{provider_name} streaming request failed: {e}")))?;
 
     if !response.status().is_success() {
         let status = response.status();
         let body = response.text().await.unwrap_or_default();
-        return Err(AppError::Llm(format!("OpenAI HTTP {}: {}", status, body)));
+        return Err(AppError::Llm(format_openai_http_error(
+            status,
+            provider_name,
+            model,
+            OpenAiApi::ChatCompletions,
+            &body,
+        )));
     }
 
     let mut stream = response.bytes_stream();
     let mut parser = ThinkingParser::new();
     let mut line_buffer = String::new();
-    // OpenAI-compatible providers may stream multiple tool calls concurrently,
-    // identifying each call by `index` and interleaving argument fragments
-    // across SSE events. Buffer them until the provider signals the end of the
-    // tool-call block, then emit complete Start/Args/End sequences in index
-    // order so downstream consumers never merge fragments from different calls.
     let mut pending_tool_calls = BTreeMap::<usize, PendingOpenAiToolCall>::new();
 
     while let Some(chunk_result) = stream.next().await {
@@ -1034,17 +1255,14 @@ pub async fn stream_openai(
                         return Ok(());
                     }
                     if let Ok(json) = serde_json::from_str::<serde_json::Value>(data) {
-                        // Handle content
                         if let Some(content) = json["choices"][0]["delta"]["content"].as_str()
                             && !content.is_empty()
                         {
-                            let chunks = parser.process(content);
-                            for chunk in chunks {
+                            for chunk in parser.process(content) {
                                 let _ = tx.send(chunk).await;
                             }
                         }
 
-                        // Handle tool calls
                         if let Some(tool_calls) =
                             json["choices"][0]["delta"]["tool_calls"].as_array()
                         {
@@ -1057,7 +1275,6 @@ pub async fn stream_openai(
                             }
                         }
 
-                        // Handle finish reason — emit each complete tool call in order.
                         if let Some(finish_reason) = json["choices"][0]["finish_reason"].as_str()
                             && finish_reason == "tool_calls"
                         {
@@ -1068,15 +1285,199 @@ pub async fn stream_openai(
             }
             Err(e) => {
                 let _ = tx
-                    .send(StreamChunk::Error(format!("Stream error: {}", e)))
+                    .send(StreamChunk::Error(format!("Stream error: {e}")))
                     .await;
-                return Err(AppError::Llm(format!("Stream error: {}", e)));
+                return Err(AppError::Llm(format!("Stream error: {e}")));
             }
         }
     }
 
     let _ = tx.send(StreamChunk::Done(None)).await;
     Ok(())
+}
+
+async fn stream_openai_responses(
+    api_key: &str,
+    base_url: &str,
+    model: &str,
+    prompt: &str,
+    tools: Option<&[serde_json::Value]>,
+    tx: mpsc::Sender<StreamChunk>,
+    cancel_token: CancellationToken,
+) -> Result<(), AppError> {
+    let url = format!(
+        "{}{}",
+        base_url.trim_end_matches('/'),
+        openai_endpoint_path(OpenAiApi::Responses)
+    );
+    let body = build_openai_responses_request_body(model, prompt, tools);
+
+    let client = create_streaming_client();
+    let response = client
+        .post(&url)
+        .bearer_auth(api_key)
+        .json(&body)
+        .send()
+        .await
+        .map_err(|e| AppError::Llm(format!("OpenAI streaming request failed: {e}")))?;
+
+    if !response.status().is_success() {
+        let status = response.status();
+        let body = response.text().await.unwrap_or_default();
+        return Err(AppError::Llm(format_openai_http_error(
+            status,
+            "OpenAI",
+            model,
+            OpenAiApi::Responses,
+            &body,
+        )));
+    }
+
+    let mut stream = response.bytes_stream();
+    let mut parser = ThinkingParser::new();
+    let mut line_buffer = String::new();
+    let mut pending_tool_calls = BTreeMap::<usize, PendingOpenAiResponsesToolCall>::new();
+    let mut fallback_index = 0usize;
+
+    while let Some(chunk_result) = stream.next().await {
+        if cancel_token.is_cancelled() {
+            let _ = tx.send(cancel_token.interruption_chunk()).await;
+            return Ok(());
+        }
+
+        match chunk_result {
+            Ok(bytes) => {
+                let text = String::from_utf8_lossy(&bytes);
+                for line in collect_complete_lines(&mut line_buffer, &text) {
+                    let Some(data) = line.strip_prefix("data: ") else {
+                        continue;
+                    };
+                    if data == "[DONE]" {
+                        emit_ready_openai_responses_tool_calls(&tx, &mut pending_tool_calls, true)
+                            .await;
+                        let _ = tx.send(StreamChunk::Done(None)).await;
+                        return Ok(());
+                    }
+
+                    let Ok(json) = serde_json::from_str::<serde_json::Value>(data) else {
+                        continue;
+                    };
+
+                    let event_type = json["type"].as_str().unwrap_or_default();
+                    match event_type {
+                        "response.output_text.delta" => {
+                            if let Some(delta) = json["delta"].as_str()
+                                && !delta.is_empty()
+                            {
+                                for chunk in parser.process(delta) {
+                                    let _ = tx.send(chunk).await;
+                                }
+                            }
+                        }
+                        "response.output_item.added" | "response.output_item.done" => {
+                            if json["item"]["type"].as_str() == Some("function_call") {
+                                merge_openai_responses_tool_item(
+                                    &mut pending_tool_calls,
+                                    &json,
+                                    fallback_index,
+                                );
+                                emit_ready_openai_responses_tool_calls(
+                                    &tx,
+                                    &mut pending_tool_calls,
+                                    false,
+                                )
+                                .await;
+                            }
+                        }
+                        "response.function_call_arguments.delta" => {
+                            merge_openai_responses_tool_argument_delta(
+                                &mut pending_tool_calls,
+                                &json,
+                                fallback_index,
+                            );
+                        }
+                        "response.function_call_arguments.done" => {
+                            complete_openai_responses_tool_arguments(
+                                &mut pending_tool_calls,
+                                &json,
+                                fallback_index,
+                            );
+                            emit_ready_openai_responses_tool_calls(
+                                &tx,
+                                &mut pending_tool_calls,
+                                false,
+                            )
+                            .await;
+                        }
+                        "response.completed" => {
+                            emit_ready_openai_responses_tool_calls(
+                                &tx,
+                                &mut pending_tool_calls,
+                                true,
+                            )
+                            .await;
+                            let _ = tx.send(StreamChunk::Done(None)).await;
+                            return Ok(());
+                        }
+                        "response.failed" => {
+                            let message = json["response"]["error"]["message"]
+                                .as_str()
+                                .unwrap_or("OpenAI Responses stream failed")
+                                .to_string();
+                            let _ = tx.send(StreamChunk::Error(message.clone())).await;
+                            return Err(AppError::Llm(message));
+                        }
+                        _ => {}
+                    }
+
+                    fallback_index = fallback_index.saturating_add(1);
+                }
+            }
+            Err(e) => {
+                let _ = tx
+                    .send(StreamChunk::Error(format!("Stream error: {e}")))
+                    .await;
+                return Err(AppError::Llm(format!("Stream error: {e}")));
+            }
+        }
+    }
+
+    emit_ready_openai_responses_tool_calls(&tx, &mut pending_tool_calls, true).await;
+    let _ = tx.send(StreamChunk::Done(None)).await;
+    Ok(())
+}
+
+pub async fn stream_openai(
+    api_key: &str,
+    base_url: &str,
+    model: &str,
+    prompt: &str,
+    tools: Option<&[serde_json::Value]>,
+    tx: mpsc::Sender<StreamChunk>,
+    cancel_token: CancellationToken,
+) -> Result<(), AppError> {
+    if is_openai_model_incompatible_with_agent_session(model) {
+        return Err(AppError::Llm(openai_agent_session_model_message(model)));
+    }
+
+    match openai_api_for_model(model) {
+        OpenAiApi::ChatCompletions => {
+            stream_openai_chat_compatible(
+                api_key,
+                base_url,
+                model,
+                prompt,
+                tools,
+                tx,
+                cancel_token,
+                "OpenAI",
+            )
+            .await
+        }
+        OpenAiApi::Responses => {
+            stream_openai_responses(api_key, base_url, model, prompt, tools, tx, cancel_token).await
+        }
+    }
 }
 
 /// Stream a response from Anthropic Claude API
@@ -1682,12 +2083,19 @@ pub async fn start_streaming(
         match config.primary.as_str() {
             "openai" => {
                 if let Some(c) = &config.openai {
+                    let openai_tools =
+                        tool_schemas
+                            .as_ref()
+                            .map(|schemas| match openai_api_for_model(&c.model) {
+                                OpenAiApi::ChatCompletions => schemas.openai.as_slice(),
+                                OpenAiApi::Responses => schemas.openai_responses.as_slice(),
+                            });
                     stream_openai(
                         &c.api_key,
                         c.base_url.as_deref().unwrap_or("https://api.openai.com"),
                         &c.model,
                         prompt,
-                        tool_schemas.as_ref().map(|s| s.openai.as_slice()),
+                        openai_tools,
                         tx,
                         cancel_token,
                     )
@@ -1716,7 +2124,7 @@ pub async fn start_streaming(
             "grok" => {
                 // Grok uses OpenAI-compatible API
                 if let Some(c) = &config.grok {
-                    stream_openai(
+                    stream_openai_chat_compatible(
                         &c.api_key,
                         c.base_url.as_deref().unwrap_or("https://api.x.ai"),
                         &c.model,
@@ -1724,6 +2132,7 @@ pub async fn start_streaming(
                         tool_schemas.as_ref().map(|s| s.openai.as_slice()),
                         tx,
                         cancel_token,
+                        "Grok",
                     )
                     .await
                 } else {
@@ -2069,7 +2478,7 @@ mod tests {
             }
         })];
 
-        let body = build_openai_request_body("gpt-test", "hi", Some(&tools));
+        let body = build_openai_chat_request_body("gpt-test", "hi", Some(&tools));
         assert!(body.get("tools").is_some());
         assert_eq!(
             body.get("tool_choice").and_then(|v| v.as_str()),
@@ -2079,15 +2488,45 @@ mod tests {
 
     #[test]
     fn openai_body_omits_tools_when_none() {
-        let body = build_openai_request_body("gpt-test", "hi", None);
+        let body = build_openai_chat_request_body("gpt-test", "hi", None);
         assert!(body.get("tools").is_none());
         assert!(body.get("tool_choice").is_none());
     }
 
     #[test]
     fn openai_body_omits_temperature() {
-        let body = build_openai_request_body("gpt-test", "hi", None);
+        let body = build_openai_chat_request_body("gpt-test", "hi", None);
         assert!(body.get("temperature").is_none());
+    }
+
+    #[test]
+    fn openai_responses_body_uses_responses_shape() {
+        let tools = vec![serde_json::json!({
+            "type": "function",
+            "name": "shell",
+            "description": "Run a command",
+            "parameters": {"type": "object", "properties": {}}
+        })];
+
+        let body = build_openai_responses_request_body("gpt-5.4", "hi", Some(&tools));
+        assert_eq!(body["model"], "gpt-5.4");
+        assert_eq!(body["input"][0]["role"], "user");
+        assert_eq!(body["input"][0]["content"], "hi");
+        assert!(body.get("tools").is_some());
+        assert_eq!(body["tool_choice"], "auto");
+    }
+
+    #[test]
+    fn openai_http_error_mentions_selected_endpoint() {
+        let message = format_openai_http_error(
+            reqwest::StatusCode::NOT_FOUND,
+            "OpenAI",
+            "gpt-5.3-codex",
+            OpenAiApi::ChatCompletions,
+            "This is not a chat model",
+        );
+        assert!(message.contains("/v1/responses"));
+        assert!(message.contains("/v1/chat/completions"));
     }
 
     #[test]
@@ -2170,6 +2609,98 @@ mod tests {
         );
 
         emit_openai_tool_calls(&tx, &mut pending).await;
+
+        assert!(matches!(
+            rx.recv().await,
+            Some(StreamChunk::ToolCallStart { id, name }) if id == "call_0" && name == "file"
+        ));
+        assert!(matches!(
+            rx.recv().await,
+            Some(StreamChunk::ToolCallArgs(args)) if args == "{\"operation\":\"list\"}"
+        ));
+        assert!(matches!(rx.recv().await, Some(StreamChunk::ToolCallEnd)));
+        assert!(matches!(
+            rx.recv().await,
+            Some(StreamChunk::ToolCallStart { id, name }) if id == "call_1" && name == "shell"
+        ));
+        assert!(matches!(
+            rx.recv().await,
+            Some(StreamChunk::ToolCallArgs(args)) if args == "{\"command\":\"pwd\"}"
+        ));
+        assert!(matches!(rx.recv().await, Some(StreamChunk::ToolCallEnd)));
+        assert!(pending.is_empty());
+    }
+
+    #[test]
+    fn openai_responses_tool_calls_are_buffered_by_output_index() {
+        let mut pending = BTreeMap::new();
+
+        merge_openai_responses_tool_item(
+            &mut pending,
+            &serde_json::json!({
+                "type": "response.output_item.added",
+                "output_index": 0,
+                "item": {
+                    "type": "function_call",
+                    "id": "fc_0",
+                    "call_id": "call_0",
+                    "name": "file"
+                }
+            }),
+            0,
+        );
+        merge_openai_responses_tool_argument_delta(
+            &mut pending,
+            &serde_json::json!({
+                "type": "response.function_call_arguments.delta",
+                "output_index": 0,
+                "item_id": "fc_0",
+                "delta": "{\"operation\":\"list\"}"
+            }),
+            0,
+        );
+        complete_openai_responses_tool_arguments(
+            &mut pending,
+            &serde_json::json!({
+                "type": "response.function_call_arguments.done",
+                "output_index": 0,
+                "item_id": "fc_0",
+                "arguments": "{\"operation\":\"list\"}"
+            }),
+            0,
+        );
+
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[&0].id, "call_0");
+        assert_eq!(pending[&0].name, "file");
+        assert_eq!(pending[&0].arguments, "{\"operation\":\"list\"}");
+        assert!(pending[&0].finished);
+    }
+
+    #[tokio::test]
+    async fn emit_openai_responses_tool_calls_waits_for_lowest_ready_index() {
+        let (tx, mut rx) = mpsc::channel(10);
+        let mut pending = BTreeMap::new();
+        pending.insert(
+            0,
+            PendingOpenAiResponsesToolCall {
+                id: "call_0".to_string(),
+                name: "file".to_string(),
+                arguments: "{\"operation\":\"list\"}".to_string(),
+                finished: true,
+            },
+        );
+        pending.insert(
+            1,
+            PendingOpenAiResponsesToolCall {
+                id: "call_1".to_string(),
+                name: "shell".to_string(),
+                arguments: "{\"command\":\"pwd\"}".to_string(),
+                finished: true,
+            },
+        );
+
+        emit_ready_openai_responses_tool_calls(&tx, &mut pending, false).await;
 
         assert!(matches!(
             rx.recv().await,

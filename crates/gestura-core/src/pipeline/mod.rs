@@ -94,14 +94,26 @@ pub(super) async fn send_token_usage_chunk_best_effort(
 /// Each provider family has its own tool definition format:
 /// - Anthropic: `{name, description, input_schema}`
 /// - Gemini: `{name, description, parameters}` (for `functionDeclarations`)
-/// - All others (OpenAI, Grok, Ollama): `{type:"function", function:{…}}`
+/// - OpenAI Chat Completions / Grok / Ollama: `{type:"function", function:{…}}`
+/// - OpenAI Responses: `{type:"function", name, description, parameters}`
 fn tools_slice_for_provider(
     provider_name: &str,
+    model_id: Option<&str>,
     schemas: &crate::tools::schemas::ProviderToolSchemas,
 ) -> Vec<serde_json::Value> {
     match provider_name {
         "anthropic" => schemas.anthropic.clone(),
         "gemini" => schemas.gemini.clone(),
+        "openai"
+            if model_id.is_some_and(|model| {
+                matches!(
+                    crate::llm_provider::openai::openai_api_for_model(model),
+                    crate::llm_provider::openai::OpenAiApi::Responses
+                )
+            }) =>
+        {
+            schemas.openai_responses.clone()
+        }
         _ => schemas.openai.clone(),
     }
 }

@@ -494,6 +494,23 @@ mod tests {
     }
 
     #[test]
+    fn openai_completion_only_model_override_is_ignored() {
+        let mut cfg = AppConfig::default();
+        let session = SessionLlmConfig {
+            provider: Some("openai".into()),
+            model: Some("text-davinci-003".into()),
+        };
+
+        let eff = apply_session_llm_overrides(&mut cfg, Some(&session), |_| None);
+        assert_eq!(eff.provider, "openai");
+        assert!(!eff.model.is_empty());
+        assert_ne!(eff.model, "text-davinci-003");
+        assert_eq!(cfg.llm.primary, "openai");
+        assert!(cfg.llm.openai.is_some());
+        assert_ne!(cfg.llm.openai.as_ref().unwrap().model, "text-davinci-003");
+    }
+
+    #[test]
     fn model_override_creates_provider_config_and_sets_model() {
         let mut cfg = AppConfig::default();
         let session = SessionLlmConfig {

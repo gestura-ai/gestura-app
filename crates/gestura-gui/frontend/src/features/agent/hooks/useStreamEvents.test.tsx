@@ -168,4 +168,29 @@ describe('useStreamEvents', () => {
     });
     expect(dispatch).toHaveBeenCalledTimes(1);
   });
+
+  it('normalizes backend voice agent-message payloads into chat actions', async () => {
+    const dispatch = vi.fn<[StreamEventAction], void>();
+    render(<HookHarness sessionId="session-123" dispatch={dispatch} />);
+
+    await waitFor(() => {
+      expect(listeners.has('agent-message')).toBe(true);
+    });
+
+    await act(async () => {
+      listeners.get('agent-message')?.({
+        payload: {
+          session_id: 'session-123',
+          type: 'user',
+          message: 'Transcribed voice prompt',
+        },
+      });
+    });
+
+    expect(dispatch).toHaveBeenCalledWith({
+      type: 'agent-message',
+      role: 'user',
+      content: 'Transcribed voice prompt',
+    });
+  });
 });

@@ -34,6 +34,20 @@ fn session_store() -> FileAgentSessionStore {
     FileAgentSessionStore::new_default()
 }
 
+fn choose_new_session_workspace(
+    selected_workspace: Option<PathBuf>,
+    project_workspace: Option<PathBuf>,
+    session_workspace: PathBuf,
+) -> (PathBuf, &'static str) {
+    if let Some(workspace) = selected_workspace {
+        (workspace, "selected")
+    } else if let Some(workspace) = project_workspace {
+        (workspace, "project")
+    } else {
+        (session_workspace, "session")
+    }
+}
+
 /// Persist a snapshot of GUI sessions to the unified core session store.
 ///
 /// This helper is snapshot-based so callers can release in-memory locks quickly
@@ -360,8 +374,15 @@ impl WindowManager {
         }
     }
 
-    /// Create a new agent session and window
+    /// Create a new agent session and window.
     pub fn create_agent_session(&self) -> tauri::Result<String> {
+        self.create_agent_session_with_workspace(None)
+    }
+
+    fn create_agent_session_with_workspace(
+        &self,
+        selected_workspace: Option<PathBuf>,
+    ) -> tauri::Result<String> {
         let session_id = Uuid::new_v4().to_string();
         let window_label = format!("agent-{}", session_id);
 
@@ -374,12 +395,15 @@ impl WindowManager {
         // If we cannot resolve one (e.g., app launched outside a repo), fall back to a
         // per-session workspace (~/.gestura/sessions/{session_uuid}/). The user can still
         // override via pick_workspace_directory.
-        let project_workspace = get_project_directory();
+        let project_workspace = if selected_workspace.is_some() {
+            None
+        } else {
+            get_project_directory()
+        };
         let session_workspace = default_session_workspace_dir(&session_id);
 
-        let mut preferred_workspace = project_workspace
-            .clone()
-            .unwrap_or_else(|| session_workspace.clone());
+        let (mut preferred_workspace, workspace_source) =
+            choose_new_session_workspace(selected_workspace, project_workspace, session_workspace);
 
         if let Err(e) = std::fs::create_dir_all(&preferred_workspace) {
             tracing::warn!(
@@ -394,11 +418,11 @@ impl WindowManager {
             .canonicalize()
             .unwrap_or(preferred_workspace);
 
-        let session_state = if preferred_workspace.exists() {
+        let session_state = if preferred_workspace.is_dir() {
             tracing::info!(
                 session_id = %session_id,
                 workspace = %preferred_workspace.display(),
-                source = %if project_workspace.is_some() { "project" } else { "session" },
+                source = %workspace_source,
                 "Session initialized with workspace"
             );
             SessionState::with_workspace(preferred_workspace)
@@ -1081,6 +1105,15 @@ pub fn get_window_manager() -> Option<WindowManager> {
 pub fn create_new_agent_session() -> tauri::Result<String> {
     if let Some(manager) = get_window_manager() {
         manager.create_agent_session()
+    } else {
+        Err(tauri::Error::FailedToReceiveMessage)
+    }
+}
+
+/// Create a new agent session using the provided directory as its initial workspace.
+pub fn create_new_agent_session_in_directory(workspace_dir: PathBuf) -> tauri::Result<String> {
+    if let Some(manager) = get_window_manager() {
+        manager.create_agent_session_with_workspace(Some(workspace_dir))
     } else {
         Err(tauri::Error::FailedToReceiveMessage)
     }
@@ -1791,6 +1824,34 @@ mod tests {
         assert!(uses_regular_activation_policy(WINDOW_TYPE_CONFIG));
         assert!(uses_regular_activation_policy(WINDOW_TYPE_ONBOARDING));
         assert!(!uses_regular_activation_policy("background-helper"));
+    }
+
+    #[test]
+    fn choose_new_session_workspace_prefers_selected_directory() {
+        let selected = PathBuf::from("/tmp/selected");
+        let project = PathBuf::from("/tmp/project");
+        let session = PathBuf::from("/tmp/session");
+
+        let (workspace, source) =
+            choose_new_session_workspace(Some(selected.clone()), Some(project), session);
+
+        assert_eq!(workspace, selected);
+        assert_eq!(source, "selected");
+    }
+
+    #[test]
+    fn choose_new_session_workspace_falls_back_to_project_then_session() {
+        let project = PathBuf::from("/tmp/project");
+        let session = PathBuf::from("/tmp/session");
+
+        let (workspace, source) =
+            choose_new_session_workspace(None, Some(project.clone()), session.clone());
+        assert_eq!(workspace, project);
+        assert_eq!(source, "project");
+
+        let (workspace, source) = choose_new_session_workspace(None, None, session.clone());
+        assert_eq!(workspace, session);
+        assert_eq!(source, "session");
     }
 
     #[test]

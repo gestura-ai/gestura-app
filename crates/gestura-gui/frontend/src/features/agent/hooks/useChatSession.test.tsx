@@ -248,6 +248,31 @@ describe('useChatSession', () => {
     expect(pauseStreamingMock).toHaveBeenCalledTimes(1);
   });
 
+  it('routes voice-originated agent messages into the streaming send path', async () => {
+    sendMessageStreamingMock.mockResolvedValue(undefined);
+
+    render(<Harness />);
+
+    await waitFor(() => {
+      expect(streamDispatch).not.toBeNull();
+    });
+
+    await act(async () => {
+      streamDispatch?.({ type: 'agent-message', role: 'user', content: 'Open the project README' });
+    });
+
+    await waitFor(() => {
+      expect(sendMessageStreamingMock).toHaveBeenCalledWith({
+        session_id: 'session-123',
+        message: 'Open the project README',
+        task_id: null,
+      });
+    });
+
+    expect(screen.getByTestId('messages')).toHaveTextContent('"role":"user"');
+    expect(screen.getByTestId('messages')).toHaveTextContent('Open the project README');
+  });
+
   it('resumes into the same assistant message instead of starting a new bubble', async () => {
     resumeStreamingMock.mockImplementation(async () => {
       streamDispatch?.({ type: 'chunk', chunk: ' world' });

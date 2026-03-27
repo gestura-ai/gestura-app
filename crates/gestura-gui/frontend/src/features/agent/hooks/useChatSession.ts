@@ -1327,9 +1327,22 @@ export function useChatSession(sessionId: string): ChatSessionState {
       }
 
       case 'agent-message': {
+        const content = action.content.trim();
+        if (!content) break;
+
+        if (action.role === 'user') {
+          if (isProcessingRef.current || !triggerSendRef.current) {
+            messageQueueRef.current.push({ kind: 'voice', text: content, taskId: null });
+            break;
+          }
+
+          void triggerSendRef.current(content, null);
+          break;
+        }
+
         const id = nanoid();
-        const block: TextBlock = { kind: 'text', id, content: action.content };
-        setMessages((prev) => [...prev, { id: nanoid(), role: 'assistant', rawMarkdown: action.content, blocks: [block], isStreaming: false, timestamp: Date.now() }]);
+        const block: TextBlock = { kind: 'text', id, content };
+        setMessages((prev) => [...prev, { id: nanoid(), role: 'assistant', rawMarkdown: content, blocks: [block], isStreaming: false, timestamp: Date.now() }]);
         break;
       }
 
