@@ -173,5 +173,27 @@ describe('useTabState', () => {
     expect(result.current.tabs.every((tab) => tab.relPath === 'docs/guide.md')).toBe(true);
     expect(result.current.tabs.every((tab) => tab.label === 'guide.md')).toBe(true);
   });
+
+  it('remaps open tab paths when a parent directory is renamed', () => {
+    const { result } = renderHook(() => useTabState());
+    act(() => { result.current.openTab(makeFile('docs/readme.md')); });
+    act(() => { result.current.openTab(makeFile('docs/nested/guide.md')); });
+    act(() => { result.current.openTab(makeFile('notes/todo.md')); });
+
+    act(() => {
+      result.current.remapTabsForPath('docs', 'guides');
+    });
+
+    expect(result.current.tabs.map((tab) => tab.relPath)).toEqual([
+      'guides/readme.md',
+      'guides/nested/guide.md',
+      'notes/todo.md',
+    ]);
+    expect(result.current.tabs.map((tab) => tab.label)).toEqual([
+      'readme.md',
+      'guide.md',
+      'todo.md',
+    ]);
+  });
 });
 

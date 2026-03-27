@@ -100,7 +100,7 @@ pipeline:
       protocol: grpc
       endpoint: http://127.0.0.1:4317
   reflection:
-    enabled: false
+    enabled: true
     quality_threshold_percent: 60
     max_injected: 3
     max_retry_attempts: 1
@@ -200,6 +200,8 @@ pipeline:
 | `max_injected` | integer | Maximum number of past reflections injected into future prompts |
 | `max_retry_attempts` | integer | Number of same-turn text-only revision retries after reflection (`0` disables, current runtime applies at most `1`) |
 | `promotion_confidence_percent` | integer | Minimum confidence before a reflection is promoted to long-term memory |
+
+Reflection is enabled by default globally, and sessions inherit that global default unless they set an explicit session-scoped override.
 
 Example:
 

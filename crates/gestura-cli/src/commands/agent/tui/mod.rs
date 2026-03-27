@@ -1399,6 +1399,10 @@ fn start_streaming_message(
     let (permission_level, allowed_tools) = super::derive_request_policy(&app.session);
     request = request
         .with_session_llm_config(provider_name, model_name)
+        .with_reflection_enabled(super::effective_session_reflection_enabled(
+            &app.config,
+            &app.session,
+        ))
         .with_permission_level(permission_level);
     if !allowed_tools.is_empty() {
         request = request.with_allowed_tools(allowed_tools);
@@ -1495,6 +1499,10 @@ fn start_resume_streaming(
     let (permission_level, allowed_tools) = super::derive_request_policy(&app.session);
     request = request
         .with_session_llm_config(provider_name, model_name)
+        .with_reflection_enabled(super::effective_session_reflection_enabled(
+            &app.config,
+            &app.session,
+        ))
         .with_permission_level(permission_level);
     if !allowed_tools.is_empty() {
         request = request.with_allowed_tools(allowed_tools);

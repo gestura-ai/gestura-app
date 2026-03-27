@@ -58,6 +58,13 @@ pub use gestura_core::agent_sessions::ConversationMessage as AgentMessage;
 /// via the core-backed `FileAgentSessionStore`.
 pub use gestura_core::agent_sessions::AgentSession;
 
+pub(super) fn effective_session_reflection_enabled(
+    config: &AppConfig,
+    session: &AgentSession,
+) -> bool {
+    gestura_core::agent_sessions::effective_session_reflection_enabled(&session.state, config)
+}
+
 /// Session listing filter options.
 pub use gestura_core::agent_sessions::SessionFilter;
 
@@ -1319,6 +1326,7 @@ fn execute_basic_mode_turn(
     }
     request = request
         .with_session_llm_config(provider_name, model_name)
+        .with_reflection_enabled(effective_session_reflection_enabled(config, agent_session))
         .with_permission_level(permission_level);
     if let Some(task_id) = active_task_id {
         request = request.with_task(task_id);

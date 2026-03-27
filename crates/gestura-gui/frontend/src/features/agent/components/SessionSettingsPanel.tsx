@@ -1,8 +1,11 @@
 import { useCallback, useEffect, useState } from "react";
 import {
+  clearSessionReflectionSettings,
+  getSessionReflectionSettings,
   getSessionWorkspaceById,
   pickWorkspaceDirectory,
   setSessionPermissionLevel,
+  setSessionReflectionEnabled,
 } from "../../../services/tauri/agent";
 import { getConfig, saveConfig } from "../../../services/tauri/config";
 import type { AppConfig } from "../../../types/config";
@@ -23,6 +26,8 @@ const PERMISSION_LEVELS = [
   { value: "full", label: "Full Access (Careful!)" },
 ];
 
+type ReflectionMode = "global" | "enabled" | "disabled";
+
 export function SessionSettingsPanel({
   isOpen,
   onClose,
@@ -35,6 +40,8 @@ export function SessionSettingsPanel({
   const [permissionLevel, setPermissionLevel] = useState("restricted");
   const [appConfig, setAppConfig] = useState<AppConfig | null>(null);
   const [isSavingPipelineSettings, setIsSavingPipelineSettings] = useState(false);
+  const [sessionReflectionMode, setSessionReflectionMode] = useState<ReflectionMode>("global");
+  const [isSavingSessionReflection, setIsSavingSessionReflection] = useState(false);
 
   const loadWorkspace = useCallback(async () => {
     try {
@@ -51,6 +58,18 @@ export function SessionSettingsPanel({
     if (!isOpen) return;
     void getConfig().then(setAppConfig).catch(() => { /* ignore */ });
   }, [isOpen]);
+
+  useEffect(() => {
+    if (!isOpen) return;
+    void getSessionReflectionSettings(sessionId)
+      .then((settings) => {
+        const enabled = settings?.enabled;
+        setSessionReflectionMode(
+          enabled === true ? "enabled" : enabled === false ? "disabled" : "global",
+        );
+      })
+      .catch(() => { /* ignore */ });
+  }, [isOpen, sessionId]);
 
   // Load permission level from settings
   useEffect(() => {
@@ -132,6 +151,35 @@ export function SessionSettingsPanel({
     [appConfig, updateGlobalPipelineSettings],
   );
 
+  const handleSessionReflectionModeChange = useCallback(
+    async (mode: ReflectionMode) => {
+      const previous = sessionReflectionMode;
+      setSessionReflectionMode(mode);
+      setIsSavingSessionReflection(true);
+      try {
+        if (mode === "global") {
+          await clearSessionReflectionSettings(sessionId);
+          onShowToast("Session reflection now follows the global default", "success");
+        } else {
+          const enabled = mode === "enabled";
+          await setSessionReflectionEnabled(sessionId, enabled);
+          onShowToast(
+            enabled
+              ? "Reflection enabled for this session"
+              : "Reflection disabled for this session",
+            "success",
+          );
+        }
+      } catch (e) {
+        setSessionReflectionMode(previous);
+        onShowToast(`Failed to update session reflection: ${e}`, "error");
+      } finally {
+        setIsSavingSessionReflection(false);
+      }
+    },
+    [onShowToast, sessionId, sessionReflectionMode],
+  );
+
   const handleIterationBudgetToggle = useCallback(
     async (enabled: boolean) => {
       await updateGlobalPipelineSettings(
@@ -153,6 +201,12 @@ export function SessionSettingsPanel({
     },
     [updateGlobalPipelineSettings],
   );
+
+  const globalReflectionEnabled = appConfig?.pipeline.reflection.enabled ?? true;
+  const effectiveSessionReflectionEnabled =
+    sessionReflectionMode === "global"
+      ? globalReflectionEnabled
+      : sessionReflectionMode === "enabled";
 
   return (
     <>
@@ -207,16 +261,37 @@ export function SessionSettingsPanel({
           <div className="session-divider" />
 
           <div className="session-field">
-            <label>Experiential Reflection (Global)</label>
+            <label>Experiential Reflection (Session)</label>
+            <select
+              className="provider-select"
+              value={sessionReflectionMode}
+              disabled={isSavingSessionReflection}
+              onChange={(e) => void handleSessionReflectionModeChange(e.target.value as ReflectionMode)}
+            >
+              <option value="global">
+                Use global default ({globalReflectionEnabled ? "currently enabled" : "currently disabled"})
+              </option>
+              <option value="enabled">Enabled for this session</option>
+              <option value="disabled">Disabled for this session</option>
+            </select>
+            <div className="tool-summary" style={{ marginTop: 8 }}>
+              Effective for this session: {effectiveSessionReflectionEnabled ? "Enabled" : "Disabled"}.
+            </div>
+          </div>
+
+          <div className="session-field">
+            <label>Experiential Reflection (Global Default)</label>
             <label className="tool-checkbox">
               <input
                 type="checkbox"
-                checked={appConfig?.pipeline.reflection.enabled ?? false}
+                checked={globalReflectionEnabled}
                 disabled={!appConfig || isSavingPipelineSettings}
                 onChange={(e) => void handleReflectionToggle(e.target.checked)}
               />
               <div className="tool-details">
-                <span className="tool-name">Enable reflection for low-quality turns</span>
+                <span className="tool-name tool-name--compact-toggle">
+                  ENABLE REFLECTION FOR LOW-QUALITY TURNS
+                </span>
                 <span className="tool-summary">
                   Reflection only runs when enabled and a turn scores below the configured quality threshold.
                 </span>
@@ -234,7 +309,9 @@ export function SessionSettingsPanel({
                 onChange={(e) => void handleIterationBudgetToggle(e.target.checked)}
               />
               <div className="tool-details">
-                <span className="tool-name">Enable explicit agent iteration budgets</span>
+                <span className="tool-name tool-name--compact-toggle">
+                  ENABLE EXPLICIT AGENT ITERATION BUDGETS
+                </span>
                 <span className="tool-summary">
                   When disabled, requests run unbounded until they finish naturally or you cancel them.
                 </span>

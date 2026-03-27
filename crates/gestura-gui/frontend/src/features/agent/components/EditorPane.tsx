@@ -78,7 +78,7 @@ export interface EditorPaneProps {
   tab: EditorTab;
   isDark: boolean;
   onContentChange: (tabId: string, content: string) => void;
-  onSave: (tabId: string) => void;
+  onSave: (tabId: string) => void | Promise<boolean>;
   onScrollChange?: (tabId: string, offset: number) => void;
 }
 
@@ -112,7 +112,7 @@ export const EditorPane: React.FC<EditorPaneProps> = ({
 
     const saveCmd = keymap.of([{
       key: 'Mod-s',
-      run: () => { onSaveRef.current(tab.id); return true; },
+      run: () => { void onSaveRef.current(tab.id); return true; },
     }]);
 
     const updateListener = EditorView.updateListener.of((update) => {

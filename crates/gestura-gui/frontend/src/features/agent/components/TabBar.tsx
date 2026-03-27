@@ -5,7 +5,7 @@
  * - Renders all open tabs (EditorTab[])
  * - Highlights the active tab
  * - Shows dirty indicator (•) for unsaved tabs
- * - Close button with dirty-state guard (propagates up to EditorArea)
+ * - Close button with an explicit save/discard/cancel dialog for dirty tabs
  * - Drag-to-reorder via HTML5 drag-and-drop API
  * - Right-click context menu with Rename option
  * - Inline rename input (Enter to commit, Escape/blur to cancel)
@@ -22,6 +22,8 @@ export interface TabBarProps {
   /** Returns false when the tab has unsaved changes and close was prevented. */
   onClose: (tabId: string, opts?: { force?: boolean }) => boolean;
   onReorder: (fromIndex: number, toIndex: number) => void;
+  /** Saves the current tab before closing; returns false when save failed. */
+  onSaveTab?: (tabId: string) => Promise<boolean>;
   /** Called when user confirms a rename; should persist the new name on disk. */
   onRenameTab?: (tabId: string, newLabel: string) => Promise<void>;
   onOpenRenderedView?: (tabId: string) => void;
@@ -34,14 +36,18 @@ interface CtxMenu {
 }
 
 export const TabBar: React.FC<TabBarProps> = ({
-  tabs, activeTabId, onActivate, onClose, onReorder, onRenameTab, onOpenRenderedView,
+  tabs, activeTabId, onActivate, onClose, onReorder, onSaveTab, onRenameTab, onOpenRenderedView,
 }) => {
   const [dragSrc, setDragSrc] = useState<number | null>(null);
   const [dragOverIdx, setDragOverIdx] = useState<number | null>(null);
   const [ctxMenu, setCtxMenu] = useState<CtxMenu | null>(null);
   const [editingTabId, setEditingTabId] = useState<string | null>(null);
   const [editValue, setEditValue] = useState('');
+  const [dirtyCloseTabId, setDirtyCloseTabId] = useState<string | null>(null);
+  const [isSavingDirtyClose, setIsSavingDirtyClose] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
+
+  const dirtyCloseTab = dirtyCloseTabId ? tabs.find((tab) => tab.id === dirtyCloseTabId) ?? null : null;
 
   // Close context menu on outside click
   useEffect(() => {
@@ -55,19 +61,54 @@ export const TabBar: React.FC<TabBarProps> = ({
     return () => document.removeEventListener('mousedown', handler);
   }, [ctxMenu]);
 
+  useEffect(() => {
+    if (!dirtyCloseTabId) return;
+    const handler = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        setDirtyCloseTabId(null);
+        setIsSavingDirtyClose(false);
+      }
+    };
+    document.addEventListener('keydown', handler);
+    return () => document.removeEventListener('keydown', handler);
+  }, [dirtyCloseTabId]);
+
+  const dismissDirtyCloseDialog = useCallback(() => {
+    setDirtyCloseTabId(null);
+    setIsSavingDirtyClose(false);
+  }, []);
+
   const handleCloseClick = useCallback(
     (e: React.MouseEvent, tab: EditorTab) => {
       e.stopPropagation();
       if (tab.isDirty) {
-        const ok = confirm(`"${tab.label}" has unsaved changes. Close anyway?`);
-        if (!ok) return;
-        onClose(tab.id, { force: true });
+        setCtxMenu(null);
+        setDirtyCloseTabId(tab.id);
       } else {
         onClose(tab.id);
       }
     },
     [onClose],
   );
+
+  const handleSaveAndClose = useCallback(async () => {
+    if (!dirtyCloseTabId || !onSaveTab) return;
+    setIsSavingDirtyClose(true);
+    const didSave = await onSaveTab(dirtyCloseTabId);
+    if (didSave !== false) {
+      onClose(dirtyCloseTabId, { force: true });
+      dismissDirtyCloseDialog();
+      return;
+    }
+    setIsSavingDirtyClose(false);
+  }, [dirtyCloseTabId, dismissDirtyCloseDialog, onClose, onSaveTab]);
+
+  const handleDiscardAndClose = useCallback(() => {
+    if (!dirtyCloseTabId) return;
+    onClose(dirtyCloseTabId, { force: true });
+    dismissDirtyCloseDialog();
+  }, [dirtyCloseTabId, dismissDirtyCloseDialog, onClose]);
 
   const handleContextMenu = useCallback((e: React.MouseEvent, tab: EditorTab) => {
     e.preventDefault();
@@ -221,6 +262,55 @@ export const TabBar: React.FC<TabBarProps> = ({
             </div>
           );
         })()
+      )}
+
+      {dirtyCloseTab && (
+        <div
+          className="tab-close-overlay"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="tab-close-dialog-title"
+          onClick={(event) => {
+            if (event.target === event.currentTarget && !isSavingDirtyClose) {
+              dismissDirtyCloseDialog();
+            }
+          }}
+        >
+          <div className="tab-close-dialog">
+            <p id="tab-close-dialog-title" className="tab-close-dialog__title">
+              Save changes to “{dirtyCloseTab.label}”?
+            </p>
+            <p className="tab-close-dialog__body">
+              This file has unsaved changes. Save before closing, or discard the changes.
+            </p>
+            <div className="tab-close-dialog__actions">
+              <button
+                type="button"
+                className="tab-close-dialog__button"
+                onClick={dismissDirtyCloseDialog}
+                disabled={isSavingDirtyClose}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="tab-close-dialog__button"
+                onClick={handleDiscardAndClose}
+                disabled={isSavingDirtyClose}
+              >
+                Discard
+              </button>
+              <button
+                type="button"
+                className="tab-close-dialog__button tab-close-dialog__button--primary"
+                onClick={() => { void handleSaveAndClose(); }}
+                disabled={isSavingDirtyClose || !onSaveTab}
+              >
+                {isSavingDirtyClose ? 'Saving…' : 'Save'}
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </>
   );

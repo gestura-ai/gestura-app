@@ -16,6 +16,13 @@ fn test_agent_request_builder() {
 }
 
 #[test]
+fn test_agent_request_builder_allows_reflection_override() {
+    let request = AgentRequest::new("Hello world").with_reflection_enabled(false);
+
+    assert_eq!(request.metadata.reflection_enabled, Some(false));
+}
+
+#[test]
 fn requirement_detection_input_defaults_to_request_input() {
     let request = AgentRequest::new("Please build and test the project before finishing.");
 
@@ -83,6 +90,17 @@ fn test_pipeline_new_honors_user_reflection_settings() {
 
     assert!(pipeline.pipeline_config.reflection.enabled);
     assert!((pipeline.pipeline_config.reflection.quality_threshold - 0.42).abs() < f32::EPSILON);
+}
+
+#[test]
+fn request_reflection_override_takes_precedence_over_pipeline_default() {
+    let mut config = AppConfig::default();
+    config.pipeline.reflection.enabled = true;
+    let pipeline = AgentPipeline::new(config);
+
+    let request = AgentRequest::new("Hello world").with_reflection_enabled(false);
+
+    assert!(!pipeline.reflection_enabled_for(&request.metadata));
 }
 
 #[test]

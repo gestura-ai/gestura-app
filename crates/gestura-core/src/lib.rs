@@ -361,8 +361,8 @@ pub use a2a::{
 pub use agent_sessions::{
     AgentSession, AgentSessionResult, AgentSessionStore, ConversationMessage,
     FileAgentSessionStore, MessageSource, SessionFilter, SessionInfo, SessionLlmConfig,
-    SessionPermissionLevel, SessionState, SessionToolCall, SessionToolSettings, SessionVoiceConfig,
-    default_agent_sessions_dir,
+    SessionPermissionLevel, SessionReflectionSettings, SessionState, SessionToolCall,
+    SessionToolSettings, SessionVoiceConfig, default_agent_sessions_dir,
 };
 pub use analytics::{
     AnalyticsConfig, AnalyticsInsights, ErrorAnalysis, EventType, PerformanceMetrics, PrivacyMode,

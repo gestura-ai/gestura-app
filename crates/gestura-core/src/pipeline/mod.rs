@@ -310,6 +310,12 @@ impl AgentPipeline {
         analysis.needs_tools && Self::should_auto_track_request(&analysis.request, None)
     }
 
+    fn reflection_enabled_for(&self, metadata: &RequestMetadata) -> bool {
+        metadata
+            .reflection_enabled
+            .unwrap_or(self.pipeline_config.reflection.enabled)
+    }
+
     fn append_task_tool_for_auto_tracked_request(
         analysis: &crate::context::RequestAnalysis,
         candidate_names: &HashSet<&str>,
@@ -2546,7 +2552,7 @@ impl AgentPipeline {
             );
             resolved_context.memory_sections.extend(memory_context);
 
-            if self.pipeline_config.reflection.enabled
+            if self.reflection_enabled_for(metadata)
                 && let Some(reflection_sections) = self
                     .load_relevant_reflections(workspace_dir, metadata, query)
                     .await

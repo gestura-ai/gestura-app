@@ -71,6 +71,12 @@ function persistTabs(tabs: EditorTab[], activeId: string | null) {
   }
 }
 
+function remapRelPath(relPath: string, oldRelPath: string, newRelPath: string): string | null {
+  if (relPath === oldRelPath) return newRelPath;
+  if (!oldRelPath || !relPath.startsWith(`${oldRelPath}/`)) return null;
+  return `${newRelPath}${relPath.slice(oldRelPath.length)}`;
+}
+
 /**
  * Manages the multi-tab editor state:
  * - open / close / switch tabs
@@ -224,6 +230,25 @@ export function useTabState() {
     });
   }, [activeTabId]);
 
+  const remapTabsForPath = useCallback((oldRelPath: string, newRelPath: string) => {
+    setTabs((prev) => {
+      let changed = false;
+      const next = prev.map((tab) => {
+        const remappedRelPath = remapRelPath(tab.relPath, oldRelPath, newRelPath);
+        if (!remappedRelPath) return tab;
+        changed = true;
+        return {
+          ...tab,
+          relPath: remappedRelPath,
+          label: remappedRelPath.split('/').pop() ?? remappedRelPath,
+        };
+      });
+      if (!changed) return prev;
+      persistTabs(next, activeTabId);
+      return next;
+    });
+  }, [activeTabId]);
+
   const activeTab = tabs.find((t) => t.id === activeTabId) ?? null;
 
   return {
@@ -240,6 +265,7 @@ export function useTabState() {
     reorderTabs,
     updateScrollOffset,
     renameTab,
+    remapTabsForPath,
   };
 }
 

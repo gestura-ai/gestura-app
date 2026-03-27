@@ -49,7 +49,7 @@ const makeConfig = (): AppConfig => ({
       },
     },
     reflection: {
-      enabled: false,
+      enabled: true,
       quality_threshold_percent: 60,
       max_injected: 3,
       max_retry_attempts: 1,
@@ -100,7 +100,7 @@ describe('config IPC wrappers', () => {
           },
         },
         reflection: {
-          enabled: false,
+          enabled: true,
         },
       },
     });

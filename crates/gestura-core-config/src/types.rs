@@ -322,8 +322,8 @@ impl PipelineSettings {
 /// turns, may attempt one bounded same-turn corrective retry, and stores the
 /// resulting corrective knowledge for future context injection.
 ///
-/// The feature defaults to disabled because it introduces at least one extra
-/// model call on weak turns and therefore affects latency/cost.
+/// The feature defaults to enabled so new installs and sessions benefit from
+/// corrective retries and durable reflection without extra setup.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(default)]
 pub struct ReflectionSettings {
@@ -344,7 +344,7 @@ pub struct ReflectionSettings {
 impl Default for ReflectionSettings {
     fn default() -> Self {
         Self {
-            enabled: false,
+            enabled: true,
             quality_threshold_percent: 60,
             max_injected: 3,
             max_retry_attempts: 1,

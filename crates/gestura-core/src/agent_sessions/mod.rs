@@ -47,6 +47,19 @@ impl SessionToolSettingsConfigExt for SessionToolSettings {
     }
 }
 
+/// Resolve whether experiential reflection is enabled for a session.
+///
+/// Sessions use sparse override semantics: when `state.reflection_settings` is
+/// absent or its `enabled` field is `None`, the current global configuration is
+/// used as the effective default.
+pub fn effective_session_reflection_enabled(state: &SessionState, config: &AppConfig) -> bool {
+    state
+        .reflection_settings
+        .as_ref()
+        .and_then(|settings| settings.enabled)
+        .unwrap_or(config.pipeline.reflection.enabled)
+}
+
 // ---------------------------------------------------------------------------
 // Wrapper: sanitize_session_llm_override (injects concrete validator)
 // ---------------------------------------------------------------------------
@@ -128,5 +141,30 @@ mod tests {
             SessionPermissionLevel::Sandbox
         );
         assert_eq!(session_tools.enabled_tools, tools);
+    }
+
+    #[test]
+    fn effective_session_reflection_enabled_falls_back_to_global_default() {
+        let mut config = AppConfig::default();
+        config.pipeline.reflection.enabled = true;
+
+        let state = SessionState::default();
+        assert!(effective_session_reflection_enabled(&state, &config));
+
+        config.pipeline.reflection.enabled = false;
+        assert!(!effective_session_reflection_enabled(&state, &config));
+    }
+
+    #[test]
+    fn effective_session_reflection_enabled_honors_session_override() {
+        let mut config = AppConfig::default();
+        config.pipeline.reflection.enabled = true;
+
+        let mut state = SessionState::default();
+        state.reflection_settings = Some(SessionReflectionSettings {
+            enabled: Some(false),
+        });
+
+        assert!(!effective_session_reflection_enabled(&state, &config));
     }
 }

@@ -143,7 +143,7 @@ describe('TaskPanel', () => {
     expect(screen.getByText('capture crate name').tagName).toBe('LI');
   });
 
-  it('surfaces streamed runtime task state in the panel', () => {
+  it('keeps the runtime task highlighted without rendering the runtime summary', () => {
     const tasks: TaskHierarchy = [{
       id: 'verify-task',
       name: 'Verify facts',
@@ -165,8 +165,8 @@ describe('TaskPanel', () => {
 
     renderTaskPanel(tasks, runtimeTaskSnapshot);
 
-    expect(screen.getByLabelText('Runtime task status')).toHaveTextContent('Verification remains open');
-    expect(screen.getByLabelText('Runtime task status')).toHaveTextContent('Remaining checks: verification still required');
+    expect(screen.queryByLabelText('Runtime task status')).not.toBeInTheDocument();
+    expect(screen.queryByText('Runtime focus')).not.toBeInTheDocument();
     expect(screen.getByText('Verify facts').closest('.task-item')).toHaveClass('runtime-current');
   });
 

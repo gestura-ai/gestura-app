@@ -460,6 +460,24 @@ export const setSessionVoiceModel = (sessionId: string, model: string): Promise<
 export const clearSessionVoiceConfig = (sessionId: string): Promise<void> =>
   invokeTauri('clear_session_voice_config', { session_id: sessionId });
 
+export interface SessionReflectionSettings {
+  enabled?: boolean | null;
+}
+
+export const getSessionReflectionSettings = (
+  sessionId: string,
+): Promise<SessionReflectionSettings | null> =>
+  invokeTauri('get_session_reflection_settings', { session_id: sessionId });
+
+export const setSessionReflectionEnabled = (
+  sessionId: string,
+  enabled: boolean,
+): Promise<void> =>
+  invokeTauri('set_session_reflection_enabled', { session_id: sessionId, enabled });
+
+export const clearSessionReflectionSettings = (sessionId: string): Promise<void> =>
+  invokeTauri('clear_session_reflection_settings', { session_id: sessionId });
+
 export const getWhisperModels = (): Promise<unknown[]> =>
   invokeTauri('get_whisper_models');
 

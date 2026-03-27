@@ -67,7 +67,7 @@ pub struct ReflectionConfig {
 impl Default for ReflectionConfig {
     fn default() -> Self {
         Self {
-            enabled: false,         // Opt-in
+            enabled: true,          // On by default
             quality_threshold: 0.6, // Trigger reflection below 60% quality
             max_injected_reflections: 3,
             max_retry_attempts: 1,

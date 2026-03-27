@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen, within } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { TabBar } from './TabBar';
@@ -64,5 +64,83 @@ describe('TabBar', () => {
     fireEvent.contextMenu(within(tablist as HTMLElement).getByRole('tab'));
 
     expect(screen.queryByRole('button', { name: /Rendered View/i })).not.toBeInTheDocument();
+  });
+
+  it('saves a dirty tab before closing when Save is chosen', async () => {
+    const onClose = vi.fn(() => true);
+    const onSaveTab = vi.fn().mockResolvedValue(true);
+
+    render(
+      <TabBar
+        tabs={[makeTab({ isDirty: true })]}
+        activeTabId="tab-1"
+        onActivate={vi.fn()}
+        onClose={onClose}
+        onReorder={vi.fn()}
+        onSaveTab={onSaveTab}
+        onRenameTab={vi.fn().mockResolvedValue(undefined)}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'Close README.md' }));
+    expect(screen.getByRole('dialog')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+
+    await waitFor(() => {
+      expect(onSaveTab).toHaveBeenCalledWith('tab-1');
+      expect(onClose).toHaveBeenCalledWith('tab-1', { force: true });
+    });
+
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+  });
+
+  it('discards a dirty tab without saving when Discard is chosen', async () => {
+    const onClose = vi.fn(() => true);
+    const onSaveTab = vi.fn().mockResolvedValue(true);
+
+    render(
+      <TabBar
+        tabs={[makeTab({ isDirty: true })]}
+        activeTabId="tab-1"
+        onActivate={vi.fn()}
+        onClose={onClose}
+        onReorder={vi.fn()}
+        onSaveTab={onSaveTab}
+        onRenameTab={vi.fn().mockResolvedValue(undefined)}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'Close README.md' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Discard' }));
+
+    await waitFor(() => {
+      expect(onClose).toHaveBeenCalledWith('tab-1', { force: true });
+    });
+    expect(onSaveTab).not.toHaveBeenCalled();
+  });
+
+  it('dismisses the dirty-tab dialog on Escape', () => {
+    const onClose = vi.fn(() => true);
+
+    render(
+      <TabBar
+        tabs={[makeTab({ isDirty: true })]}
+        activeTabId="tab-1"
+        onActivate={vi.fn()}
+        onClose={onClose}
+        onReorder={vi.fn()}
+        onSaveTab={vi.fn().mockResolvedValue(true)}
+        onRenameTab={vi.fn().mockResolvedValue(undefined)}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'Close README.md' }));
+    expect(screen.getByRole('dialog')).toBeInTheDocument();
+
+    fireEvent.keyDown(document, { key: 'Escape' });
+
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    expect(onClose).not.toHaveBeenCalled();
   });
 });

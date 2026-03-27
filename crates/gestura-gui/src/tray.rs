@@ -414,7 +414,7 @@ fn build_sessions_submenu(app: &AppHandle) -> tauri::Result<Submenu<tauri::Wry>>
     );
 
     // Use SubmenuBuilder to properly create submenu with items
-    let mut builder = SubmenuBuilder::with_id(app, "sessions", "📋 Agent Sessions");
+    let mut builder = SubmenuBuilder::with_id(app, "sessions", "Agent Sessions");
 
     if active_sessions.is_empty() && closed_sessions.is_empty() {
         let no_sessions = MenuItem::with_id(
@@ -440,7 +440,7 @@ fn build_sessions_submenu(app: &AppHandle) -> tauri::Result<Submenu<tauri::Wry>>
             // Add individual active sessions (limit to 5 most recent)
             for session in active_sessions.iter().take(5) {
                 let label = format!(
-                    "💬 {} ({})",
+                    "{} ({})",
                     session.title,
                     format_minimalist_timestamp(&session.last_active)
                 );
@@ -473,7 +473,7 @@ fn build_sessions_submenu(app: &AppHandle) -> tauri::Result<Submenu<tauri::Wry>>
             // Add individual closed sessions (limit to 3 most recent)
             for session in closed_sessions.iter().take(3) {
                 let label = format!(
-                    "📁 {} ({})",
+                    "{} ({})",
                     session.title,
                     format_minimalist_timestamp(&session.last_active)
                 );
@@ -494,7 +494,7 @@ fn build_sessions_submenu(app: &AppHandle) -> tauri::Result<Submenu<tauri::Wry>>
                 let restore_all = MenuItem::with_id(
                     app,
                     "restore_all",
-                    "🔄 Restore All Sessions",
+                    "Restore All Sessions",
                     true,
                     Option::<&str>::None,
                 )?;

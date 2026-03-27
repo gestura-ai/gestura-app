@@ -177,6 +177,12 @@ pub struct RequestMetadata {
     /// This is useful for adapter layers (GUI/CLI) that expose legacy commands
     /// which historically performed a single LLM call without tools.
     pub tools_enabled: Option<bool>,
+    /// Optional per-request override for whether experiential reflection is enabled.
+    ///
+    /// When `None`, the pipeline uses its configured default reflection behavior.
+    /// This is primarily used by session adapters so sessions can inherit the
+    /// global default or explicitly override it.
+    pub reflection_enabled: Option<bool>,
     /// Workspace directory for sandboxed file/shell operations
     /// If None, operations are unrestricted (legacy behavior)
     pub workspace_dir: Option<PathBuf>,
@@ -520,6 +526,12 @@ impl AgentRequest {
     /// tools (even if the model asks) for this request.
     pub fn with_tools_enabled(mut self, enabled: bool) -> Self {
         self.metadata.tools_enabled = Some(enabled);
+        self
+    }
+
+    /// Enable or disable experiential reflection for this request.
+    pub fn with_reflection_enabled(mut self, enabled: bool) -> Self {
+        self.metadata.reflection_enabled = Some(enabled);
         self
     }
 

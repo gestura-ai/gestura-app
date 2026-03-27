@@ -16,6 +16,11 @@ import { useTabState } from '../hooks/useTabState';
 import { editorReadFile, editorWriteFile, editorGitDiff, editorRenameFile } from '../../../services/tauri/editor';
 import { isMarkdownPath, languageFromPath } from '../utils/language';
 import type { EditorLanguage } from '../utils/language';
+import {
+  WORKSPACE_CHANGED_EVENT,
+  WORKSPACE_ENTRY_RENAMED_EVENT,
+  dispatchWorkspaceEntryRenamed,
+} from '../utils/workspaceEvents';
 import { TabBar } from './TabBar';
 import { EditorPane } from './EditorPane';
 import { DiffPane } from './DiffPane';
@@ -44,6 +49,7 @@ export const EditorArea: React.FC<EditorAreaProps> = ({ sessionId, isDark }) => 
     reorderTabs,
     updateScrollOffset,
     renameTab,
+    remapTabsForPath,
   } = useTabState();
 
   // ── Open a file by rel path ─────────────────────────────────────────────────
@@ -106,23 +112,26 @@ export const EditorArea: React.FC<EditorAreaProps> = ({ sessionId, isDark }) => 
     try {
       await editorRenameFile(sessionId, tab.relPath, newRelPath);
       renameTab(tabId, newLabel, newRelPath);
+      dispatchWorkspaceEntryRenamed({ oldRelPath: tab.relPath, newRelPath });
     } catch (err) {
       console.warn('[EditorArea] rename failed:', tab.relPath, '->', newRelPath, err);
     }
   }, [tabs, sessionId, renameTab]);
 
   // ── Save a tab ──────────────────────────────────────────────────────────────
-  const handleSave = useCallback(async (tabId: string) => {
+  const handleSave = useCallback(async (tabId: string): Promise<boolean> => {
     const tab = tabs.find((t) => t.id === tabId);
-    if (!tab || tab.kind !== 'text' || tab.viewMode !== 'edit') return;
+    if (!tab || tab.kind !== 'text' || tab.viewMode !== 'edit') return false;
     try {
       await editorWriteFile(sessionId, tab.relPath, tab.content);
       markTabClean(tabId);
       tabs
         .filter((openTabItem) => openTabItem.relPath === tab.relPath && openTabItem.viewMode === 'preview')
         .forEach((previewTab) => refreshTabContent(previewTab.id, tab.content));
+      return true;
     } catch (err) {
       console.warn('[EditorArea] save failed:', tab.relPath, err);
+      return false;
     }
   }, [tabs, sessionId, markTabClean, refreshTabContent]);
 
@@ -217,9 +226,19 @@ export const EditorArea: React.FC<EditorAreaProps> = ({ sessionId, isDark }) => 
         }
       }
     };
-    window.addEventListener('gestura:workspace:changed', handler);
-    return () => window.removeEventListener('gestura:workspace:changed', handler);
+    window.addEventListener(WORKSPACE_CHANGED_EVENT, handler);
+    return () => window.removeEventListener(WORKSPACE_CHANGED_EVENT, handler);
   }, [sessionId, refreshTabContent]);
+
+  useEffect(() => {
+    const handler = (event: Event) => {
+      const detail = (event as CustomEvent<{ oldRelPath: string; newRelPath: string }>).detail;
+      if (!detail || detail.oldRelPath === detail.newRelPath) return;
+      remapTabsForPath(detail.oldRelPath, detail.newRelPath);
+    };
+    window.addEventListener(WORKSPACE_ENTRY_RENAMED_EVENT, handler);
+    return () => window.removeEventListener(WORKSPACE_ENTRY_RENAMED_EVENT, handler);
+  }, [remapTabsForPath]);
 
 
 
@@ -232,6 +251,7 @@ export const EditorArea: React.FC<EditorAreaProps> = ({ sessionId, isDark }) => 
           onActivate={activateTab}
           onClose={closeTab}
           onReorder={reorderTabs}
+          onSaveTab={handleSave}
           onRenameTab={handleRenameTab}
           onOpenRenderedView={handleOpenRenderedView}
         />

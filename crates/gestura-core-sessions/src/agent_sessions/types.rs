@@ -1569,6 +1569,21 @@ pub struct SessionVoiceConfig {
     pub model: Option<String>,
 }
 
+/// Session-scoped experiential reflection override.
+///
+/// This uses sparse override semantics so sessions inherit the current global
+/// reflection default unless they explicitly opt in or out.
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+pub struct SessionReflectionSettings {
+    /// Override whether experiential reflection is enabled for this session.
+    ///
+    /// - `None` => inherit the current global `AppConfig.pipeline.reflection.enabled`
+    /// - `Some(true)` => force reflection on for this session
+    /// - `Some(false)` => force reflection off for this session
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub enabled: Option<bool>,
+}
+
 /// Permission level for tool execution.
 ///
 /// Note: Phase 3 will consolidate this with the core permission/policy model.
@@ -1671,6 +1686,9 @@ pub struct SessionState {
     /// Session-scoped tool settings.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tool_settings: Option<SessionToolSettings>,
+    /// Session-scoped experiential reflection settings.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reflection_settings: Option<SessionReflectionSettings>,
     /// Paused execution state for resumable sessions.
     ///
     /// When the user pauses (cancels) a streaming response, the execution state
@@ -2415,5 +2433,25 @@ mod tests {
         assert_eq!(activity_log.len(), 1);
         assert_eq!(activity_log[0]["event_type"], "agent-stream-tool-result");
         assert_eq!(activity_log[0]["payload"]["name"], "file");
+    }
+
+    #[test]
+    fn reflection_settings_round_trip_through_session_json() {
+        let mut session = AgentSession::new_sandbox(None).unwrap();
+        session.state.reflection_settings = Some(SessionReflectionSettings {
+            enabled: Some(false),
+        });
+
+        let json = session.to_pretty_json().unwrap();
+        let restored: AgentSession = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(
+            restored
+                .state
+                .reflection_settings
+                .as_ref()
+                .and_then(|settings| settings.enabled),
+            Some(false)
+        );
     }
 }

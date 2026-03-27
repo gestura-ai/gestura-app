@@ -67,13 +67,6 @@ function nextStatus(s: TaskStatus): TaskStatus {
   return STATUS_ORDER[(idx + 1) % STATUS_ORDER.length];
 }
 
-function summarizeRuntimeTasks(tasks: TaskRuntimeSnapshot['ready_tasks'], limit = 3): string | null {
-  if (tasks.length === 0) return null;
-  const names = tasks.slice(0, limit).map((task) => task.name);
-  const extra = tasks.length - names.length;
-  return extra > 0 ? `${names.join(', ')} +${extra} more` : names.join(', ');
-}
-
 export function TaskPanel({
   isOpen, onClose, sessionId, tasks, runtimeTaskSnapshot, highlightedTaskId, onRefreshTasks, onSendMessage, onShowToast,
 }: TaskPanelProps) {
@@ -203,39 +196,6 @@ export function TaskPanel({
                   {saving ? "Saving..." : "Add Task"}
                 </button>
               </div>
-            </div>
-          )}
-
-          {runtimeTaskSnapshot && (
-            <div className="task-runtime-summary" aria-label="Runtime task status">
-              <div className="task-runtime-summary-header">
-                <strong>Runtime focus</strong>
-                {runtimeTaskSnapshot.current_task && (
-                  <span className="task-runtime-current">
-                    {runtimeTaskSnapshot.current_task.name} [{runtimeTaskSnapshot.current_task.status}]
-                  </span>
-                )}
-              </div>
-              <p>{runtimeTaskSnapshot.status_message}</p>
-              {runtimeTaskSnapshot.missing_requirements.length > 0 && (
-                <p>
-                  Remaining checks: {runtimeTaskSnapshot.missing_requirements.join(', ')}
-                </p>
-              )}
-              {summarizeRuntimeTasks(runtimeTaskSnapshot.ready_tasks) && (
-                <p>Ready now: {summarizeRuntimeTasks(runtimeTaskSnapshot.ready_tasks)}</p>
-              )}
-              {!runtimeTaskSnapshot.ready_tasks.length
-                && summarizeRuntimeTasks(runtimeTaskSnapshot.parallel_ready_tasks) && (
-                  <p>
-                    Parallel-ready: {summarizeRuntimeTasks(runtimeTaskSnapshot.parallel_ready_tasks)}
-                  </p>
-                )}
-              {!runtimeTaskSnapshot.ready_tasks.length
-                && !runtimeTaskSnapshot.parallel_ready_tasks.length
-                && summarizeRuntimeTasks(runtimeTaskSnapshot.blocked_tasks) && (
-                  <p>Blocked on: {summarizeRuntimeTasks(runtimeTaskSnapshot.blocked_tasks)}</p>
-                )}
             </div>
           )}
 

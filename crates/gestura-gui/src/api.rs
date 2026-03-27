@@ -93,6 +93,9 @@ async fn run_single_shot_pipeline(
     source: RequestSource,
     session_id: Option<&str>,
 ) -> Result<String, String> {
+    let reflection_enabled = session_id.map(|sid| {
+        crate::window_manager::get_effective_session_reflection_enabled_from_config(sid, &cfg)
+    });
     let pipeline = AgentPipeline::with_provider_optimized_config(cfg);
     let mut request = AgentRequest::new(input.into())
         .with_streaming(false)
@@ -101,6 +104,9 @@ async fn run_single_shot_pipeline(
 
     if let Some(sid) = session_id {
         request = request.with_session(sid);
+    }
+    if let Some(enabled) = reflection_enabled {
+        request = request.with_reflection_enabled(enabled);
     }
 
     pipeline
@@ -4396,6 +4402,8 @@ pub async fn process_agent_message_streaming(
         use gestura_core::pipeline::PermissionLevel;
 
         let tool_settings = crate::window_manager::get_session_tool_settings_from_config(sid, &cfg);
+        let reflection_enabled =
+            crate::window_manager::get_effective_session_reflection_enabled_from_config(sid, &cfg);
         let perm_level = match tool_settings.permission_level {
             crate::window_manager::SessionPermissionLevel::Sandbox => PermissionLevel::Sandbox,
             crate::window_manager::SessionPermissionLevel::Restricted => {
@@ -4403,7 +4411,9 @@ pub async fn process_agent_message_streaming(
             }
             crate::window_manager::SessionPermissionLevel::Full => PermissionLevel::Full,
         };
-        request = request.with_permission_level(perm_level);
+        request = request
+            .with_permission_level(perm_level)
+            .with_reflection_enabled(reflection_enabled);
 
         // Pass enabled tools to the pipeline so the agent knows what tools are available.
         // Only include tools that are explicitly enabled (value == true).
@@ -5224,6 +5234,8 @@ pub async fn resume_agent_streaming(
     if let Some(ref sid) = resolved_session_id {
         use gestura_core::pipeline::PermissionLevel;
         let tool_settings = crate::window_manager::get_session_tool_settings_from_config(sid, &cfg);
+        let reflection_enabled =
+            crate::window_manager::get_effective_session_reflection_enabled_from_config(sid, &cfg);
         let perm_level = match tool_settings.permission_level {
             crate::window_manager::SessionPermissionLevel::Sandbox => PermissionLevel::Sandbox,
             crate::window_manager::SessionPermissionLevel::Restricted => {
@@ -5231,7 +5243,9 @@ pub async fn resume_agent_streaming(
             }
             crate::window_manager::SessionPermissionLevel::Full => PermissionLevel::Full,
         };
-        request = request.with_permission_level(perm_level);
+        request = request
+            .with_permission_level(perm_level)
+            .with_reflection_enabled(reflection_enabled);
         let enabled_tools: Vec<String> = tool_settings
             .enabled_tools
             .iter()
@@ -8449,6 +8463,43 @@ pub fn set_session_voice_model(session_id: String, model: String) -> Result<(), 
 pub fn clear_session_voice_config(session_id: String) -> Result<(), String> {
     crate::window_manager::clear_session_voice_config(&session_id);
     tracing::info!(session_id = %session_id, "Session voice config cleared (using global config)");
+    Ok(())
+}
+
+/// Get the session reflection override for a session.
+///
+/// Note: This command uses `snake_case` argument names for JS↔Rust interop.
+#[tauri::command(rename_all = "snake_case")]
+pub fn get_session_reflection_settings(
+    session_id: String,
+) -> Option<crate::window_manager::SessionReflectionSettings> {
+    crate::window_manager::get_session_reflection_settings(&session_id)
+}
+
+/// Set whether experiential reflection is enabled for a specific session.
+///
+/// Note: This command uses `snake_case` argument names for JS↔Rust interop.
+#[tauri::command(rename_all = "snake_case")]
+pub fn set_session_reflection_enabled(session_id: String, enabled: bool) -> Result<(), String> {
+    crate::window_manager::set_session_reflection_enabled(&session_id, enabled);
+    tracing::info!(
+        session_id = %session_id,
+        enabled,
+        "Session reflection override updated"
+    );
+    Ok(())
+}
+
+/// Clear the session reflection override so the session inherits the global default.
+///
+/// Note: This command uses `snake_case` argument names for JS↔Rust interop.
+#[tauri::command(rename_all = "snake_case")]
+pub fn clear_session_reflection_settings(session_id: String) -> Result<(), String> {
+    crate::window_manager::clear_session_reflection_settings(&session_id);
+    tracing::info!(
+        session_id = %session_id,
+        "Session reflection override cleared (using global config)"
+    );
     Ok(())
 }
 

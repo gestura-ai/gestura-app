@@ -11,6 +11,7 @@ use uuid::Uuid;
 
 use gestura_core::agent_sessions::{
     AgentSessionStore, FileAgentSessionStore, SessionFilter, SessionToolSettingsConfigExt,
+    effective_session_reflection_enabled,
 };
 use gestura_core::config::AppConfigSecurityExt;
 
@@ -116,7 +117,8 @@ fn from_core_session(session: gestura_core::agent_sessions::AgentSession) -> Age
 /// (`crate::window_manager::ConversationMessage`, etc.) used by backend commands.
 pub use gestura_core::agent_sessions::{
     ConversationMessage, MessageSource, SessionActivityEvent, SessionLlmConfig,
-    SessionPermissionLevel, SessionState, SessionToolCall, SessionToolSettings, SessionVoiceConfig,
+    SessionPermissionLevel, SessionReflectionSettings, SessionState, SessionToolCall,
+    SessionToolSettings, SessionVoiceConfig,
 };
 
 /// Build effective session tool settings from a caller-provided global config.
@@ -140,6 +142,18 @@ pub fn get_session_tool_settings_from_config(
     }
 
     effective
+}
+
+/// Resolve the effective reflection toggle for a session using the provided
+/// global config as the fallback default.
+pub fn get_effective_session_reflection_enabled_from_config(
+    session_id: &str,
+    config: &gestura_core::config::AppConfig,
+) -> bool {
+    get_session_state(session_id)
+        .as_ref()
+        .map(|state| effective_session_reflection_enabled(state, config))
+        .unwrap_or(config.pipeline.reflection.enabled)
 }
 
 /// Build a sparse per-session tool-settings override without snapshotting the
@@ -1438,6 +1452,51 @@ pub fn clear_session_voice_config(session_id: &str) {
             let mut sessions = manager.sessions.lock().unwrap();
             if let Some(session) = sessions.get_mut(session_id) {
                 session.state.voice_config = None;
+            }
+        }
+
+        manager.save_sessions_to_disk();
+    }
+}
+
+/// Get the session reflection settings for a session.
+///
+/// Returns `None` when no session-specific override is set (use global config).
+pub fn get_session_reflection_settings(session_id: &str) -> Option<SessionReflectionSettings> {
+    let result = get_session_state(session_id).and_then(|s| s.reflection_settings);
+    tracing::debug!(
+        session_id = %session_id,
+        config = ?result,
+        "get_session_reflection_settings returning"
+    );
+    result
+}
+
+/// Set a session-scoped reflection override and persist it immediately.
+pub fn set_session_reflection_enabled(session_id: &str, enabled: bool) {
+    if let Some(manager) = get_window_manager() {
+        {
+            let mut sessions = manager.sessions.lock().unwrap();
+            if let Some(session) = sessions.get_mut(session_id) {
+                let reflection_settings = session
+                    .state
+                    .reflection_settings
+                    .get_or_insert_with(Default::default);
+                reflection_settings.enabled = Some(enabled);
+            }
+        }
+
+        manager.save_sessions_to_disk();
+    }
+}
+
+/// Clear the session reflection override so the session inherits the global default.
+pub fn clear_session_reflection_settings(session_id: &str) {
+    if let Some(manager) = get_window_manager() {
+        {
+            let mut sessions = manager.sessions.lock().unwrap();
+            if let Some(session) = sessions.get_mut(session_id) {
+                session.state.reflection_settings = None;
             }
         }
 

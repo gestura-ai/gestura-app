@@ -190,3 +190,74 @@
 .tab-context-menu button:hover {
   background: rgba(var(--accent-primary-rgb, 37, 99, 235), 0.1);
 }
+
+/* ─── Dirty-close dialog ─────────────────────────────────────────────────────── */
+
+.tab-close-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 320;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: rgba(12, 16, 24, 0.42);
+  backdrop-filter: blur(10px);
+}
+
+.tab-close-dialog {
+  width: min(420px, 100%);
+  padding: 18px;
+  border-radius: 14px;
+  border: 1px solid var(--glass-border);
+  background: var(--bg-glass-strong);
+  box-shadow: var(--shadow-lg, 0 24px 56px rgba(0, 0, 0, 0.34));
+}
+
+.tab-close-dialog__title {
+  margin: 0;
+  color: var(--text-primary);
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.tab-close-dialog__body {
+  margin: 10px 0 0;
+  color: var(--text-secondary);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.tab-close-dialog__actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 16px;
+}
+
+.tab-close-dialog__button {
+  border: 1px solid var(--glass-border);
+  border-radius: 9px;
+  background: rgba(255, 255, 255, 0.02);
+  color: var(--text-primary);
+  font: inherit;
+  padding: 8px 12px;
+  cursor: pointer;
+  transition: background 0.12s ease, border-color 0.12s ease, opacity 0.12s ease;
+}
+
+.tab-close-dialog__button:hover:not(:disabled) {
+  background: rgba(var(--accent-primary-rgb, 37, 99, 235), 0.08);
+  border-color: rgba(var(--accent-primary-rgb, 37, 99, 235), 0.35);
+}
+
+.tab-close-dialog__button:disabled {
+  opacity: 0.64;
+  cursor: not-allowed;
+}
+
+.tab-close-dialog__button--primary {
+  background: rgba(var(--accent-primary-rgb, 37, 99, 235), 0.14);
+  border-color: rgba(var(--accent-primary-rgb, 37, 99, 235), 0.42);
+  color: var(--accent-primary);
+}

@@ -397,6 +397,9 @@ async fn main() {
             gestura_gui::api::set_session_voice_provider,
             gestura_gui::api::set_session_voice_model,
             gestura_gui::api::clear_session_voice_config,
+            gestura_gui::api::get_session_reflection_settings,
+            gestura_gui::api::set_session_reflection_enabled,
+            gestura_gui::api::clear_session_reflection_settings,
             // Session tool and permission settings
             gestura_gui::api::get_session_tool_settings,
             gestura_gui::api::set_session_permission_level,

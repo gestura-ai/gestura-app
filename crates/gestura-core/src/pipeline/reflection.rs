@@ -478,7 +478,7 @@ impl AgentPipeline {
     /// response qualifies for reflection.
     ///
     /// This is the only extra-model-call step in the reflection flow, which is
-    /// why the feature stays opt-in and behind a quality gate.
+    /// why the feature stays behind a quality gate even though it is enabled by default.
     pub(super) async fn maybe_generate_reflection(
         &self,
         request_input: &str,
@@ -488,7 +488,7 @@ impl AgentPipeline {
         _cancel_token: &CancellationToken,
         max_iterations: usize,
     ) -> Option<GeneratedReflection> {
-        if !self.pipeline_config.reflection.enabled {
+        if !self.reflection_enabled_for(metadata) {
             return None;
         }
 
