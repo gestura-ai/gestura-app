@@ -47,6 +47,12 @@ Each archive contains a single executable named:
 - macOS/Linux: `gestura`
 - Windows: `gestura.exe`
 
+Homebrew note:
+
+- The macOS CLI archive (`gestura-cli-${TAG}-macos-universal.tar.gz`) is the
+  canonical standalone release asset for Homebrew formula/tap submissions.
+- Use the matching SHA-256 entry from `gestura-${TAG}-SHA256SUMS.txt`.
+
 ### Checksums
 
 For each release tag, publish:

@@ -49,10 +49,10 @@ cargo build --release --target x86_64-apple-darwin --features tauri-gui
 
 ## Package Managers
 
-### Homebrew (macOS/Linux)
-- **Formula**: `packaging/homebrew/haptic-harmony-simulator.rb`
-- **Installation**: `brew install gestura-ai/tap/haptic-harmony-simulator`
-- **Auto-update**: Via GitHub Actions on release
+### Homebrew (standalone CLI)
+- **Source asset**: GitHub release asset `gestura-cli-${TAG}-macos-universal.tar.gz`
+- **Checksum source**: `gestura-${TAG}-SHA256SUMS.txt`
+- **Submission model**: Homebrew tap/formula updates are downstream from the GitHub release; this repo does not currently store the tap formula
 
 ### Chocolatey (Windows)
 - **Package**: Auto-generated from release
@@ -91,17 +91,10 @@ Builds:
 - Both CLI and GUI versions
 - Uploads to GitHub releases
 
-### Package Manager Publishing (`.github/workflows/package-managers.yml`)
-Triggers on:
-- Release published
-- Manual dispatch
+### Downstream package-manager publishing
+This repository currently ships the canonical GitHub release assets used by downstream package-manager workflows/manual submissions.
 
-Publishes to:
-- Homebrew tap
-- Chocolatey repository
-- Winget repository
-- Snap store
-- Creates AppImage
+Notably for Homebrew, the standalone macOS CLI tarball is produced directly by the release packaging scripts and published on every tagged release.
 
 ### Continuous Integration (`.github/workflows/ci.yml`)
 Triggers on:
@@ -324,16 +317,15 @@ git push origin v1.0.0
 The CI/CD system will automatically:
 - Build all platform binaries
 - Create GitHub release
-- Publish to package managers
-- Update Homebrew formula
-- Submit to Winget
-- Publish Snap package
+- Upload full installers and standalone CLI archives
 
 ### 4. Manual Package Updates (if needed)
 ```bash
-# Update Homebrew formula
-cd packaging/homebrew
-# Edit haptic-harmony-simulator.rb with new version/checksums
+# Gather the Homebrew source inputs from the release
+# - gestura-cli-vX.Y.Z-macos-universal.tar.gz
+# - gestura-vX.Y.Z-SHA256SUMS.txt
+
+# Update the external Homebrew tap/formula with the new URL + checksum
 
 # Update Flatpak manifest
 # Edit ai.gestura.HapticHarmonySimulator.yml
@@ -361,10 +353,9 @@ cd packaging/homebrew
 ## Security Considerations
 
 ### Secrets Required
-- `HOMEBREW_TAP_TOKEN`: GitHub token for Homebrew tap
-- `CHOCOLATEY_API_KEY`: Chocolatey API key
-- `WINGET_TOKEN`: GitHub token for Winget submissions
-- `SNAPCRAFT_TOKEN`: Snapcraft store credentials
+- macOS signing/notarization secrets for `.github/workflows/release.yml`
+- Windows signing certificate secrets for `.github/workflows/release.yml`
+- Any Homebrew tap token is used in downstream tap automation, not by the in-repo release workflow
 
 ### Code Signing (Future)
 - macOS: Apple Developer certificate

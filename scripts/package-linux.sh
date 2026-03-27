@@ -8,6 +8,7 @@
 #  - Build CLI and stage it under crates/gestura-gui/binaries/ so Tauri can
 #    bundle it into DEB/RPM installers
 #  - Run `cargo tauri build` to produce DEB/RPM
+#  - Package a standalone CLI tarball alongside the GUI installers
 #  - Copy outputs into dist/linux using canonical artifact names
 #
 # Notes:
@@ -71,6 +72,7 @@ log_info "Starting Linux packaging for ${APP_DISPLAY_NAME} (${TAG})"
 check_prerequisites() {
   require_cmd cargo
   require_cmd npm
+  require_cmd tar
 
   if ! command -v dpkg-deb >/dev/null 2>&1; then
     log_warn "dpkg-deb not found; DEB bundling may fail"
@@ -157,7 +159,8 @@ build_gui() {
   (cd "$GUI_DIR" && cargo tauri build --features "$FEATURES" --target "$TARGET_TRIPLE")
 }
 
-# collect_artifacts copies DEB/RPM outputs into the dist dir with canonical names.
+# collect_artifacts copies DEB/RPM outputs and the standalone CLI archive into the
+# dist dir with canonical names.
 collect_artifacts() {
   local out_dir
   out_dir="$(ensure_fresh_dist_dir "$DIST_DIR")"
@@ -204,6 +207,13 @@ collect_artifacts() {
   else
     log_warn "No .rpm found under bundle output"
   fi
+
+  local cli_src="target/${TARGET_TRIPLE}/release/${APP_NAME}"
+  local cli_archive="${out_dir}/${APP_NAME}-cli-${TAG}-linux-${ARCH_LABEL}.tar.gz"
+  [ -f "$cli_src" ] || die "CLI binary not found at ${cli_src}"
+
+  tar -C "$(dirname "$cli_src")" -czf "$cli_archive" "$(basename "$cli_src")"
+  log_info "Wrote ${cli_archive}"
 
   write_sha256sums "$out_dir" "${APP_NAME}-${TAG}-SHA256SUMS.txt"
   if [ -f "${out_dir}/${APP_NAME}-${TAG}-SHA256SUMS.txt" ]; then

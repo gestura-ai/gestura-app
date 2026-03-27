@@ -206,19 +206,12 @@ jobs:
           security list-keychain -d user -s "$keychain_path"
           security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASSWORD" "$keychain_path"
 
-      - name: Build signed macOS PKG
+      - name: Build signed macOS release assets
         run: |
           ./scripts/package-mac.sh \
             --tag "$TAG" \
             --dist dist/release \
             --features 'voice-local,macos-permissions'
-
-      - name: Package signed macOS CLI archive
-        run: |
-          mkdir -p dist/release
-          tar -C target/universal-apple-darwin/release \
-            -czf "dist/release/gestura-cli-${TAG}-macos-universal.tar.gz" \
-            gestura
 
       - name: Remove per-platform checksum manifest
         run: rm -f "dist/release/gestura-${TAG}-SHA256SUMS.txt"
@@ -300,19 +293,12 @@ jobs:
             rpm
           sudo apt-get install -y libwebkit2gtk-4.1-dev 2>/dev/null || sudo apt-get install -y libwebkit2gtk-4.0-dev
 
-      - name: Build Linux packages
+      - name: Build Linux release assets
         run: |
           ./scripts/package-linux.sh \
             --tag "$TAG" \
             --dist dist/release \
             --features 'voice-local,linux-permissions'
-
-      - name: Package Linux CLI archive
-        run: |
-          mkdir -p dist/release
-          tar -C target/x86_64-unknown-linux-gnu/release \
-            -czf "dist/release/gestura-cli-${TAG}-linux-x86_64.tar.gz" \
-            gestura
 
       - name: Remove per-platform checksum manifest
         run: rm -f "dist/release/gestura-${TAG}-SHA256SUMS.txt"
@@ -382,7 +368,7 @@ jobs:
           "thumbprint=$($cert.Thumbprint)" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
           Remove-Item $certPath -Force
 
-      - name: Build Windows MSI
+      - name: Build Windows release assets
         shell: bash
         env:
           WINDOWS_CERT_THUMBPRINT: ${{ steps.import-cert.outputs.thumbprint }}
@@ -391,35 +377,6 @@ jobs:
             --tag "$TAG" \
             --dist dist/release \
             --features 'voice-local,windows-permissions'
-
-      - name: Sign Windows CLI executable
-        if: needs.prepare.outputs.publish == 'true'
-        shell: pwsh
-        env:
-          WINDOWS_CERT_THUMBPRINT: ${{ steps.import-cert.outputs.thumbprint }}
-        run: |
-          $cliPath = 'target\x86_64-pc-windows-msvc\release\gestura.exe'
-          if (-not (Test-Path $cliPath)) {
-            throw "CLI executable not found at $cliPath"
-          }
-
-          $signtool = (Get-Command signtool.exe -ErrorAction Stop).Source
-
-          & $signtool sign `
-            /sha1 $env:WINDOWS_CERT_THUMBPRINT `
-            /fd SHA256 `
-            /tr http://timestamp.digicert.com `
-            /td SHA256 `
-            $cliPath
-
-      - name: Package Windows CLI archive
-        shell: pwsh
-        run: |
-          New-Item -ItemType Directory -Force -Path dist/release | Out-Null
-          Compress-Archive `
-            -Path target/x86_64-pc-windows-msvc/release/gestura.exe `
-            -DestinationPath ("dist/release/gestura-cli-{0}-windows-x86_64.zip" -f $env:TAG) `
-            -Force
 
       - name: Remove per-platform checksum manifest
         shell: pwsh

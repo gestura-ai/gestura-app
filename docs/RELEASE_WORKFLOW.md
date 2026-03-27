@@ -44,13 +44,15 @@ The workflow fails immediately if:
    - builds a universal CLI with separate target dirs
    - stages per-arch sidecars for Tauri universal bundling
    - signs the CLI, app, and PKG
+   - publishes both the full PKG and the standalone CLI tarball used for Homebrew submission
    - verifies notarization and stapled tickets
 3. **Build Linux**
-   - builds `.deb` / `.rpm` installers and CLI tarball
+   - builds `.deb` / `.rpm` installers and the standalone CLI tarball
 4. **Build Windows**
    - imports the PFX certificate
    - injects the certificate thumbprint into `tauri.conf.json` during the build
    - signs the MSI and standalone CLI executable
+   - publishes both the MSI and standalone CLI zip
    - verifies signatures with `Get-AuthenticodeSignature`
 5. **Publish release**
    - downloads all artifacts
@@ -73,6 +75,9 @@ The workflow publishes these OS release packages and companion CLI archives:
   - `gestura-cli-vX.Y.Z-windows-x86_64.zip`
 - Checksums
   - `gestura-vX.Y.Z-SHA256SUMS.txt`
+
+The macOS standalone archive (`gestura-cli-vX.Y.Z-macos-universal.tar.gz`) is the
+canonical release asset to reference from a Homebrew formula or tap update.
 
 ## Required secrets for signed releases
 
@@ -137,4 +142,4 @@ gh workflow run release.yml -f ref=main -f publish=false
 
 - macOS and Windows signing are enforced for published releases.
 - Linux packages are built and checksummed but do not use platform code signing.
-- Release publication is intentionally separate from docs/package-manager publishing so unrelated jobs cannot block installer creation.
+- Release publication is intentionally separate from Homebrew/tap submission so unrelated downstream jobs cannot block installer creation.

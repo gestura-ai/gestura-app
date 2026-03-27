@@ -9,6 +9,7 @@
 #  - Build CLI and stage it under crates/gestura-gui/binaries/ so Tauri can
 #    bundle it into the MSI
 #  - Run `cargo tauri build` to produce an MSI
+#  - Package a standalone CLI zip alongside the GUI installer
 #  - Copy outputs into dist/windows using canonical artifact names
 #
 # Notes:
@@ -86,6 +87,10 @@ check_prerequisites() {
     *) log_warn "OSTYPE=${OSTYPE:-} (expected msys/cygwin). Continuing, but build may fail if not on Windows." ;;
   esac
 
+  if ! command -v pwsh >/dev/null 2>&1 && ! command -v powershell.exe >/dev/null 2>&1; then
+    die "Missing required command: pwsh or powershell.exe"
+  fi
+
   if [ -n "${WINDOWS_CERT_THUMBPRINT:-}" ]; then
     require_cmd node
   fi
@@ -148,6 +153,26 @@ stage_cli() {
   log_info "Staged CLI for bundling: ${dst}"
 }
 
+# sign_cli signs the standalone CLI executable before it is archived.
+sign_cli() {
+  if [ -z "${WINDOWS_CERT_THUMBPRINT:-}" ]; then
+    return 0
+  fi
+
+  local cli_src="target/${TARGET_TRIPLE}/release/${APP_NAME}.exe"
+  [ -f "$cli_src" ] || die "CLI binary not found at ${cli_src}"
+
+  if command -v pwsh >/dev/null 2>&1; then
+    CLI_SRC="$cli_src" WINDOWS_CERT_THUMBPRINT="$WINDOWS_CERT_THUMBPRINT" \
+      pwsh -NoProfile -Command "\$signtool = (Get-Command signtool.exe -ErrorAction Stop).Source; & \$signtool sign /sha1 \$env:WINDOWS_CERT_THUMBPRINT /fd SHA256 /tr http://timestamp.digicert.com /td SHA256 \$env:CLI_SRC"
+  else
+    CLI_SRC="$cli_src" WINDOWS_CERT_THUMBPRINT="$WINDOWS_CERT_THUMBPRINT" \
+      powershell.exe -NoProfile -Command "\$signtool = (Get-Command signtool.exe -ErrorAction Stop).Source; & \$signtool sign /sha1 \$env:WINDOWS_CERT_THUMBPRINT /fd SHA256 /tr http://timestamp.digicert.com /td SHA256 \$env:CLI_SRC"
+  fi
+
+  log_info "Signed ${cli_src}"
+}
+
 # stage_ffmpeg downloads a static Windows ffmpeg build (BtbN/FFmpeg-Builds) and
 # stages it as the Tauri externalBin sidecar (binaries/ffmpeg-<triple>.exe).
 #
@@ -204,7 +229,8 @@ build_gui() {
   (cd "$GUI_DIR" && cargo tauri build --features "$FEATURES" --target "$TARGET_TRIPLE")
 }
 
-# collect_artifacts copies the MSI output into the dist dir with a canonical name.
+# collect_artifacts copies the MSI output and standalone CLI archive into the dist
+# dir with canonical names.
 collect_artifacts() {
   local out_dir
   out_dir="$(ensure_fresh_dist_dir "$DIST_DIR")"
@@ -245,6 +271,22 @@ collect_artifacts() {
     log_warn "No .msi found under bundle output"
   fi
 
+  local cli_src="target/${TARGET_TRIPLE}/release/${APP_NAME}.exe"
+  local cli_archive="${out_dir}/${APP_NAME}-cli-${TAG}-windows-${ARCH_LABEL}.zip"
+  [ -f "$cli_src" ] || die "CLI binary not found at ${cli_src}"
+
+  if command -v pwsh >/dev/null 2>&1; then
+    CLI_SRC="$cli_src" CLI_ARCHIVE="$cli_archive" \
+      pwsh -NoProfile -Command "Compress-Archive -Path \$env:CLI_SRC -DestinationPath \$env:CLI_ARCHIVE -Force"
+  elif command -v powershell.exe >/dev/null 2>&1; then
+    CLI_SRC="$cli_src" CLI_ARCHIVE="$cli_archive" \
+      powershell.exe -NoProfile -Command "Compress-Archive -Path \$env:CLI_SRC -DestinationPath \$env:CLI_ARCHIVE -Force"
+  else
+    die "Missing required command: pwsh or powershell.exe"
+  fi
+
+  log_info "Wrote ${cli_archive}"
+
   write_sha256sums "$out_dir" "${APP_NAME}-${TAG}-SHA256SUMS.txt"
   if [ -f "${out_dir}/${APP_NAME}-${TAG}-SHA256SUMS.txt" ]; then
     log_info "Wrote ${out_dir}/${APP_NAME}-${TAG}-SHA256SUMS.txt"
@@ -258,6 +300,7 @@ main() {
   check_prerequisites
   build_frontend
   stage_cli
+  sign_cli
   stage_ffmpeg
   patch_tauri_windows_signing
   build_gui

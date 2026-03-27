@@ -11,6 +11,7 @@
 #  - Create a PKG that installs:
 #      - Gestura.app to /Applications
 #      - gestura CLI to /usr/local/bin/gestura
+#  - Package a standalone CLI tarball for release/Homebrew consumption
 #  - Copy outputs into dist/macos using canonical artifact names
 #
 # Notes:
@@ -88,6 +89,7 @@ check_prerequisites() {
   require_cmd npm
   require_cmd lipo
   require_cmd pkgbuild
+  require_cmd tar
   require_cmd sips
   require_cmd DeRez
   require_cmd Rez
@@ -390,6 +392,18 @@ create_pkg() {
   log_info "Wrote ${final_pkg}"
 }
 
+# package_cli_archive writes the canonical standalone macOS CLI archive.
+package_cli_archive() {
+  local out_dir="$1"
+  local cli_src="target/${TARGET_UNIVERSAL}/release/${APP_NAME}"
+  local archive_path="${out_dir}/${APP_NAME}-cli-${TAG}-macos-universal.tar.gz"
+
+  [ -f "$cli_src" ] || die "CLI binary not found at ${cli_src}"
+
+  tar -C "$(dirname "$cli_src")" -czf "$archive_path" "$(basename "$cli_src")"
+  log_info "Wrote ${archive_path}"
+}
+
 # main is the entrypoint.
 main() {
   check_prerequisites
@@ -404,6 +418,7 @@ main() {
   local out_dir
   out_dir="$(ensure_fresh_dist_dir "$DIST_DIR")"
   create_pkg "$out_dir"
+  package_cli_archive "$out_dir"
 
   write_sha256sums "$out_dir" "${APP_NAME}-${TAG}-SHA256SUMS.txt"
   if [ -f "${out_dir}/${APP_NAME}-${TAG}-SHA256SUMS.txt" ]; then
