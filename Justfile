@@ -535,6 +535,12 @@ package-macos-signed:
 	APP_BUNDLE="target/universal-apple-darwin/release/bundle/macos/Gestura.app"
 	CLI_BIN="target/universal-apple-darwin/release/gestura"
 	DIST_DIR="dist/macos-release"
+	PKG_ICON_SOURCE="crates/gestura-gui/icons/icon.png"
+	PKG_ICON_HELPER="./scripts/packaging/set-macos-custom-icon.sh"
+	DMG_FILE_ICON_SOURCE="crates/gestura-gui/icons/icon.png"
+	DMG_FILE_ICON_HELPER="./scripts/packaging/set-macos-custom-icon.sh"
+	DMG_VOLUME_ICON_SOURCE="crates/gestura-gui/icons/icon.icns"
+	DMG_VOLUME_ICON_HELPER="./scripts/packaging/set-macos-volume-icon.sh"
 
 	# Verify artifacts exist
 	if [ ! -d "${APP_BUNDLE}" ]; then
@@ -618,6 +624,8 @@ package-macos-signed:
 		echo "⚠️ PKG not signed (set APPLE_INSTALLER_IDENTITY for signing)"
 	fi
 
+	"${PKG_ICON_HELPER}" "${PKG_ICON_SOURCE}" "${SIGNED_PKG}"
+
 	# Create DMG
 	echo "💿 Creating DMG..."
 	DMG_NAME="Gestura-${VERSION}-universal.dmg"
@@ -630,6 +638,7 @@ package-macos-signed:
 
 	create-dmg \
 		--volname "Gestura" \
+		--volicon "${DMG_VOLUME_ICON_SOURCE}" \
 		--window-pos 200 120 \
 		--window-size 600 400 \
 		--icon-size 100 \
@@ -669,6 +678,8 @@ package-macos-signed:
 	else
 		echo "⚠️ DMG not signed (set APPLE_SIGNING_IDENTITY for signing)"
 	fi
+
+	"${DMG_FILE_ICON_HELPER}" "${DMG_FILE_ICON_SOURCE}" "${DIST_DIR}/${DMG_NAME}"
 
 	# Generate checksums
 	echo "🔢 Generating checksums..."
@@ -1005,10 +1016,14 @@ test-linux-app:
 # Create DMG for distribution (auto-detects universal or regular build)
 create-dmg:
 	#!/bin/bash
-	set -e
+	set -euo pipefail
 	echo "💿 Creating DMG for distribution..."
 	UNIVERSAL_PATH="target/universal-apple-darwin/release/bundle/macos/Gestura.app"
 	REGULAR_PATH="target/release/bundle/macos/Gestura.app"
+	DMG_FILE_ICON_SOURCE="crates/gestura-gui/icons/icon.png"
+	DMG_VOLUME_ICON_SOURCE="crates/gestura-gui/icons/icon.icns"
+	DMG_FILE_ICON_HELPER="./scripts/packaging/set-macos-custom-icon.sh"
+	DMG_VOLUME_ICON_HELPER="./scripts/packaging/set-macos-volume-icon.sh"
 	if [ -d "$UNIVERSAL_PATH" ]; then
 	    APP_PATH="$UNIVERSAL_PATH"
 	    echo "Using universal build"
@@ -1020,11 +1035,23 @@ create-dmg:
 	    exit 1
 	fi
 	DMG_NAME="Gestura-{{version}}-macos.dmg"
+	TMP_RW_DMG="$(mktemp "${TMPDIR:-/tmp}/gestura-dmg.XXXXXX.dmg")"
+	MOUNT_DIR="$(mktemp -d "${TMPDIR:-/tmp}/gestura-dmg-mount.XXXXXX")"
+	cleanup() {
+		hdiutil detach "$MOUNT_DIR" >/dev/null 2>&1 || true
+		rm -rf "$MOUNT_DIR" "$TMP_RW_DMG"
+	}
+	trap cleanup EXIT
 	echo "Creating ${DMG_NAME}..."
 	rm -f "${DMG_NAME}"
 	hdiutil create -volname "Gestura" \
 	    -srcfolder "$APP_PATH" \
-	    -ov -format UDZO "${DMG_NAME}"
+	    -ov -format UDRW "$TMP_RW_DMG"
+	hdiutil attach "$TMP_RW_DMG" -mountpoint "$MOUNT_DIR" -noverify -noautoopen >/dev/null
+	"${DMG_VOLUME_ICON_HELPER}" "${DMG_VOLUME_ICON_SOURCE}" "$MOUNT_DIR"
+	hdiutil detach "$MOUNT_DIR" >/dev/null
+	hdiutil convert "$TMP_RW_DMG" -ov -format UDZO -o "${DMG_NAME}" >/dev/null
+	"${DMG_FILE_ICON_HELPER}" "${DMG_FILE_ICON_SOURCE}" "${DMG_NAME}"
 	echo "✅ DMG created: ${DMG_NAME}"
 	ls -lh "${DMG_NAME}"
 

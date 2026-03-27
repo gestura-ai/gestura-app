@@ -29,6 +29,8 @@ GUI_DIR="crates/gestura-gui"
 FRONTEND_DIR="${GUI_DIR}/frontend"
 CLI_PACKAGE="gestura-cli"
 CLI_DIR="crates/gestura-cli"
+PKG_ICON_SOURCE="${GUI_DIR}/icons/icon.png"
+PKG_ICON_HELPER="${SCRIPT_DIR}/packaging/set-macos-custom-icon.sh"
 
 DIST_DIR_DEFAULT="dist/macos"
 FEATURES_DEFAULT="voice-local"
@@ -86,6 +88,13 @@ check_prerequisites() {
   require_cmd npm
   require_cmd lipo
   require_cmd pkgbuild
+  require_cmd sips
+  require_cmd DeRez
+  require_cmd Rez
+  require_cmd SetFile
+
+  [ -f "$PKG_ICON_SOURCE" ] || die "PKG icon source not found at ${PKG_ICON_SOURCE}"
+  [ -x "$PKG_ICON_HELPER" ] || die "PKG icon helper is missing or not executable: ${PKG_ICON_HELPER}"
 
   if [ -n "$SIGNING_IDENTITY" ]; then
     require_cmd codesign
@@ -331,6 +340,14 @@ find_app_bundle() {
   die "App bundle not found (expected ${universal_path}, ${regular_path}, ${universal_path_legacy}, or ${regular_path_legacy})"
 }
 
+# apply_pkg_icon assigns the branded Finder icon to the generated flat PKG.
+apply_pkg_icon() {
+  local pkg_path="$1"
+
+  [ -f "$pkg_path" ] || die "PKG not found at ${pkg_path}"
+  "$PKG_ICON_HELPER" "$PKG_ICON_SOURCE" "$pkg_path"
+}
+
 # create_pkg builds a PKG that installs the GUI + CLI.
 create_pkg() {
   local out_dir="$1"
@@ -367,6 +384,8 @@ create_pkg() {
   else
     mv "$unsigned_pkg" "$final_pkg"
   fi
+
+  apply_pkg_icon "$final_pkg"
 
   log_info "Wrote ${final_pkg}"
 }

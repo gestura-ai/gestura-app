@@ -55,7 +55,8 @@ brew install pkg-config
 # Required for DMG creation
 brew install create-dmg
 
-# Xcode Command Line Tools (includes Accelerate framework for whisper-rs BLAS)
+# Xcode Command Line Tools (includes Accelerate framework for whisper-rs BLAS
+# and the DeRez / Rez / SetFile tools used to brand generated PKG/DMG icons)
 xcode-select --install
 ```
 
@@ -248,6 +249,13 @@ export APPLE_PASSWORD="@keychain:notarytool-password"
 | PKG | `dist/macos/Gestura-{version}-universal.pkg` |
 | Checksums | `dist/macos/*.sha256` |
 | Release info | `dist/macos/RELEASE_INFO.txt` |
+
+Generated PKGs are post-processed to use the branded Finder icon from
+`crates/gestura-gui/icons/icon.png`.
+
+Generated DMGs are also branded in two places:
+- mounted volume icon from `crates/gestura-gui/icons/icon.icns`
+- Finder file icon for the final `.dmg` from `crates/gestura-gui/icons/icon.png`
 
 ---
 
