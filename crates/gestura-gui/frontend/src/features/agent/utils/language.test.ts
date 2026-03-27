@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { languageFromPath } from './language';
+import { isMarkdownPath, languageFromPath } from './language';
 
 describe('languageFromPath', () => {
   it('detects TypeScript', () => {
@@ -54,6 +54,13 @@ describe('languageFromPath', () => {
   it('detects Markdown', () => {
     expect(languageFromPath('README.md')).toBe('markdown');
     expect(languageFromPath('docs/guide.mdx')).toBe('markdown');
+    expect(isMarkdownPath('README.md')).toBe(true);
+    expect(isMarkdownPath('docs/guide.mdx')).toBe(true);
+  });
+
+  it('does not treat non-markdown files as markdown preview candidates', () => {
+    expect(isMarkdownPath('src/main.ts')).toBe(false);
+    expect(isMarkdownPath('docs/config.rst')).toBe(false);
   });
 
   it('handles dotfiles', () => {

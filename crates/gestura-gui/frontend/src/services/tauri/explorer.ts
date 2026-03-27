@@ -47,6 +47,24 @@ export const explorerOpenRootInFileManager = async (
 };
 
 /**
+ * Opens a workspace entry in the system file manager.
+ *
+ * Directories open directly. Files open their containing directory.
+ *
+ * IPC contract: `explorer_open_entry_in_file_manager` expects
+ * `{ session_id, rel_path }`.
+ */
+export const explorerOpenEntryInFileManager = async (
+  sessionId: string,
+  relPath: string
+): Promise<void> => {
+  return invokeTauri<void>('explorer_open_entry_in_file_manager', {
+    session_id: sessionId,
+    rel_path: relPath,
+  });
+};
+
+/**
  * Returns git status for all changed paths in the workspace.
  *
  * IPC contract: `explorer_git_status` expects `{ session_id }`.

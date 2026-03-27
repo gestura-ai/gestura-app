@@ -1,4 +1,4 @@
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   createTask,
   deleteTask,
@@ -14,12 +14,15 @@ interface TaskPanelProps {
   sessionId: string;
   tasks: TaskHierarchy;
   runtimeTaskSnapshot?: TaskRuntimeSnapshot | null;
+  highlightedTaskId?: string | null;
   onRefreshTasks: () => Promise<void>;
   onSendMessage: (text: string, taskId?: string | null) => Promise<void>;
   onShowToast: (msg: string, kind?: "success" | "error" | "warning" | "info") => void;
 }
 
 const STATUS_ORDER: TaskStatus[] = ["NotStarted", "InProgress", "Completed", "Cancelled"];
+const PANEL_OPEN_FOCUS_DELAY_MS = 220;
+const PANEL_ACTIVE_FOCUS_DELAY_MS = 48;
 
 function flattenTasks(tasks: TaskHierarchy): Task[] {
   return tasks.flatMap((task) => [task, ...flattenTasks(task.subtasks ?? [])]);
@@ -72,16 +75,50 @@ function summarizeRuntimeTasks(tasks: TaskRuntimeSnapshot['ready_tasks'], limit 
 }
 
 export function TaskPanel({
-  isOpen, onClose, sessionId, tasks, runtimeTaskSnapshot, onRefreshTasks, onSendMessage, onShowToast,
+  isOpen, onClose, sessionId, tasks, runtimeTaskSnapshot, highlightedTaskId, onRefreshTasks, onSendMessage, onShowToast,
 }: TaskPanelProps) {
   const [showCreateForm, setShowCreateForm] = useState(false);
   const [newName, setNewName] = useState("");
   const [newDesc, setNewDesc] = useState("");
   const [saving, setSaving] = useState(false);
   const [showBreakdown, setShowBreakdown] = useState(false);
+  const taskItemRefs = useRef(new Map<string, HTMLDivElement>());
+  const focusTimerRef = useRef<ReturnType<typeof window.setTimeout> | null>(null);
+  const previousIsOpenRef = useRef(false);
 
   const allTasks = flattenTasks(tasks);
   const firstOpenTask = allTasks.find((task) => !isTerminalTaskStatus(task.status)) ?? allTasks[0];
+
+  useEffect(() => {
+    const wasOpen = previousIsOpenRef.current;
+    previousIsOpenRef.current = isOpen;
+
+    if (focusTimerRef.current) {
+      clearTimeout(focusTimerRef.current);
+      focusTimerRef.current = null;
+    }
+
+    if (!isOpen || !highlightedTaskId) return;
+
+    const delay = wasOpen ? PANEL_ACTIVE_FOCUS_DELAY_MS : PANEL_OPEN_FOCUS_DELAY_MS;
+    focusTimerRef.current = window.setTimeout(() => {
+      const node = taskItemRefs.current.get(highlightedTaskId);
+      node?.scrollIntoView({ block: "center", behavior: "smooth" });
+      focusTimerRef.current = null;
+    }, delay);
+
+    return () => {
+      if (focusTimerRef.current) {
+        clearTimeout(focusTimerRef.current);
+        focusTimerRef.current = null;
+      }
+    };
+  }, [highlightedTaskId, isOpen, tasks]);
+
+  const registerTaskItemRef = useCallback((taskId: string, element: HTMLDivElement | null) => {
+    if (element) taskItemRefs.current.set(taskId, element);
+    else taskItemRefs.current.delete(taskId);
+  }, []);
 
   const handleCreate = useCallback(async () => {
     if (!newName.trim()) return;
@@ -210,6 +247,8 @@ export function TaskPanel({
                 <TaskItem
                   key={task.id}
                   task={task}
+                  highlightedTaskId={highlightedTaskId ?? null}
+                  registerTaskItemRef={registerTaskItemRef}
                   runtimeCurrentTaskId={runtimeTaskSnapshot?.current_task?.id ?? null}
                   onCycleStatus={handleCycleStatus}
                   onPlay={handlePlay}
@@ -235,6 +274,8 @@ export function TaskPanel({
 interface TaskItemProps {
   task: Task;
   depth?: number;
+  highlightedTaskId?: string | null;
+  registerTaskItemRef: (taskId: string, element: HTMLDivElement | null) => void;
   runtimeCurrentTaskId?: string | null;
   onCycleStatus: (t: Task) => Promise<void>;
   onPlay: (t: Task) => Promise<void>;
@@ -244,17 +285,22 @@ interface TaskItemProps {
 function TaskItem({
   task,
   depth = 0,
+  highlightedTaskId,
+  registerTaskItemRef,
   runtimeCurrentTaskId,
   onCycleStatus,
   onPlay,
   onDelete,
 }: TaskItemProps) {
   const isRuntimeCurrent = runtimeCurrentTaskId === task.id;
+  const isHighlighted = highlightedTaskId === task.id;
 
   return (
     <>
       <div
-        className={`task-item${depth > 0 ? " subtask" : ""}${isRuntimeCurrent ? " runtime-current" : ""}`}
+        ref={(element) => registerTaskItemRef(task.id, element)}
+        data-task-id={task.id}
+        className={`task-item${depth > 0 ? " subtask" : ""}${isRuntimeCurrent ? " runtime-current" : ""}${isHighlighted ? " linked-highlight" : ""}`}
         style={depth > 0 ? { marginLeft: `${depth * 16}px` } : undefined}
       >
         <div className="task-header">
@@ -284,6 +330,8 @@ function TaskItem({
           key={child.id}
           task={child}
           depth={depth + 1}
+          highlightedTaskId={highlightedTaskId}
+          registerTaskItemRef={registerTaskItemRef}
           runtimeCurrentTaskId={runtimeCurrentTaskId}
           onCycleStatus={onCycleStatus}
           onPlay={onPlay}

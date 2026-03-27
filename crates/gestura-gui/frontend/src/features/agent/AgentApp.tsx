@@ -14,11 +14,12 @@ import { getConfig } from '../../services/tauri/config';
 import { getSessionWorkspaceById } from '../../services/tauri/agent';
 import type { UiSettings } from '../../types/config';
 import './AgentApp.css';
+import { AgentSessionHeader } from './components/AgentSessionHeader';
 import { ChatPanel } from './components/ChatPanel';
 import { ExplorerPanel } from './components/ExplorerPanel';
 import { ShellManagerPanel } from './components/ShellManagerPanel';
 import { ToastContainer } from './components/ToastContainer';
-import type { ShellSessionRecord } from './types';
+import type { EditorOpenOptions, ShellSessionRecord } from './types';
 // Lazy-load EditorArea so that @codemirror/* (675 kB) is only fetched when the
 // user first opens the editor view — keeping the initial chat bundle small.
 const EditorArea = React.lazy(() => import('./components/EditorArea'));
@@ -30,8 +31,10 @@ export interface AgentAppProps {
 
 // ─── Editor window sizes ──────────────────────────────────────────────────────
 const EDITOR_SIZE = new LogicalSize(1200, 800);
-const CHAT_SIZE = new LogicalSize(800, 600);
-const AGENT_BOOT_TIMEOUT_MS = 1500;
+const CHAT_SIZE = new LogicalSize(550, 600);
+const MIN_AGENT_WINDOW_SIZE = new LogicalSize(500, 320);
+const AGENT_REVEAL_DELAY_MS = 0;
+const AGENT_CONFIG_WARN_TIMEOUT_MS = 1500;
 
 const prefersDarkMode = (): boolean =>
   typeof window.matchMedia === 'function'
@@ -95,12 +98,12 @@ const AgentApp: React.FC<AgentAppProps> = ({ sessionId }) => {
   const { viewMode, toggleViewMode } = useViewMode();
   const panelState = usePanelState();
   const toastState = useToast();
-  const shellSessions = useShellSessions(sessionId);
+  const shellSessions = useShellSessions(sessionId, { restoreHistory: panelState.shellManager.visible });
   const [uiSettings, setUiSettings] = useState<UiSettings>({ theme_mode: 'system', accent: 'blue' });
   const [explorerOpen, setExplorerOpen] = useState(true);
   const [chatOpen, setChatOpen] = useState(true);
+  const [headerOptionsOpen, setHeaderOptionsOpen] = useState(false);
   const [sessionWorkspace, setSessionWorkspace] = useState<string | null>(null);
-  const [headerHost, setHeaderHost] = useState<HTMLDivElement | null>(null);
   const [quickAccessHost, setQuickAccessHost] = useState<HTMLDivElement | null>(null);
   const appRef = useRef<HTMLDivElement>(null);
 
@@ -135,38 +138,38 @@ const AgentApp: React.FC<AgentAppProps> = ({ sessionId }) => {
     return [...ordered, ...extras];
   }, [shellManager.closedShellIds, shellManager.tabOrder, shellSessions]);
 
-  // Load theme configuration on mount. When the IPC resolves (or fails), mark
-  // the app as ready so the window-show effect can fire in the next commit.
+  // Reveal on the first startup tick using default UI settings, then hydrate the
+  // real config in the background. This keeps config IPC off the critical path
+  // for first visibility while still letting fast config loads apply before the
+  // window is shown (microtasks resolve before the timer fires).
   useEffect(() => {
     let cancelled = false;
-    let readyMarked = false;
-
-    const markReady = () => {
-      if (cancelled || readyMarked) return;
-      readyMarked = true;
+    const revealTimer = window.setTimeout(() => {
+      if (cancelled) return;
       setIsReady(true);
-    };
+    }, AGENT_REVEAL_DELAY_MS);
 
-    const timer = window.setTimeout(() => {
-      console.warn('[AgentApp] config load timed out — revealing window with default UI settings');
-      markReady();
-    }, AGENT_BOOT_TIMEOUT_MS);
+    const configWarnTimer = window.setTimeout(() => {
+      if (cancelled) return;
+      console.warn('[AgentApp] config load is still pending after startup — continuing with default UI settings');
+    }, AGENT_CONFIG_WARN_TIMEOUT_MS);
 
     getConfig()
       .then((cfg) => {
         if (cancelled) return;
+        window.clearTimeout(configWarnTimer);
         setUiSettings(cfg.ui);
-        markReady();
       })
       .catch((err) => {
         if (cancelled) return;
+        window.clearTimeout(configWarnTimer);
         console.warn('[AgentApp] config load failed — using defaults:', err);
-        markReady();
       });
 
     return () => {
       cancelled = true;
-      window.clearTimeout(timer);
+      window.clearTimeout(revealTimer);
+      window.clearTimeout(configWarnTimer);
     };
   }, []);
 
@@ -202,9 +205,9 @@ const AgentApp: React.FC<AgentAppProps> = ({ sessionId }) => {
     if (!isReady) return;
     const win = getCurrentWindow();
     // Set the correct initial size for the current view mode before revealing.
-    Promise.resolve(
-      win.setSize(viewMode === 'editor' ? EDITOR_SIZE : CHAT_SIZE)
-    )
+    Promise.resolve(win.setMinSize(MIN_AGENT_WINDOW_SIZE))
+      .catch((err) => console.warn('[AgentApp] min window size failed:', err))
+      .then(() => win.setSize(viewMode === 'editor' ? EDITOR_SIZE : CHAT_SIZE))
       .catch((err) => console.warn('[AgentApp] initial resize failed:', err))
       .finally(() => {
         Promise.resolve(win.show()).catch((err) => console.warn('[AgentApp] window show failed:', err));
@@ -229,20 +232,22 @@ const AgentApp: React.FC<AgentAppProps> = ({ sessionId }) => {
     return prefersDarkMode();
   }, [uiSettings.theme_mode]);
 
+  type PendingOpenFile = { relPath: string; options?: EditorOpenOptions };
+
   // Queued rel path to open after EditorArea mounts (race fix).
-  const pendingOpenRef = React.useRef<string | null>(null);
+  const pendingOpenRef = React.useRef<PendingOpenFile | null>(null);
 
   // ExplorerPanel calls this when a file is double-clicked.
   // EditorArea exposes handleOpenFile via window.__gesturaOpenFile.
-  const handleOpenFile = useCallback((relPath: string) => {
+  const handleOpenFile = useCallback((relPath: string, options?: EditorOpenOptions) => {
     const fn = (window as unknown as Record<string, unknown>).__gesturaOpenFile;
     if (typeof fn === 'function') {
-      (fn as (p: string) => void)(relPath);
+      (fn as (path: string, openOptions?: EditorOpenOptions) => void)(relPath, options);
       // Switch to editor mode if not already there
       if (viewMode !== 'editor') toggleViewMode();
     } else {
       // EditorArea hasn't mounted yet — queue the path and switch mode.
-      pendingOpenRef.current = relPath;
+      pendingOpenRef.current = { relPath, options };
       if (viewMode !== 'editor') toggleViewMode();
     }
   }, [viewMode, toggleViewMode]);
@@ -255,13 +260,15 @@ const AgentApp: React.FC<AgentAppProps> = ({ sessionId }) => {
   // Once editor mode is active, drain any queued file open.
   useEffect(() => {
     if (viewMode !== 'editor' || !pendingOpenRef.current) return;
-    const relPath = pendingOpenRef.current;
+    const pending = pendingOpenRef.current;
     pendingOpenRef.current = null;
     // EditorArea registers the handler asynchronously on its first render;
     // schedule the call in a microtask to ensure it has run.
     setTimeout(() => {
       const fn = (window as unknown as Record<string, unknown>).__gesturaOpenFile;
-      if (typeof fn === 'function') (fn as (p: string) => void)(relPath);
+      if (typeof fn === 'function') {
+        (fn as (path: string, openOptions?: EditorOpenOptions) => void)(pending.relPath, pending.options);
+      }
     }, 0);
   }, [viewMode]);
 
@@ -371,6 +378,7 @@ const AgentApp: React.FC<AgentAppProps> = ({ sessionId }) => {
           isEditor ? 'agent-app--editor' : 'agent-app--message-only',
           isEditor && explorerOpen ? 'agent-app--explorer-open' : '',
           isEditor && chatOpen ? 'agent-app--chat-open' : '',
+          headerOptionsOpen ? 'agent-app--header-options-open' : '',
           shellManager.visible ? 'agent-app--shell-open' : '',
           shellManager.visible && shellManager.mode === 'collapsed' ? 'agent-app--shell-collapsed' : '',
           // Triggers the CSS fade-in once theme + config are committed to the DOM.
@@ -379,12 +387,6 @@ const AgentApp: React.FC<AgentAppProps> = ({ sessionId }) => {
           .filter(Boolean)
           .join(' ')}
       >
-        <div
-          ref={setHeaderHost}
-          className="agent-app__header-host"
-          data-testid="agent-header-host"
-        />
-
         <div className="agent-app__main">
           {isEditor && (
             <ExplorerPanel
@@ -399,11 +401,12 @@ const AgentApp: React.FC<AgentAppProps> = ({ sessionId }) => {
           )}
           {isEditor && (
             <div className="panel-resizer panel-resizer--left">
-              <div className="panel-resizer__track" onMouseDown={explorer.handleMouseDown} />
+              <div className="panel-resizer__track" onMouseDown={headerOptionsOpen ? undefined : explorer.handleMouseDown} />
               <div
                 className="panel-resizer__thumb panel-resizer__thumb--left"
-                onMouseDown={(e) => { e.stopPropagation(); explorer.handleMouseDown(e); }}
-                onClick={() => setExplorerOpen((v) => !v)}
+                onMouseDown={headerOptionsOpen ? undefined : (e) => { e.stopPropagation(); explorer.handleMouseDown(e); }}
+                onClick={headerOptionsOpen ? undefined : () => setExplorerOpen((v) => !v)}
+                aria-disabled={headerOptionsOpen}
                 title={explorerOpen ? 'Collapse Explorer (\u2318B)' : 'Expand Explorer (\u2318B)'}
               >
                 <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
@@ -412,37 +415,47 @@ const AgentApp: React.FC<AgentAppProps> = ({ sessionId }) => {
               </div>
             </div>
           )}
-          {isEditor && (
-            <React.Suspense fallback={null}>
-              <EditorArea sessionId={sessionId} isDark={isDark} />
-            </React.Suspense>
-          )}
-          {isEditor && (
-            <div className="panel-resizer panel-resizer--right">
-              <div className="panel-resizer__track" onMouseDown={chat.handleMouseDown} />
-              <div
-                className="panel-resizer__thumb panel-resizer__thumb--right"
-                onMouseDown={(e) => { e.stopPropagation(); chat.handleMouseDown(e); }}
-                onClick={() => setChatOpen((v) => !v)}
-                title={chatOpen ? 'Collapse Chat' : 'Expand Chat'}
-              >
-                <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-                  <path d={chatOpen ? 'M9 18l6-6-6-6' : 'M15 18l-6-6 6-6'} />
-                </svg>
-              </div>
+          <div className="agent-app__workspace" data-testid="agent-workspace">
+            <AgentSessionHeader
+              sessionId={sessionId}
+              onShowToast={toastState.showToast}
+              onOptionsOverlayOpenChange={setHeaderOptionsOpen}
+            />
+
+            <div className="agent-app__workspace-main">
+              {isEditor && (
+                <React.Suspense fallback={null}>
+                  <EditorArea sessionId={sessionId} isDark={isDark} />
+                </React.Suspense>
+              )}
+              {isEditor && (
+                <div className="panel-resizer panel-resizer--right">
+                  <div className="panel-resizer__track" onMouseDown={headerOptionsOpen ? undefined : chat.handleMouseDown} />
+                  <div
+                    className="panel-resizer__thumb panel-resizer__thumb--right"
+                    onMouseDown={headerOptionsOpen ? undefined : (e) => { e.stopPropagation(); chat.handleMouseDown(e); }}
+                    onClick={headerOptionsOpen ? undefined : () => setChatOpen((v) => !v)}
+                    aria-disabled={headerOptionsOpen}
+                    title={chatOpen ? 'Collapse Chat' : 'Expand Chat'}
+                  >
+                    <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                      <path d={chatOpen ? 'M9 18l6-6-6-6' : 'M15 18l-6-6 6-6'} />
+                    </svg>
+                  </div>
+                </div>
+              )}
+              <ChatPanel
+                sessionId={sessionId}
+                onToggleEditor={toggleViewMode}
+                onWorkspaceChanged={handleWorkspaceChanged}
+                viewMode={viewMode}
+                style={chatStyle}
+                quickAccessHost={quickAccessHost}
+                panelState={panelState}
+                toastState={toastState}
+              />
             </div>
-          )}
-          <ChatPanel
-            sessionId={sessionId}
-            onToggleEditor={toggleViewMode}
-            onWorkspaceChanged={handleWorkspaceChanged}
-            viewMode={viewMode}
-            style={chatStyle}
-            headerHost={headerHost}
-            quickAccessHost={quickAccessHost}
-            panelState={panelState}
-            toastState={toastState}
-          />
+          </div>
         </div>
 
         <ShellManagerPanel

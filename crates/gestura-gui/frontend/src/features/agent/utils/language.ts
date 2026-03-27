@@ -72,3 +72,8 @@ export function languageFromPath(relPath: string): EditorLanguage {
   return EXT_MAP[ext] ?? 'plain';
 }
 
+/** Returns true when the file should support rendered markdown preview. */
+export function isMarkdownPath(relPath: string): boolean {
+  return languageFromPath(relPath) === 'markdown';
+}
+

@@ -151,7 +151,7 @@ impl SpeechProcessor {
     /// Real speech processing workflow using microphone capture and voice transcription
     async fn process_speech_workflow(&self, app: &AppHandle) -> Result<(), String> {
         // Load configuration from AppConfig instead of using stale SpeechConfig
-        let app_config = AppConfig::load();
+        let app_config = AppConfig::load_async().await;
 
         // Resolve session-scoped voice/STT overrides for the active voice target session.
         //
@@ -183,7 +183,7 @@ impl SpeechProcessor {
             Ok(d) => d,
             Err(e) => {
                 // Best-effort cleanup if a file was created.
-                let _ = std::fs::remove_file(&audio_path);
+                let _ = tokio::fs::remove_file(&audio_path).await;
 
                 // User-initiated cancel is treated as success.
                 if crate::audio_capture::is_stop_requested() || !self.is_recording() {
@@ -199,13 +199,13 @@ impl SpeechProcessor {
 
         // If the user cancelled, stop here and do not proceed to transcription.
         if crate::audio_capture::is_stop_requested() || !self.is_recording() {
-            let _ = std::fs::remove_file(&audio_path);
+            let _ = tokio::fs::remove_file(&audio_path).await;
             tracing::info!("Speech workflow cancelled after recording; skipping transcription");
             return Ok(());
         }
 
         if duration < 0.5 {
-            let _ = std::fs::remove_file(&audio_path);
+            let _ = tokio::fs::remove_file(&audio_path).await;
             return Err("Recording too short - no audio captured".to_string());
         }
 
@@ -214,7 +214,7 @@ impl SpeechProcessor {
         // we return success and drop the in-flight future (cancels HTTP requests).
         let transcribed_text_result = tokio::select! {
             _ = self.wait_for_cancel_request() => {
-                let _ = std::fs::remove_file(&audio_path);
+                let _ = tokio::fs::remove_file(&audio_path).await;
                 tracing::info!("Speech workflow cancelled before/during transcription");
                 return Ok(());
             }
@@ -224,7 +224,7 @@ impl SpeechProcessor {
         let transcribed_text = match transcribed_text_result {
             Ok(text) => text,
             Err(e) => {
-                let _ = std::fs::remove_file(&audio_path);
+                let _ = tokio::fs::remove_file(&audio_path).await;
                 return Err(e);
             }
         };
@@ -232,7 +232,7 @@ impl SpeechProcessor {
         tracing::info!("Transcription: '{}'", transcribed_text);
 
         // Clean up temp file
-        let _ = std::fs::remove_file(&audio_path);
+        let _ = tokio::fs::remove_file(&audio_path).await;
 
         if transcribed_text.trim().is_empty() {
             return Err("No speech detected in audio".to_string());
@@ -300,7 +300,7 @@ impl SpeechProcessor {
     pub async fn process_with_llm(&self, text: &str) -> Result<String, String> {
         use gestura_core::{AgentPipeline, AgentRequest, RequestSource};
 
-        let app_config = AppConfig::load();
+        let app_config = AppConfig::load_async().await;
         tracing::info!(
             "Processing voice input with AgentPipeline, LLM provider: {}",
             app_config.llm.primary

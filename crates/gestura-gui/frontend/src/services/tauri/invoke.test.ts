@@ -19,7 +19,7 @@ describe('invokeTauri', () => {
 
   it('throws TauriInvokeError and omits args from logs', async () => {
     const invokeMock = vi.mocked(tauriInvoke);
-    const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => { });
 
     invokeMock.mockRejectedValueOnce(new Error('boom'));
     const secretArgs = { token: 'SUPER_SECRET' };
@@ -39,7 +39,7 @@ describe('invokeTauri', () => {
 
   it('normalizes non-Error rejections into a message', async () => {
     const invokeMock = vi.mocked(tauriInvoke);
-    vi.spyOn(console, 'error').mockImplementation(() => {});
+    vi.spyOn(console, 'error').mockImplementation(() => { });
 
     invokeMock.mockRejectedValueOnce({ code: 123, reason: 'nope' });
     const promise = invokeTauri('obj_error');
@@ -50,7 +50,19 @@ describe('invokeTauri', () => {
     } catch (err) {
       const e = err as TauriInvokeError;
       expect(e.command).toBe('obj_error');
-      expect(e.message).toContain('code');
+      expect(e.message).toBe('nope');
     }
+  });
+
+  it('falls back to a non-empty message when tauri rejects with a blank Error', async () => {
+    const invokeMock = vi.mocked(tauriInvoke);
+    vi.spyOn(console, 'error').mockImplementation(() => { });
+
+    invokeMock.mockRejectedValueOnce(new Error(''));
+
+    await expect(invokeTauri('blank_error')).rejects.toMatchObject({
+      command: 'blank_error',
+      message: 'Error',
+    });
   });
 });

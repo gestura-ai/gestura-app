@@ -60,7 +60,7 @@ impl NotificationManager {
 
     /// Send a notification based on the event type
     pub async fn notify(&self, notification_type: NotificationType, app: Option<&AppHandle>) {
-        let config = AppConfig::load();
+        let config = AppConfig::load_async().await;
         let settings = &config.notifications;
 
         // Send sound notification

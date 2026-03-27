@@ -18,7 +18,11 @@ afterEach(() => {
   cleanup();
 });
 
-function renderTaskPanel(tasks: TaskHierarchy, runtimeTaskSnapshot: TaskRuntimeSnapshot | null = null) {
+function renderTaskPanel(
+  tasks: TaskHierarchy,
+  runtimeTaskSnapshot: TaskRuntimeSnapshot | null = null,
+  highlightedTaskId: string | null = null,
+) {
   const onSendMessage = vi.fn().mockResolvedValue(undefined);
   const onRefreshTasks = vi.fn().mockResolvedValue(undefined);
   const onShowToast = vi.fn();
@@ -31,6 +35,7 @@ function renderTaskPanel(tasks: TaskHierarchy, runtimeTaskSnapshot: TaskRuntimeS
       sessionId="session-123"
       tasks={tasks}
       runtimeTaskSnapshot={runtimeTaskSnapshot}
+      highlightedTaskId={highlightedTaskId}
       onRefreshTasks={onRefreshTasks}
       onSendMessage={onSendMessage}
       onShowToast={onShowToast}
@@ -163,6 +168,68 @@ describe('TaskPanel', () => {
     expect(screen.getByLabelText('Runtime task status')).toHaveTextContent('Verification remains open');
     expect(screen.getByLabelText('Runtime task status')).toHaveTextContent('Remaining checks: verification still required');
     expect(screen.getByText('Verify facts').closest('.task-item')).toHaveClass('runtime-current');
+  });
+
+  it('highlights a linked task when opened from chat', () => {
+    const originalScrollIntoView = window.HTMLElement.prototype.scrollIntoView;
+    window.HTMLElement.prototype.scrollIntoView = vi.fn();
+    const tasks: TaskHierarchy = [{
+      id: 'task-root',
+      name: 'Root task',
+      description: 'Top level work.',
+      status: 'InProgress',
+      subtasks: [{
+        id: 'task-focus',
+        name: 'Focus task',
+        description: 'Jump directly here.',
+        status: 'NotStarted',
+        subtasks: [],
+      }],
+    }];
+
+    try {
+      renderTaskPanel(tasks, null, 'task-focus');
+
+      expect(screen.getByText('Focus task').closest('.task-item')).toHaveClass('linked-highlight');
+    } finally {
+      window.HTMLElement.prototype.scrollIntoView = originalScrollIntoView;
+    }
+  });
+
+  it('waits for the panel transition before scrolling the linked task into view', () => {
+    vi.useFakeTimers();
+    const originalScrollIntoView = window.HTMLElement.prototype.scrollIntoView;
+    const scrollIntoView = vi.fn();
+    window.HTMLElement.prototype.scrollIntoView = scrollIntoView;
+
+    const tasks: TaskHierarchy = [{
+      id: 'task-root',
+      name: 'Root task',
+      description: 'Top level work.',
+      status: 'InProgress',
+      subtasks: [{
+        id: 'task-focus',
+        name: 'Focus task',
+        description: 'Jump directly here.',
+        status: 'NotStarted',
+        subtasks: [],
+      }],
+    }];
+
+    try {
+      renderTaskPanel(tasks, null, 'task-focus');
+
+      expect(scrollIntoView).not.toHaveBeenCalled();
+
+      vi.advanceTimersByTime(219);
+      expect(scrollIntoView).not.toHaveBeenCalled();
+
+      vi.advanceTimersByTime(1);
+      expect(scrollIntoView).toHaveBeenCalledWith({ block: 'center', behavior: 'smooth' });
+    } finally {
+      window.HTMLElement.prototype.scrollIntoView = originalScrollIntoView;
+      vi.useRealTimers();
+    }
   });
 });
 

@@ -6,6 +6,12 @@ export type ViewMode = 'message-only' | 'editor';
 // ─── Editor tabs ─────────────────────────────────────────────────────────────
 
 /** A single open editor tab. */
+export type EditorTabViewMode = 'edit' | 'preview';
+
+export interface EditorOpenOptions {
+  viewMode?: EditorTabViewMode;
+}
+
 export interface EditorTab {
   /** Stable unique identifier (nanoid or UUID). */
   id: string;
@@ -19,13 +25,15 @@ export interface EditorTab {
   isDirty: boolean;
   /** Byte offset of the editor cursor / scroll anchor; persisted for restore. */
   scrollOffset: number;
+  /** Whether the tab shows the editable source or the rendered markdown preview. */
+  viewMode: EditorTabViewMode;
   /** Whether this tab is in diff view mode. */
   isDiffView: boolean;
   /** Language identifier for syntax highlighting (e.g. "rust", "javascript"). */
   language: string;
   /**
    * File kind — governs how the tab is rendered.
-   * text   → CodeMirror editor
+   * text   → CodeMirror editor or rendered markdown preview (depends on viewMode)
    * image  → <img> preview (read-only)
    * binary → "Cannot open binary file" message
    */

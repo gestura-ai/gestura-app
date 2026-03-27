@@ -1,8 +1,9 @@
-import { cleanup, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { PanelState } from '../hooks/usePanelState';
 import type { ToastState } from '../hooks/useToast';
+import { taskLinkHref } from '../utils/taskLinks';
 import { ChatPanel } from './ChatPanel';
 
 const useChatSessionMock = vi.fn();
@@ -14,11 +15,12 @@ vi.mock('../hooks/useChatSession', () => ({
 
 vi.mock('../../../services/tauri/agent', () => ({
   checkCliInstalled: (...args: unknown[]) => checkCliInstalledMock(...args),
+  exportSessionJson: vi.fn(),
   openShellForSession: vi.fn(),
 }));
 
 vi.mock('./MessageList', () => ({
-  MessageList: () => <div data-testid="message-list" />,
+  MessageList: () => <a data-testid="message-list" href={taskLinkHref('task-focus')}>Open task</a>,
 }));
 
 vi.mock('./MessageInput', async () => {
@@ -34,7 +36,7 @@ vi.mock('./ToolConfirmationDialog', () => ({
 }));
 
 vi.mock('./MenuPanel', () => ({
-  MenuPanel: () => null,
+  MenuPanel: ({ isOpen }: { isOpen: boolean }) => (isOpen ? <div data-testid="menu-panel" /> : null),
 }));
 
 vi.mock('./TaskPanel', () => ({
@@ -103,6 +105,7 @@ describe('ChatPanel CLI quick access visibility', () => {
       status: { text: 'Ready', kind: 'ready' },
       pendingConfirmation: null,
       tasks: [],
+      runtimeTaskSnapshot: null,
       knowledgeItems: [],
       toolSettings: {},
       memoryRevision: 0,
@@ -168,5 +171,82 @@ describe('ChatPanel CLI quick access visibility', () => {
     });
 
     quickAccessHost.remove();
+  });
+
+  it('renders the footer brand and opens the menu from the footer button', async () => {
+    checkCliInstalledMock.mockResolvedValue(false);
+    const quickAccessHost = document.createElement('div');
+    document.body.appendChild(quickAccessHost);
+
+    render(
+      <ChatPanel
+        sessionId="session-footer-brand"
+        quickAccessHost={quickAccessHost}
+        panelState={basePanelState}
+        toastState={toastState}
+      />
+    );
+
+    await waitFor(() => {
+      expect(screen.getByText('Gestura Agent')).toBeInTheDocument();
+      expect(quickAccessHost).toHaveTextContent('Ready');
+      expect(screen.getByTitle('Menu')).toBeInTheDocument();
+    });
+
+    expect(document.querySelector('.status-badge')).toBeNull();
+    expect(document.querySelector('.header')).toBeNull();
+    expect(quickAccessHost.querySelector('.session-status-text')).not.toBeNull();
+
+    fireEvent.click(screen.getByTitle('Menu'));
+
+    expect(basePanelState.togglePanel).toHaveBeenCalledWith('menu');
+    quickAccessHost.remove();
+  });
+
+  it('renders footer menu panels outside the chat subtree', async () => {
+    checkCliInstalledMock.mockResolvedValue(false);
+    const panelState: PanelState = {
+      ...basePanelState,
+      activePanel: 'menu',
+      isOpen: (panel) => panel === 'menu',
+    };
+
+    const { container } = render(
+      <ChatPanel
+        sessionId="session-menu-portal"
+        panelState={panelState}
+        toastState={toastState}
+      />
+    );
+
+    const chatPanel = container.querySelector('.agent-panel--chat');
+
+    await waitFor(() => {
+      expect(screen.getByTestId('menu-panel')).toBeInTheDocument();
+    });
+
+    expect(chatPanel).not.toContainElement(screen.getByTestId('menu-panel'));
+  });
+
+  it('opens the task panel when a rendered task link is clicked', async () => {
+    checkCliInstalledMock.mockResolvedValue(false);
+    const panelState: PanelState = {
+      ...basePanelState,
+      openPanel: vi.fn(),
+    };
+
+    render(
+      <ChatPanel
+        sessionId="session-task-link"
+        panelState={panelState}
+        toastState={toastState}
+      />
+    );
+
+    fireEvent.click(screen.getByRole('link', { name: 'Open task' }));
+
+    await waitFor(() => {
+      expect(panelState.openPanel).toHaveBeenCalledWith('tasks');
+    });
   });
 });

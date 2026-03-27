@@ -3070,25 +3070,29 @@ pub async fn list_gemini_models(api_key: String) -> Result<Vec<serde_json::Value
 /// Test local Whisper model with detailed validation
 #[tauri::command(rename_all = "snake_case")]
 pub async fn test_local_whisper(model_path: String) -> Result<String, String> {
-    use crate::voice::validate_whisper_model;
-    use std::path::Path;
+    tokio::task::spawn_blocking(move || {
+        use crate::voice::validate_whisper_model;
+        use std::path::Path;
 
-    let path = Path::new(&model_path);
-    let validation = validate_whisper_model(path);
+        let path = Path::new(&model_path);
+        let validation = validate_whisper_model(path);
 
-    if !validation.is_valid {
-        return Err(validation
-            .error
-            .unwrap_or_else(|| "Unknown error".to_string()));
-    }
+        if !validation.is_valid {
+            return Err(validation
+                .error
+                .unwrap_or_else(|| "Unknown error".to_string()));
+        }
 
-    Ok(format!(
-        "Model valid: {} ({:.1} MB, GGML format)",
-        path.file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or("unknown"),
-        validation.file_size_mb
-    ))
+        Ok(format!(
+            "Model valid: {} ({:.1} MB, GGML format)",
+            path.file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("unknown"),
+            validation.file_size_mb
+        ))
+    })
+    .await
+    .map_err(|error| format!("Failed to validate local whisper model: {error}"))?
 }
 
 /// Validate a Whisper model file and return structured validation info
@@ -3096,10 +3100,12 @@ pub async fn test_local_whisper(model_path: String) -> Result<String, String> {
 pub async fn validate_whisper_model(
     path: String,
 ) -> Result<crate::voice::WhisperModelValidation, String> {
-    use std::path::Path;
-
-    let path = Path::new(&path);
-    Ok(crate::voice::validate_whisper_model(path))
+    tokio::task::spawn_blocking(move || {
+        let path = std::path::Path::new(&path);
+        crate::voice::validate_whisper_model(path)
+    })
+    .await
+    .map_err(|error| format!("Failed to validate whisper model: {error}"))
 }
 
 /// Get available Whisper models for download
@@ -3110,43 +3116,53 @@ pub fn get_whisper_models() -> Vec<crate::config::WhisperModelInfo> {
 
 /// Check if a specific Whisper model file is already downloaded
 #[tauri::command(rename_all = "snake_case")]
-pub fn is_whisper_model_downloaded(model_filename: String) -> Result<serde_json::Value, String> {
-    let models_dir = crate::config::AppConfig::whisper_models_dir();
-    let model_path = models_dir.join(&model_filename);
-    let exists = model_path.exists();
+pub async fn is_whisper_model_downloaded(
+    model_filename: String,
+) -> Result<serde_json::Value, String> {
+    tokio::task::spawn_blocking(move || {
+        let models_dir = crate::config::AppConfig::whisper_models_dir();
+        let model_path = models_dir.join(&model_filename);
+        let exists = model_path.exists();
 
-    let validation = if exists {
-        Some(crate::voice::validate_whisper_model(&model_path))
-    } else {
-        None
-    };
+        let validation = if exists {
+            Some(crate::voice::validate_whisper_model(&model_path))
+        } else {
+            None
+        };
 
-    Ok(serde_json::json!({
-        "exists": exists,
-        "path": model_path.to_string_lossy().to_string(),
-        "is_valid": validation.as_ref().map(|v| v.is_valid).unwrap_or(false),
-        "validation": validation
-    }))
+        serde_json::json!({
+            "exists": exists,
+            "path": model_path.to_string_lossy().to_string(),
+            "is_valid": validation.as_ref().map(|v| v.is_valid).unwrap_or(false),
+            "validation": validation
+        })
+    })
+    .await
+    .map_err(|error| format!("Failed to inspect whisper model download state: {error}"))
 }
 
 /// Get the default Whisper model path and status
 #[tauri::command]
-pub fn get_whisper_model_status() -> Result<serde_json::Value, String> {
-    let (exists, path) = crate::voice::get_default_model_status();
-    let path_str = path.to_string_lossy().to_string();
+pub async fn get_whisper_model_status() -> Result<serde_json::Value, String> {
+    tokio::task::spawn_blocking(move || {
+        let (exists, path) = crate::voice::get_default_model_status();
+        let path_str = path.to_string_lossy().to_string();
 
-    let validation = if exists {
-        Some(crate::voice::validate_whisper_model(&path))
-    } else {
-        None
-    };
+        let validation = if exists {
+            Some(crate::voice::validate_whisper_model(&path))
+        } else {
+            None
+        };
 
-    Ok(serde_json::json!({
-        "default_path": path_str,
-        "exists": exists,
-        "validation": validation,
-        "models_dir": crate::config::AppConfig::whisper_models_dir().to_string_lossy()
-    }))
+        serde_json::json!({
+            "default_path": path_str,
+            "exists": exists,
+            "validation": validation,
+            "models_dir": crate::config::AppConfig::whisper_models_dir().to_string_lossy()
+        })
+    })
+    .await
+    .map_err(|error| format!("Failed to inspect whisper model status: {error}"))
 }
 
 /// Download a Whisper model from HuggingFace
@@ -3156,8 +3172,8 @@ pub async fn download_whisper_model(
     app: tauri::AppHandle,
     model_filename: String,
 ) -> Result<String, String> {
-    use std::io::Write;
     use tauri::Emitter;
+    use tokio::io::AsyncWriteExt;
 
     tracing::info!(
         "Whisper download command invoked for model filename: {}",
@@ -3170,7 +3186,8 @@ pub async fn download_whisper_model(
 
     // Create the models directory
     let models_dir = crate::config::AppConfig::whisper_models_dir();
-    std::fs::create_dir_all(&models_dir)
+    tokio::fs::create_dir_all(&models_dir)
+        .await
         .map_err(|e| format!("Failed to create models directory: {}", e))?;
 
     let output_path = models_dir.join(&model_filename);
@@ -3183,8 +3200,16 @@ pub async fn download_whisper_model(
     );
 
     // Check if already downloaded
-    if output_path.exists() {
-        let validation = crate::voice::validate_whisper_model(&output_path);
+    if tokio::fs::try_exists(&output_path)
+        .await
+        .map_err(|e| format!("Failed to inspect existing model file: {}", e))?
+    {
+        let validation_path = output_path.clone();
+        let validation = tokio::task::spawn_blocking(move || {
+            crate::voice::validate_whisper_model(&validation_path)
+        })
+        .await
+        .map_err(|e| format!("Failed to validate existing model file: {}", e))?;
         if validation.is_valid {
             return Ok(format!(
                 "Model already downloaded: {}",
@@ -3192,7 +3217,7 @@ pub async fn download_whisper_model(
             ));
         }
         // Remove invalid file
-        std::fs::remove_file(&output_path).ok();
+        let _ = tokio::fs::remove_file(&output_path).await;
     }
 
     tracing::info!(
@@ -3264,7 +3289,7 @@ pub async fn download_whisper_model(
 
     // Create temp file for download
     let temp_path = output_path.with_extension("tmp");
-    let mut file = std::fs::File::create(&temp_path).map_err(|e| {
+    let mut file = tokio::fs::File::create(&temp_path).await.map_err(|e| {
         tracing::error!("Failed to create temp file {:?}: {}", temp_path, e);
         format!("Failed to create temp file: {}", e)
     })?;
@@ -3289,7 +3314,7 @@ pub async fn download_whisper_model(
             );
             format!("Download error: {}", e)
         })?;
-        file.write_all(&chunk).map_err(|e| {
+        file.write_all(&chunk).await.map_err(|e| {
             tracing::error!("Failed to write chunk to file: {}", e);
             format!("Failed to write file: {}", e)
         })?;
@@ -3320,14 +3345,23 @@ pub async fn download_whisper_model(
         temp_path
     );
 
+    file.flush()
+        .await
+        .map_err(|e| format!("Failed to flush model download to disk: {}", e))?;
+
     // Rename temp file to final path
-    std::fs::rename(&temp_path, &output_path)
+    tokio::fs::rename(&temp_path, &output_path)
+        .await
         .map_err(|e| format!("Failed to save model file: {}", e))?;
 
     // Validate the downloaded model
-    let validation = crate::voice::validate_whisper_model(&output_path);
+    let validation_path = output_path.clone();
+    let validation =
+        tokio::task::spawn_blocking(move || crate::voice::validate_whisper_model(&validation_path))
+            .await
+            .map_err(|e| format!("Failed to validate downloaded model file: {}", e))?;
     if !validation.is_valid {
-        std::fs::remove_file(&output_path).ok();
+        let _ = tokio::fs::remove_file(&output_path).await;
         return Err(format!(
             "Downloaded file is invalid: {}",
             validation
@@ -3625,6 +3659,29 @@ fn cancel_key_for_window_label(window_label: &str) -> String {
     format!("window:{window_label}")
 }
 
+struct StreamCancellationGuard {
+    key: String,
+    armed: bool,
+}
+
+impl StreamCancellationGuard {
+    fn new(key: String) -> Self {
+        Self { key, armed: true }
+    }
+
+    fn disarm(&mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for StreamCancellationGuard {
+    fn drop(&mut self) {
+        if self.armed {
+            gestura_core::stream_cancellation::STREAM_CANCELLATIONS.remove(&self.key);
+        }
+    }
+}
+
 fn should_persist_session_activity_event(event: &str, payload: &serde_json::Value) -> bool {
     match event {
         "agent-stream-done"
@@ -3753,6 +3810,33 @@ pub async fn process_agent_message_streaming(
             calling_window_label.clone()
         };
 
+    let trimmed = message.trim();
+    const LOCAL_STREAM_CHUNK_CHARS: usize = 64;
+    let is_tools_cmd = trimmed.starts_with("/tools");
+    let is_capabilities_cmd = trimmed.starts_with("/capabilities");
+    let is_summarize_cmd = trimmed.starts_with("/summarize");
+    let is_memory_cmd = trimmed.starts_with("/memory");
+    let supports_stream_interrupt =
+        !(is_tools_cmd || is_capabilities_cmd || is_summarize_cmd || is_memory_cmd);
+
+    let mut stream_cancellation = if supports_stream_interrupt {
+        let cancel_token = CancellationToken::new();
+        let cancel_key = if !target_window_label.is_empty() {
+            cancel_key_for_window_label(&target_window_label)
+        } else {
+            GLOBAL_STREAM_CANCEL_KEY.to_string()
+        };
+        gestura_core::stream_cancellation::STREAM_CANCELLATIONS
+            .register(cancel_key.clone(), cancel_token.clone());
+        Some((
+            StreamCancellationGuard::new(cancel_key.clone()),
+            cancel_key,
+            cancel_token,
+        ))
+    } else {
+        None
+    };
+
     // Apply session-specific LLM config overrides using the *resolved* session id.
     //
     // Why: voice routing can change the target session. We must keep request metadata
@@ -3790,15 +3874,6 @@ pub async fn process_agent_message_streaming(
             );
         }
     };
-
-    // Check if this is a tools/capabilities/summarize/memory command (explicit slash command) and handle it locally without LLM
-    // Natural language questions like "what tools do you have?" should go through the LLM for dynamic, session-aware responses
-    let trimmed = message.trim();
-    const LOCAL_STREAM_CHUNK_CHARS: usize = 64;
-    let is_tools_cmd = trimmed.starts_with("/tools");
-    let is_capabilities_cmd = trimmed.starts_with("/capabilities");
-    let is_summarize_cmd = trimmed.starts_with("/summarize");
-    let is_memory_cmd = trimmed.starts_with("/memory");
 
     // Only handle explicit /tools command, not natural language questions
     if is_tools_cmd {
@@ -4245,18 +4320,12 @@ pub async fn process_agent_message_streaming(
         .as_deref()
         .and_then(task_tree_refresh_signature);
 
+    let (mut stream_cancellation_guard, cancel_key, cancel_token) = stream_cancellation
+        .take()
+        .expect("non-local agent streaming requests always register cancellation");
+
     // Create channel for streaming chunks
     let (tx, mut rx) = mpsc::channel::<StreamChunk>(100);
-
-    // Create cancellation token and register it (window-scoped).
-    let cancel_token = CancellationToken::new();
-    let cancel_key = if !target_window_label.is_empty() {
-        cancel_key_for_window_label(&target_window_label)
-    } else {
-        GLOBAL_STREAM_CANCEL_KEY.to_string()
-    };
-    gestura_core::stream_cancellation::STREAM_CANCELLATIONS
-        .register(cancel_key.clone(), cancel_token.clone());
 
     // Build the agent request with workspace sandboxing
     use gestura_core::{AgentPipeline, AgentRequest};
@@ -4487,14 +4556,24 @@ pub async fn process_agent_message_streaming(
                 emit("agent-stream-tool-start", payload);
             }
             StreamChunk::ToolCallArgs(args) => {
+                let tool_call_id = current_tool_call
+                    .as_ref()
+                    .map(|(id, _, _)| id.clone());
                 if let Some((_, _, ref mut acc)) = current_tool_call {
                     acc.push_str(&args);
                 }
-                emit("agent-stream-tool-args", serde_json::json!(args));
+                emit(
+                    "agent-stream-tool-args",
+                    serde_json::json!({ "id": tool_call_id, "args": args }),
+                );
             }
             StreamChunk::ToolCallEnd => {
                 tracing::debug!("[StreamLoop] ToolCallEnd");
-                emit("agent-stream-tool-end", serde_json::json!(null));
+                let payload = current_tool_call
+                    .as_ref()
+                    .map(|(id, name, _)| serde_json::json!({ "id": id, "name": name }))
+                    .unwrap_or_else(|| serde_json::json!(null));
+                emit("agent-stream-tool-end", payload);
             }
             StreamChunk::ToolCallResult {
                 name,
@@ -4503,8 +4582,10 @@ pub async fn process_agent_message_streaming(
                 duration_ms,
             } => {
                 let mut task_tool_ui_event: Option<(&'static str, serde_json::Value)> = None;
+                let mut completed_tool_call_id: Option<String> = None;
                 // Finalize the tracked tool call record for pause-state capture.
                 if let Some((tc_id, tc_name, tc_args)) = current_tool_call.take() {
+                    completed_tool_call_id = Some(tc_id.clone());
                     if let Some(sid) = resolved_session_id.as_deref() {
                         task_tool_ui_event = task_tool_mutation_event(sid, &tc_name, &tc_args, success);
                         crate::window_manager::record_tool_call(
@@ -4537,6 +4618,7 @@ pub async fn process_agent_message_streaming(
                     });
                 }
                 let payload = serde_json::json!({
+                    "id": completed_tool_call_id,
                     "name": name,
                     "success": success,
                     "output": output,
@@ -5017,6 +5099,7 @@ pub async fn process_agent_message_streaming(
 
     // Clear the cancellation token for this stream.
     gestura_core::stream_cancellation::STREAM_CANCELLATIONS.remove(&cancel_key);
+    stream_cancellation_guard.disarm();
 
     Ok(())
 }
@@ -5212,15 +5295,27 @@ pub async fn resume_agent_streaming(
                         emit("agent-stream-tool-start", serde_json::json!({ "id": id, "name": name }));
                     }
                     StreamChunk::ToolCallArgs(args) => {
+                        let tool_call_id = current_tool_call
+                            .as_ref()
+                            .map(|(id, _, _)| id.clone());
                         if let Some((_, _, ref mut acc)) = current_tool_call { acc.push_str(&args); }
-                        emit("agent-stream-tool-args", serde_json::json!(args));
+                        emit(
+                            "agent-stream-tool-args",
+                            serde_json::json!({ "id": tool_call_id, "args": args }),
+                        );
                     }
                     StreamChunk::ToolCallEnd => {
-                        emit("agent-stream-tool-end", serde_json::json!(null));
+                        let payload = current_tool_call
+                            .as_ref()
+                            .map(|(id, name, _)| serde_json::json!({ "id": id, "name": name }))
+                            .unwrap_or_else(|| serde_json::json!(null));
+                        emit("agent-stream-tool-end", payload);
                     }
                     StreamChunk::ToolCallResult { name, success, output, duration_ms } => {
                         let mut task_tool_ui_event: Option<(&'static str, serde_json::Value)> = None;
+                        let mut completed_tool_call_id: Option<String> = None;
                         if let Some((tc_id, tc_name, tc_args)) = current_tool_call.take() {
+                            completed_tool_call_id = Some(tc_id.clone());
                             if let Some(sid) = resolved_session_id.as_deref() {
                                 task_tool_ui_event = task_tool_mutation_event(sid, &tc_name, &tc_args, success);
                                 crate::window_manager::record_tool_call(
@@ -5250,7 +5345,11 @@ pub async fn resume_agent_streaming(
                             });
                         }
                         emit("agent-stream-tool-result", serde_json::json!({
-                            "name": name, "success": success, "output": output, "duration_ms": duration_ms
+                            "id": completed_tool_call_id,
+                            "name": name,
+                            "success": success,
+                            "output": output,
+                            "duration_ms": duration_ms
                         }));
                         if let Some((event_name, event_payload)) = task_tool_ui_event {
                             let _ = app.emit(event_name, event_payload);
@@ -5813,6 +5912,27 @@ mod streaming_cancellation_tests {
             "token entry should be removed after pause"
         );
     }
+
+    #[test]
+    fn stream_cancellation_guard_cleans_up_registered_token_on_drop() {
+        let key = cancel_key_for_window_label("agent-test-guard-cleanup");
+        let token = gestura_core::CancellationToken::new();
+        gestura_core::stream_cancellation::STREAM_CANCELLATIONS.remove(&key);
+        gestura_core::stream_cancellation::STREAM_CANCELLATIONS.register(key.clone(), token);
+
+        {
+            let _guard = StreamCancellationGuard::new(key.clone());
+            assert!(
+                gestura_core::stream_cancellation::STREAM_CANCELLATIONS.contains_key(&key),
+                "token entry should exist while the cleanup guard is active"
+            );
+        }
+
+        assert!(
+            !gestura_core::stream_cancellation::STREAM_CANCELLATIONS.contains_key(&key),
+            "token entry should be removed when the cleanup guard drops"
+        );
+    }
 }
 
 #[tauri::command]
@@ -6269,62 +6389,71 @@ pub async fn reconcile_workflow_state(
 
 /// List all available audio input devices
 #[tauri::command]
-pub fn list_audio_devices() -> Result<Vec<crate::audio_capture::AudioDeviceInfo>, String> {
-    Ok(crate::audio_capture::list_audio_input_devices())
+pub async fn list_audio_devices() -> Result<Vec<crate::audio_capture::AudioDeviceInfo>, String> {
+    tokio::task::spawn_blocking(crate::audio_capture::list_audio_input_devices)
+        .await
+        .map_err(|error| format!("Failed to enumerate audio devices: {error}"))
 }
 
 /// Check if microphone is available
 #[tauri::command]
-pub fn check_microphone_available() -> bool {
-    crate::audio_capture::is_microphone_available()
+pub async fn check_microphone_available() -> bool {
+    tokio::task::spawn_blocking(crate::audio_capture::is_microphone_available)
+        .await
+        .unwrap_or(false)
 }
 
 // Permission Management Commands
 
 #[tauri::command]
 pub async fn check_permission(permission: String) -> Result<String, String> {
-    use crate::permissions::{
-        check_accessibility_permission, check_bluetooth_permission, check_microphone_permission,
-        check_screen_recording_permission,
-    };
+    tokio::task::spawn_blocking(move || {
+        use crate::permissions::{
+            check_accessibility_permission, check_bluetooth_permission,
+            check_microphone_permission, check_screen_recording_permission,
+        };
 
-    match permission.as_str() {
-        "microphone" => {
-            let status = check_microphone_permission();
-            tracing::info!("Permission check: microphone -> {}", status);
-            Ok(status.to_string())
+        match permission.as_str() {
+            "microphone" => {
+                let status = check_microphone_permission();
+                tracing::info!("Permission check: microphone -> {}", status);
+                Ok(status.to_string())
+            }
+            "accessibility" => {
+                let status = check_accessibility_permission();
+                tracing::info!("Permission check: accessibility -> {}", status);
+                Ok(status.to_string())
+            }
+            "bluetooth" => {
+                let status = check_bluetooth_permission();
+                tracing::info!("Permission check: bluetooth -> {}", status);
+                Ok(status.to_string())
+            }
+            "screen_recording" => {
+                let status = check_screen_recording_permission();
+                tracing::info!("Permission check: screen_recording -> {}", status);
+                Ok(status.to_string())
+            }
+            _ => Err(format!("Unknown permission: {}", permission)),
         }
-        "accessibility" => {
-            let status = check_accessibility_permission();
-            tracing::info!("Permission check: accessibility -> {}", status);
-            Ok(status.to_string())
-        }
-        "bluetooth" => {
-            let status = check_bluetooth_permission();
-            tracing::info!("Permission check: bluetooth -> {}", status);
-            Ok(status.to_string())
-        }
-        "screen_recording" => {
-            let status = check_screen_recording_permission();
-            tracing::info!("Permission check: screen_recording -> {}", status);
-            Ok(status.to_string())
-        }
-        _ => Err(format!("Unknown permission: {}", permission)),
-    }
+    })
+    .await
+    .map_err(|error| format!("Failed to check system permission: {error}"))?
 }
 
 #[tauri::command]
 pub async fn request_permission(permission: String) -> Result<(), String> {
-    use crate::permissions::{
-        SystemPermissionStatus, check_accessibility_permission, check_bluetooth_permission,
-        check_microphone_permission, check_screen_recording_permission, open_system_preferences,
-        request_bluetooth_permission, request_microphone_permission,
-        request_screen_recording_permission,
-    };
+    tokio::task::spawn_blocking(move || {
+        use crate::permissions::{
+            SystemPermissionStatus, check_accessibility_permission, check_bluetooth_permission,
+            check_microphone_permission, check_screen_recording_permission,
+            open_system_preferences, request_bluetooth_permission,
+            request_microphone_permission, request_screen_recording_permission,
+        };
 
-    tracing::info!("🔐 Permission request received: {}", permission);
+        tracing::info!("🔐 Permission request received: {}", permission);
 
-    match permission.as_str() {
+        match permission.as_str() {
         "microphone" => {
             let status = check_microphone_permission();
             tracing::info!("🎤 Microphone permission status before request: {}", status);
@@ -6479,7 +6608,10 @@ pub async fn request_permission(permission: String) -> Result<(), String> {
             }
         }
         _ => Err(format!("Cannot request unknown permission: {}", permission)),
-    }
+        }
+    })
+    .await
+    .map_err(|error| format!("Failed to request system permission: {error}"))?
 }
 
 /// Open the configuration/settings window
@@ -6539,24 +6671,28 @@ pub async fn capture_screenshot(
     region: Option<(u32, u32, u32, u32)>,
     display: Option<u32>,
 ) -> Result<gestura_core::tools::screen::ScreenshotResult, String> {
-    use gestura_core::tools::screen::{CaptureRegion, ScreenTools};
-
     tracing::info!("📸 Capturing screenshot to: {}", output_path);
 
-    let tools = ScreenTools::new();
-    let region_opt = region.map(|(x, y, w, h)| CaptureRegion {
-        x,
-        y,
-        width: w,
-        height: h,
-    });
+    tokio::task::spawn_blocking(move || {
+        use gestura_core::tools::screen::{CaptureRegion, ScreenTools};
 
-    tools
-        .screenshot(std::path::Path::new(&output_path), region_opt, display)
-        .map_err(|e| {
-            tracing::error!("Screenshot failed: {}", e);
-            e.to_string()
-        })
+        let tools = ScreenTools::new();
+        let region_opt = region.map(|(x, y, w, h)| CaptureRegion {
+            x,
+            y,
+            width: w,
+            height: h,
+        });
+
+        tools
+            .screenshot(std::path::Path::new(&output_path), region_opt, display)
+            .map_err(|e| {
+                tracing::error!("Screenshot failed: {}", e);
+                e.to_string()
+            })
+    })
+    .await
+    .map_err(|error| format!("Failed to run screenshot task: {error}"))?
 }
 
 /// Start screen recording
@@ -6566,24 +6702,28 @@ pub async fn start_screen_recording(
     region: Option<(u32, u32, u32, u32)>,
     display: Option<u32>,
 ) -> Result<gestura_core::tools::screen::RecordingStartResult, String> {
-    use gestura_core::tools::screen::{CaptureRegion, ScreenTools};
-
     tracing::info!("🎥 Starting screen recording to: {}", output_path);
 
-    let tools = ScreenTools::new();
-    let region_opt = region.map(|(x, y, w, h)| CaptureRegion {
-        x,
-        y,
-        width: w,
-        height: h,
-    });
+    tokio::task::spawn_blocking(move || {
+        use gestura_core::tools::screen::{CaptureRegion, ScreenTools};
 
-    tools
-        .start_recording(std::path::Path::new(&output_path), region_opt, display)
-        .map_err(|e| {
-            tracing::error!("Failed to start recording: {}", e);
-            e.to_string()
-        })
+        let tools = ScreenTools::new();
+        let region_opt = region.map(|(x, y, w, h)| CaptureRegion {
+            x,
+            y,
+            width: w,
+            height: h,
+        });
+
+        tools
+            .start_recording(std::path::Path::new(&output_path), region_opt, display)
+            .map_err(|e| {
+                tracing::error!("Failed to start recording: {}", e);
+                e.to_string()
+            })
+    })
+    .await
+    .map_err(|error| format!("Failed to start screen recording task: {error}"))?
 }
 
 /// Stop screen recording
@@ -6591,15 +6731,19 @@ pub async fn start_screen_recording(
 pub async fn stop_screen_recording(
     recording_id: String,
 ) -> Result<gestura_core::tools::screen::RecordingStopResult, String> {
-    use gestura_core::tools::screen::ScreenTools;
-
     tracing::info!("⏹️ Stopping screen recording: {}", recording_id);
 
-    let tools = ScreenTools::new();
-    tools.stop_recording(&recording_id).map_err(|e| {
-        tracing::error!("Failed to stop recording: {}", e);
-        e.to_string()
+    tokio::task::spawn_blocking(move || {
+        use gestura_core::tools::screen::ScreenTools;
+
+        let tools = ScreenTools::new();
+        tools.stop_recording(&recording_id).map_err(|e| {
+            tracing::error!("Failed to stop recording: {}", e);
+            e.to_string()
+        })
     })
+    .await
+    .map_err(|error| format!("Failed to stop screen recording task: {error}"))?
 }
 
 #[tauri::command]
@@ -6716,147 +6860,146 @@ pub fn get_speech_status() -> Result<bool, String> {
 
 /// Get tray diagnostic information
 #[tauri::command]
-pub fn get_tray_diagnostic_info() -> Result<serde_json::Value, String> {
-    Ok(crate::tray::get_tray_diagnostic_info())
+pub async fn get_tray_diagnostic_info() -> Result<serde_json::Value, String> {
+    tokio::task::spawn_blocking(crate::tray::get_tray_diagnostic_info)
+        .await
+        .map_err(|error| format!("Failed to gather tray diagnostics: {error}"))
 }
 
 /// Check system permissions status
 #[tauri::command]
-pub fn check_system_permissions() -> Result<serde_json::Value, String> {
-    use crate::permissions::{
-        SystemPermissionStatus, check_accessibility_permission, check_bluetooth_permission,
-        check_microphone_permission, check_screen_recording_permission,
-    };
+pub async fn check_system_permissions() -> Result<serde_json::Value, String> {
+    tokio::task::spawn_blocking(move || {
+        use crate::permissions::{
+            SystemPermissionStatus, check_accessibility_permission, check_bluetooth_permission,
+            check_microphone_permission, check_screen_recording_permission,
+        };
 
-    let mic_status = check_microphone_permission();
-    let accessibility_status = check_accessibility_permission();
-    let bluetooth_status = check_bluetooth_permission();
-    let screen_recording_status = check_screen_recording_permission();
+        let mic_status = check_microphone_permission();
+        let accessibility_status = check_accessibility_permission();
+        let bluetooth_status = check_bluetooth_permission();
+        let screen_recording_status = check_screen_recording_permission();
 
-    tracing::info!(
-        "System permission snapshot: microphone={}, accessibility={}, bluetooth={}, screen_recording={}",
-        mic_status,
-        accessibility_status,
-        bluetooth_status,
-        screen_recording_status
-    );
+        tracing::info!(
+            "System permission snapshot: microphone={}, accessibility={}, bluetooth={}, screen_recording={}",
+            mic_status,
+            accessibility_status,
+            bluetooth_status,
+            screen_recording_status
+        );
 
-    let mic_instructions = match mic_status {
-        SystemPermissionStatus::Granted => "Microphone access is working properly",
-        SystemPermissionStatus::Denied => {
-            "Please enable microphone access in System Preferences > Privacy & Security > Microphone"
-        }
-        SystemPermissionStatus::NotDetermined => {
-            "Microphone access will be requested when you start listening"
-        }
-        _ => "Check System Preferences for microphone access",
-    };
+        let mic_instructions = match mic_status {
+            SystemPermissionStatus::Granted => "Microphone access is working properly",
+            SystemPermissionStatus::Denied => {
+                "Please enable microphone access in System Preferences > Privacy & Security > Microphone"
+            }
+            SystemPermissionStatus::NotDetermined => {
+                "Microphone access will be requested when you start listening"
+            }
+            _ => "Check System Preferences for microphone access",
+        };
 
-    let accessibility_instructions = match accessibility_status {
-        SystemPermissionStatus::Granted => "Accessibility access is working properly",
-        SystemPermissionStatus::Denied => {
-            "Please enable accessibility in System Preferences > Privacy & Security > Accessibility"
-        }
-        _ => "Accessibility access is required for hotkey functionality",
-    };
+        let accessibility_instructions = match accessibility_status {
+            SystemPermissionStatus::Granted => "Accessibility access is working properly",
+            SystemPermissionStatus::Denied => {
+                "Please enable accessibility in System Preferences > Privacy & Security > Accessibility"
+            }
+            _ => "Accessibility access is required for hotkey functionality",
+        };
 
-    let bluetooth_instructions = match bluetooth_status {
-        SystemPermissionStatus::Granted => "Bluetooth access is working properly",
-        SystemPermissionStatus::Denied => {
-            "Please enable Bluetooth in System Preferences > Privacy & Security > Bluetooth"
-        }
-        SystemPermissionStatus::NotDetermined => {
-            "Bluetooth access will be requested when connecting to a ring"
-        }
-        _ => "Check System Preferences for Bluetooth access",
-    };
+        let bluetooth_instructions = match bluetooth_status {
+            SystemPermissionStatus::Granted => "Bluetooth access is working properly",
+            SystemPermissionStatus::Denied => {
+                "Please enable Bluetooth in System Preferences > Privacy & Security > Bluetooth"
+            }
+            SystemPermissionStatus::NotDetermined => {
+                "Bluetooth access will be requested when connecting to a ring"
+            }
+            _ => "Check System Preferences for Bluetooth access",
+        };
 
-    let screen_recording_instructions = match screen_recording_status {
-        SystemPermissionStatus::Granted => "Screen Recording access is working properly",
-        SystemPermissionStatus::Denied => {
-            "Please enable Screen Recording in System Preferences > Privacy & Security > Screen Recording"
-        }
-        SystemPermissionStatus::NotDetermined => {
-            "Screen Recording access will be requested when screen capture is needed"
-        }
-        _ => "Check System Preferences for Screen Recording access",
-    };
+        let screen_recording_instructions = match screen_recording_status {
+            SystemPermissionStatus::Granted => "Screen Recording access is working properly",
+            SystemPermissionStatus::Denied => {
+                "Please enable Screen Recording in System Preferences > Privacy & Security > Screen Recording"
+            }
+            SystemPermissionStatus::NotDetermined => {
+                "Screen Recording access will be requested when screen capture is needed"
+            }
+            _ => "Check System Preferences for Screen Recording access",
+        };
 
-    // Only include real OS-level permissions here.
-    let permissions = vec![
-        serde_json::json!({
-            "id": "microphone",
-            "name": "Microphone",
-            "description": "Required for voice commands and speech recognition",
-            "status": mic_status.to_string(),
-            "required": true,
-            "instructions": mic_instructions
-        }),
-        serde_json::json!({
-            "id": "accessibility",
-            "name": "Accessibility",
-            "description": "Required for global hotkeys and gesture shortcuts",
-            "status": accessibility_status.to_string(),
-            "required": true,
-            "instructions": accessibility_instructions
-        }),
-        serde_json::json!({
-            "id": "bluetooth",
-            "name": "Bluetooth",
-            "description": "Required for connecting to Haptic Harmony ring",
-            "status": bluetooth_status.to_string(),
-            "required": false,
-            "instructions": bluetooth_instructions
-        }),
-        serde_json::json!({
-            "id": "screen_recording",
-            "name": "Screen Recording",
-            "description": "Optional: required for screen capture features",
-            "status": screen_recording_status.to_string(),
-            "required": false,
-            "instructions": screen_recording_instructions
-        }),
-    ];
+        let permissions = vec![
+            serde_json::json!({
+                "id": "microphone",
+                "name": "Microphone",
+                "description": "Required for voice commands and speech recognition",
+                "status": mic_status.to_string(),
+                "required": true,
+                "instructions": mic_instructions
+            }),
+            serde_json::json!({
+                "id": "accessibility",
+                "name": "Accessibility",
+                "description": "Required for global hotkeys and gesture shortcuts",
+                "status": accessibility_status.to_string(),
+                "required": true,
+                "instructions": accessibility_instructions
+            }),
+            serde_json::json!({
+                "id": "bluetooth",
+                "name": "Bluetooth",
+                "description": "Required for connecting to Haptic Harmony ring",
+                "status": bluetooth_status.to_string(),
+                "required": false,
+                "instructions": bluetooth_instructions
+            }),
+            serde_json::json!({
+                "id": "screen_recording",
+                "name": "Screen Recording",
+                "description": "Optional: required for screen capture features",
+                "status": screen_recording_status.to_string(),
+                "required": false,
+                "instructions": screen_recording_instructions
+            }),
+        ];
 
-    let total_count = permissions.len();
+        let total_count = permissions.len();
+        let granted_count = permissions
+            .iter()
+            .filter(|p| p.get("status").and_then(|v| v.as_str()) == Some("granted"))
+            .count();
+        let required_count = permissions
+            .iter()
+            .filter(|p| p.get("required").and_then(|v| v.as_bool()) == Some(true))
+            .count();
+        let required_granted_count = permissions
+            .iter()
+            .filter(|p| {
+                p.get("required").and_then(|v| v.as_bool()) == Some(true)
+                    && p.get("status").and_then(|v| v.as_str()) == Some("granted")
+            })
+            .count();
+        let missing_required_count = required_count.saturating_sub(required_granted_count);
 
-    let granted_count = permissions
-        .iter()
-        .filter(|p| p.get("status").and_then(|v| v.as_str()) == Some("granted"))
-        .count();
-
-    let required_count = permissions
-        .iter()
-        .filter(|p| p.get("required").and_then(|v| v.as_bool()) == Some(true))
-        .count();
-
-    let required_granted_count = permissions
-        .iter()
-        .filter(|p| {
-            p.get("required").and_then(|v| v.as_bool()) == Some(true)
-                && p.get("status").and_then(|v| v.as_str()) == Some("granted")
-        })
-        .count();
-
-    let missing_required_count = required_count.saturating_sub(required_granted_count);
-
-    Ok(serde_json::json!({
-        "permissions": permissions,
-        "total_count": total_count,
-        "granted_count": granted_count,
-        "required_count": required_count,
-        "required_granted_count": required_granted_count,
-        "missing_required_count": missing_required_count,
-        "summary": {
-            // Back-compat keys used by current UI.
-            "total": total_count,
-            "granted": granted_count,
-            "required": required_count,
-            // New explicit keys.
-            "required_granted": required_granted_count,
-            "missing_required": missing_required_count
-        }
-    }))
+        Ok(serde_json::json!({
+            "permissions": permissions,
+            "total_count": total_count,
+            "granted_count": granted_count,
+            "required_count": required_count,
+            "required_granted_count": required_granted_count,
+            "missing_required_count": missing_required_count,
+            "summary": {
+                "total": total_count,
+                "granted": granted_count,
+                "required": required_count,
+                "required_granted": required_granted_count,
+                "missing_required": missing_required_count
+            }
+        }))
+    })
+    .await
+    .map_err(|error| format!("Failed to collect system permissions: {error}"))?
 }
 
 // ============================================================================
@@ -7446,6 +7589,43 @@ pub fn explorer_open_root_in_file_manager(
     app.opener()
         .open_path(root_display.clone(), None::<&str>)
         .map_err(|error| format!("Failed to open project root {}: {}", root_display, error))
+}
+
+/// Open an explorer entry in the system file manager.
+///
+/// Directories are opened directly. Files open their containing directory so
+/// the user lands in the relevant Finder/File Explorer location instead of
+/// launching the file in its default application.
+#[tauri::command(rename_all = "snake_case")]
+pub fn explorer_open_entry_in_file_manager(
+    app: tauri::AppHandle,
+    session_id: String,
+    rel_path: String,
+) -> Result<(), String> {
+    use tauri_plugin_opener::OpenerExt;
+
+    ensure_explorer_read_allowed(&session_id)?;
+    let root = session_root_dir(&session_id)?;
+    let full = resolve_safe_path(&root, &rel_path)?;
+
+    let target = match std::fs::metadata(&full) {
+        Ok(metadata) if metadata.is_dir() => full,
+        Ok(_) | Err(_) => full
+            .parent()
+            .filter(|parent| parent.starts_with(&root))
+            .map(std::path::Path::to_path_buf)
+            .unwrap_or_else(|| root.clone()),
+    };
+
+    let target_display = target.display().to_string();
+    app.opener()
+        .open_path(target_display.clone(), None::<&str>)
+        .map_err(|error| {
+            format!(
+                "Failed to open explorer entry '{}' in file manager via {}: {}",
+                rel_path, target_display, error
+            )
+        })
 }
 
 #[tauri::command(rename_all = "snake_case")]
@@ -9758,55 +9938,63 @@ pub async fn set_hooks_enabled(enabled: bool) -> Result<(), String> {
 ///
 /// Note: This command uses `snake_case` argument names for JS↔Rust interop.
 #[tauri::command(rename_all = "snake_case")]
-pub fn list_session_checkpoints(
+pub async fn list_session_checkpoints(
     session_id: String,
 ) -> Result<Vec<gestura_core::checkpoints::CheckpointMetadata>, String> {
-    use gestura_core::checkpoints::{
-        CheckpointManager, CheckpointRetentionPolicy, FileCheckpointStore,
-    };
+    tokio::task::spawn_blocking(move || {
+        use gestura_core::checkpoints::{
+            CheckpointManager, CheckpointRetentionPolicy, FileCheckpointStore,
+        };
 
-    let manager = CheckpointManager::new(
-        FileCheckpointStore::new_default(),
-        CheckpointRetentionPolicy::default(),
-    );
-    manager
-        .list_session_checkpoints(&session_id)
-        .map_err(|e| e.to_string())
+        let manager = CheckpointManager::new(
+            FileCheckpointStore::new_default(),
+            CheckpointRetentionPolicy::default(),
+        );
+        manager
+            .list_session_checkpoints(&session_id)
+            .map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|error| format!("Failed to list session checkpoints: {error}"))?
 }
 
 /// Restore a session checkpoint by ID.
 ///
 /// Note: This command uses `snake_case` argument names for JS↔Rust interop.
 #[tauri::command(rename_all = "snake_case")]
-pub fn restore_session_checkpoint(checkpoint_id: String) -> Result<serde_json::Value, String> {
-    use gestura_core::agent_sessions::FileAgentSessionStore;
-    use gestura_core::checkpoints::{
-        CheckpointId, CheckpointManager, CheckpointRetentionPolicy, FileCheckpointStore,
-    };
-    use gestura_core::tasks::TaskManager;
+pub async fn restore_session_checkpoint(
+    checkpoint_id: String,
+) -> Result<serde_json::Value, String> {
+    tokio::task::spawn_blocking(move || {
+        use gestura_core::agent_sessions::FileAgentSessionStore;
+        use gestura_core::checkpoints::{
+            CheckpointId, CheckpointManager, CheckpointRetentionPolicy, FileCheckpointStore,
+        };
+        use gestura_core::tasks::TaskManager;
 
-    // Parse checkpoint ID
-    let cp_id: CheckpointId = serde_json::from_str(&format!("\"{}\"", checkpoint_id))
-        .map_err(|e| format!("Invalid checkpoint ID: {}", e))?;
+        let cp_id: CheckpointId = serde_json::from_str(&format!("\"{}\"", checkpoint_id))
+            .map_err(|e| format!("Invalid checkpoint ID: {}", e))?;
 
-    let manager = CheckpointManager::new(
-        FileCheckpointStore::new_default(),
-        CheckpointRetentionPolicy::default(),
-    );
-    let session_store = FileAgentSessionStore::default();
-    let task_manager =
-        TaskManager::new(dirs::data_dir().unwrap_or_else(|| std::path::PathBuf::from(".")));
+        let manager = CheckpointManager::new(
+            FileCheckpointStore::new_default(),
+            CheckpointRetentionPolicy::default(),
+        );
+        let session_store = FileAgentSessionStore::default();
+        let task_manager =
+            TaskManager::new(dirs::data_dir().unwrap_or_else(|| std::path::PathBuf::from(".")));
 
-    let payload = manager
-        .apply_session_checkpoint(&cp_id, &session_store, &task_manager)
-        .map_err(|e| e.to_string())?;
+        let payload = manager
+            .apply_session_checkpoint(&cp_id, &session_store, &task_manager)
+            .map_err(|e| e.to_string())?;
 
-    // Return restored session info
-    Ok(serde_json::json!({
-        "session_id": payload.session.id,
-        "message_count": payload.session.message_count(),
-        "restored_at": chrono::Utc::now().to_rfc3339(),
-    }))
+        Ok(serde_json::json!({
+            "session_id": payload.session.id,
+            "message_count": payload.session.message_count(),
+            "restored_at": chrono::Utc::now().to_rfc3339(),
+        }))
+    })
+    .await
+    .map_err(|error| format!("Failed to restore session checkpoint: {error}"))?
 }
 
 // ============================================================================

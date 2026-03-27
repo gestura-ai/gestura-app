@@ -706,9 +706,9 @@
         // =====================================================================
         // Dynamic window height (step-aware)
         // =====================================================================
-        const ONBOARDING_MIN_HEIGHT_PX = 580;
-        const ONBOARDING_MAX_HEIGHT_PX_CAP = 900;
-        const ONBOARDING_MAX_HEIGHT_SCREEN_RATIO = 0.9;
+        const ONBOARDING_MIN_HEIGHT_PX = 700;
+        const ONBOARDING_MAX_HEIGHT_SCREEN_RATIO = 1.0;
+        const ONBOARDING_MAX_HEIGHT_SCREEN_MARGIN_PX = 50;
         const ONBOARDING_RESIZE_EASING = { x1: 0.2, y1: 0.8, x2: 0.2, y2: 1 };
         const ONBOARDING_HEIGHT_EPSILON_PX = 2;
         const ONBOARDING_SCROLL_MIN_CONTENT_PX = 160;
@@ -725,8 +725,9 @@
             const screenAvail = (window.screen && Number.isFinite(window.screen.availHeight))
                 ? window.screen.availHeight
                 : 1000;
-            const byScreen = Math.floor(screenAvail * ONBOARDING_MAX_HEIGHT_SCREEN_RATIO);
-            return Math.max(ONBOARDING_MIN_HEIGHT_PX, Math.min(ONBOARDING_MAX_HEIGHT_PX_CAP, byScreen));
+            const byRatio = Math.floor(screenAvail * ONBOARDING_MAX_HEIGHT_SCREEN_RATIO);
+            const byMargin = Math.floor(screenAvail - ONBOARDING_MAX_HEIGHT_SCREEN_MARGIN_PX);
+            return Math.max(ONBOARDING_MIN_HEIGHT_PX, Math.min(byRatio, byMargin));
         }
 
         function makeCubicBezier(x1, y1, x2, y2) {

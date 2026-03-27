@@ -17,16 +17,59 @@ export class TauriInvokeError extends Error {
   }
 }
 
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+
+const extractNestedMessage = (value: unknown): string | null => {
+  if (typeof value === 'string' && value.trim()) return value.trim();
+  if (value instanceof Error) {
+    const nested = value.message.trim();
+    if (nested) return nested;
+  }
+  if (isRecord(value)) {
+    for (const key of ['message', 'error', 'reason']) {
+      const candidate = value[key];
+      if (typeof candidate === 'string' && candidate.trim()) return candidate.trim();
+    }
+  }
+  return null;
+};
+
+const getCause = (value: unknown): unknown =>
+  isRecord(value) ? value.cause : undefined;
+
 const normalizeErrorMessage = (err: unknown): string => {
-  if (err instanceof Error && typeof err.message === 'string' && err.message.trim()) {
-    return err.message;
+  if (err instanceof Error) {
+    const directMessage = err.message.trim();
+    if (directMessage) return directMessage;
+
+    const nestedMessage = extractNestedMessage(getCause(err));
+    if (nestedMessage) return nestedMessage;
+
+    if (err.name.trim()) return err.name.trim();
   }
-  if (typeof err === 'string' && err.trim()) return err;
+
+  if (typeof err === 'string' && err.trim()) return err.trim();
+
+  if (isRecord(err)) {
+    const nestedMessage = extractNestedMessage(err);
+    if (nestedMessage) return nestedMessage;
+
+    const causeMessage = extractNestedMessage(getCause(err));
+    if (causeMessage) return causeMessage;
+  }
+
   try {
-    return JSON.stringify(err);
+    const json = JSON.stringify(err);
+    if (json && json !== '{}' && json !== '""') return json;
   } catch {
-    return String(err);
+    // Fall through to string coercion below.
   }
+
+  const stringified = String(err).trim();
+  if (stringified && stringified !== '[object Object]') return stringified;
+
+  return 'Unknown Tauri invoke error';
 };
 
 /**

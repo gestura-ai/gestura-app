@@ -174,6 +174,43 @@ pub struct WindowInfo {
     pub is_visible: bool,
 }
 
+const WINDOW_TYPE_AGENT: &str = "agent";
+const WINDOW_TYPE_CONFIG: &str = "config";
+const WINDOW_TYPE_ONBOARDING: &str = "onboarding";
+
+fn uses_regular_activation_policy(window_type: &str) -> bool {
+    matches!(
+        window_type,
+        WINDOW_TYPE_AGENT | WINDOW_TYPE_CONFIG | WINDOW_TYPE_ONBOARDING
+    )
+}
+
+#[cfg(target_os = "macos")]
+fn revert_to_tray_only_if_no_regular_windows(
+    app_handle: &AppHandle,
+    windows: &Arc<Mutex<HashMap<String, WindowInfo>>>,
+) {
+    use tauri::ActivationPolicy;
+
+    let remaining_regular_windows = windows
+        .lock()
+        .map(|window_map| {
+            window_map
+                .values()
+                .filter(|info| uses_regular_activation_policy(&info.window_type))
+                .count()
+        })
+        .unwrap_or(0);
+
+    if remaining_regular_windows == 0 {
+        if let Err(error) = app_handle.set_activation_policy(ActivationPolicy::Accessory) {
+            tracing::warn!(%error, "Failed to revert activation policy to Accessory");
+        } else {
+            tracing::info!("No managed windows remain — reverted to accessory (tray-only) mode");
+        }
+    }
+}
+
 pub struct WindowManager {
     sessions: Arc<Mutex<HashMap<String, AgentSession>>>,
     windows: Arc<Mutex<HashMap<String, WindowInfo>>>,
@@ -394,8 +431,8 @@ impl WindowManager {
         // Create the window
         self.create_agent_window(&session_id, &window_label)?;
 
-        // Persist sessions to disk
-        self.save_sessions_to_disk();
+        // Persist sessions on the background worker so window creation stays responsive.
+        self.schedule_save_sessions_to_disk();
 
         // Emit event to notify tray that sessions changed
         let _ = self.app.emit("sessions-changed", ());
@@ -414,6 +451,7 @@ impl WindowManager {
             WebviewWindowBuilder::new(&self.app, window_label, WebviewUrl::App(agent_url.into()))
                 .title("Gestura Agent")
                 .inner_size(800.0, 600.0)
+                .min_inner_size(500.0, 320.0)
                 .center()
                 .resizable(true)
                 .decorations(true)
@@ -425,6 +463,20 @@ impl WindowManager {
                 .focused(false)
                 .devtools(true)
                 .build()?;
+
+        // macOS: promote the app to a regular activation policy so this agent
+        // window appears in the Dock and Cmd+Tab switcher.
+        #[cfg(target_os = "macos")]
+        {
+            use tauri::ActivationPolicy;
+            if let Err(e) = self.app.set_activation_policy(ActivationPolicy::Regular) {
+                tracing::warn!("Failed to set activation policy to Regular: {e}");
+            }
+            // Explicitly set the Dock icon. In production `.app` bundles macOS
+            // resolves it from Info.plist automatically, but in dev builds (raw
+            // Cargo binary, no bundle) it falls back to a generic terminal icon.
+            crate::macos_icon::apply_dock_icon();
+        }
 
         // Keep the hidden-on-create behavior that avoids a flash before the
         // React shell applies theme/layout, but do not depend on the frontend as
@@ -465,7 +517,7 @@ impl WindowManager {
         // Store window info
         let window_info = WindowInfo {
             label: window_label.to_string(),
-            window_type: "agent".to_string(),
+            window_type: WINDOW_TYPE_AGENT.to_string(),
             session_id: Some(session_id.to_string()),
             created_at: chrono::Utc::now(),
             is_visible: true,
@@ -501,8 +553,14 @@ impl WindowManager {
                     windows.remove(&window_label_clone);
                 }
 
-                // Persist sessions to disk (session is now marked as closed)
-                save_sessions();
+                // macOS: if no more managed user-facing windows are open, revert to
+                // accessory mode so the app returns to tray-only behavior.
+                #[cfg(target_os = "macos")]
+                revert_to_tray_only_if_no_regular_windows(&app_handle, &windows);
+
+                // Persist the closed-session state on the background worker so the
+                // window close animation is not delayed by disk I/O.
+                schedule_save_sessions();
 
                 // Emit event to notify tray that sessions changed
                 let _ = app_handle.emit("sessions-changed", ());
@@ -527,7 +585,7 @@ impl WindowManager {
             return Ok(());
         }
 
-        let _window = WebviewWindowBuilder::new(
+        let window = WebviewWindowBuilder::new(
             &self.app,
             window_label,
             WebviewUrl::App("config.html".into()),
@@ -541,6 +599,36 @@ impl WindowManager {
         .visible(true)
         .devtools(true)
         .build()?;
+
+        {
+            let mut windows = self.windows.lock().unwrap();
+            windows.insert(
+                window_label.to_string(),
+                WindowInfo {
+                    label: window_label.to_string(),
+                    window_type: WINDOW_TYPE_CONFIG.to_string(),
+                    session_id: None,
+                    created_at: chrono::Utc::now(),
+                    is_visible: true,
+                },
+            );
+        }
+
+        let windows = Arc::clone(&self.windows);
+        let app_handle = self.app.clone();
+        let window_label = window_label.to_string();
+        window.on_window_event(move |event| {
+            if let tauri::WindowEvent::CloseRequested { .. } = event {
+                tracing::info!("Config window closing: {}", window_label);
+
+                if let Ok(mut windows) = windows.lock() {
+                    windows.remove(&window_label);
+                }
+
+                #[cfg(target_os = "macos")]
+                revert_to_tray_only_if_no_regular_windows(&app_handle, &windows);
+            }
+        });
 
         tracing::info!("Created config window");
         Ok(())
@@ -575,11 +663,28 @@ impl WindowManager {
         .devtools(true)
         .build()?;
 
+        {
+            let mut windows = self.windows.lock().unwrap();
+            windows.insert(
+                window_label.to_string(),
+                WindowInfo {
+                    label: window_label.to_string(),
+                    window_type: WINDOW_TYPE_ONBOARDING.to_string(),
+                    session_id: None,
+                    created_at: chrono::Utc::now(),
+                    is_visible: true,
+                },
+            );
+        }
+
         // Prevent closing the onboarding window via the OS close button until the
         // app is fully configured (LLM credentials + STT provider ready).
         // Programmatic close via `close_onboarding_window()` only runs after
         // `complete_onboarding()` succeeds, at which point `is_app_configured()`
         // returns `true` and the event handler allows the close to proceed.
+        let windows = Arc::clone(&self.windows);
+        let app_handle = self.app.clone();
+        let window_label = window_label.to_string();
         window.on_window_event(move |event| {
             if let tauri::WindowEvent::CloseRequested { api, .. } = event
                 && !crate::tray::is_app_configured()
@@ -588,6 +693,18 @@ impl WindowManager {
                     "Blocking onboarding window close — app is not yet fully configured"
                 );
                 api.prevent_close();
+                return;
+            }
+
+            if let tauri::WindowEvent::CloseRequested { .. } = event {
+                tracing::info!("Onboarding window closing: {}", window_label);
+
+                if let Ok(mut windows) = windows.lock() {
+                    windows.remove(&window_label);
+                }
+
+                #[cfg(target_os = "macos")]
+                revert_to_tray_only_if_no_regular_windows(&app_handle, &windows);
             }
         });
 
@@ -635,8 +752,8 @@ impl WindowManager {
                 sessions.insert(session_id.to_string(), session);
                 drop(sessions);
 
-                // Persist the restored session state
-                self.save_sessions_to_disk();
+                // Persist the restored session state without blocking the UI thread.
+                self.schedule_save_sessions_to_disk();
 
                 // Emit event to notify tray that sessions changed
                 let _ = self.app.emit("sessions-changed", ());
@@ -700,8 +817,11 @@ impl WindowManager {
             })
     }
 
-    /// Close all windows and sessions
-    pub fn close_all(&self) {
+    /// Close all managed windows while preserving session metadata.
+    ///
+    /// Each window's normal close handler is allowed to run so agent sessions are
+    /// marked closed/restorable instead of being deleted outright.
+    pub fn close_all_windows(&self) {
         let windows = {
             let windows = self.windows.lock().unwrap();
             windows.keys().cloned().collect::<Vec<_>>()
@@ -712,6 +832,13 @@ impl WindowManager {
                 let _ = window.close();
             }
         }
+
+        tracing::info!("Requested close for all managed windows");
+    }
+
+    /// Close all windows and sessions
+    pub fn close_all(&self) {
+        self.close_all_windows();
 
         // Clear all data
         self.sessions.lock().unwrap().clear();
@@ -1494,7 +1621,9 @@ pub fn open_shell_session() -> Result<(), crate::shell_session::ShellSessionErro
 /// This opens a terminal at the session workspace directory and runs:
 /// `gestura agent --resume --session <session_id>`
 pub fn open_shell_session_for_agent_resume(session_id: &str) -> Result<(), String> {
-    use crate::shell_session::{ShellSessionConfig, open_shell_session as spawn_shell};
+    use crate::shell_session::{
+        ShellSessionConfig, build_gestura_resume_command, open_shell_session as spawn_shell,
+    };
 
     let state = get_session_state(session_id)
         .ok_or_else(|| format!("Session not found: {}", session_id))?;
@@ -1519,10 +1648,13 @@ pub fn open_shell_session_for_agent_resume(session_id: &str) -> Result<(), Strin
         set_session_workspace(session_id, workspace_dir.clone());
     }
 
+    let initial_command = build_gestura_resume_command(session_id)
+        .map_err(|e| format!("Failed to resolve Gestura CLI for shell session: {}", e))?;
+
     let config = ShellSessionConfig::default()
         .with_env("GESTURA_SHELL", "1")
         .with_working_directory(workspace_dir)
-        .with_initial_command(format!("gestura agent --resume --session {}", session_id));
+        .with_initial_command(initial_command);
 
     spawn_shell(config).map_err(|e| format!("Failed to open shell session: {}", e))
 }
@@ -1576,11 +1708,44 @@ fn is_gestura_project(dir: &std::path::Path) -> bool {
 mod tests {
     use super::*;
 
+    fn test_window(window_type: &str) -> WindowInfo {
+        WindowInfo {
+            label: format!("{window_type}-window"),
+            window_type: window_type.to_string(),
+            session_id: None,
+            created_at: chrono::Utc::now(),
+            is_visible: true,
+        }
+    }
+
     #[test]
     fn sparse_session_tool_settings_keeps_only_permission_override() {
         let settings = sparse_session_tool_settings(SessionPermissionLevel::Full);
 
         assert_eq!(settings.permission_level, SessionPermissionLevel::Full);
         assert!(settings.enabled_tools.is_empty());
+    }
+
+    #[test]
+    fn regular_activation_policy_includes_all_managed_ui_windows() {
+        assert!(uses_regular_activation_policy(WINDOW_TYPE_AGENT));
+        assert!(uses_regular_activation_policy(WINDOW_TYPE_CONFIG));
+        assert!(uses_regular_activation_policy(WINDOW_TYPE_ONBOARDING));
+        assert!(!uses_regular_activation_policy("background-helper"));
+    }
+
+    #[test]
+    fn managed_window_types_round_trip_through_window_info() {
+        let windows = [
+            test_window(WINDOW_TYPE_AGENT),
+            test_window(WINDOW_TYPE_CONFIG),
+            test_window(WINDOW_TYPE_ONBOARDING),
+        ];
+
+        assert!(
+            windows
+                .iter()
+                .all(|window| uses_regular_activation_policy(&window.window_type))
+        );
     }
 }

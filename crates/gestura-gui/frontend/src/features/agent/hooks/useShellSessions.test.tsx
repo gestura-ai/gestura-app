@@ -11,6 +11,12 @@ vi.mock('@tauri-apps/api/webviewWindow', () => ({
   getCurrentWebviewWindow: () => ({ listen: listenMock }),
 }));
 
+const getSessionActivityLogMock = vi.fn();
+
+vi.mock('../../../services/tauri/agent', () => ({
+  getSessionActivityLog: (...args: unknown[]) => getSessionActivityLogMock(...args),
+}));
+
 import { useShellSessions } from './useShellSessions';
 
 function emit(eventName: string, payload: unknown) {
@@ -24,6 +30,8 @@ describe('useShellSessions', () => {
     listeners.clear();
     listenMock.mockClear();
     vi.restoreAllMocks();
+    getSessionActivityLogMock.mockReset();
+    getSessionActivityLogMock.mockResolvedValue([]);
   });
 
   it('tracks shell activity timestamps from lifecycle and output events', async () => {
@@ -61,5 +69,19 @@ describe('useShellSessions', () => {
 
     expect(result.current[0]?.lastActivityAt).toBe(6_000);
     expect(result.current[0]?.lines[result.current[0].lines.length - 1]?.data).toBe('running...');
+  });
+
+  it('defers history hydration until explicitly enabled', async () => {
+    const { rerender } = renderHook(
+      ({ restoreHistory }) => useShellSessions('session-1', { restoreHistory }),
+      { initialProps: { restoreHistory: false } },
+    );
+
+    await waitFor(() => expect(listenMock).toHaveBeenCalled());
+    expect(getSessionActivityLogMock).not.toHaveBeenCalled();
+
+    rerender({ restoreHistory: true });
+
+    await waitFor(() => expect(getSessionActivityLogMock).toHaveBeenCalledWith('session-1'));
   });
 });

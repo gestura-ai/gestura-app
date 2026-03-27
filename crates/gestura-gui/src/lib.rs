@@ -106,6 +106,12 @@ pub mod voice_activity_detection;
 pub mod voice_model_tuning;
 pub mod window_manager;
 
+/// macOS Dock icon helper (sets NSApp applicationIconImage at runtime).
+pub mod macos_icon;
+
+/// macOS native quit interception (keeps tray app alive on Dock/Cmd+Q quits).
+pub mod macos_quit;
+
 pub mod kv;
 pub mod voice_select;
 

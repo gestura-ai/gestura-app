@@ -35,6 +35,27 @@ describe('MenuPanel', () => {
     expect(onExportSession).not.toHaveBeenCalled();
   });
 
+  it('renders providers above tools in the menu order', () => {
+    const onClose = vi.fn();
+    const onNavigate = vi.fn();
+    const onExportSession = vi.fn();
+
+    const { container } = render(
+      <MenuPanel
+        isOpen
+        onClose={onClose}
+        onNavigate={onNavigate}
+        onExportSession={onExportSession}
+      />,
+    );
+
+    const labels = Array.from(container.querySelectorAll('.menu-item-label')).map((node) => node.textContent);
+
+    expect(labels.indexOf('Providers')).toBeGreaterThan(-1);
+    expect(labels.indexOf('Tools')).toBeGreaterThan(-1);
+    expect(labels.indexOf('Providers')).toBeLessThan(labels.indexOf('Tools'));
+  });
+
   it('uses the brain icon for memory and routes clicks to the memory panel', () => {
     const onClose = vi.fn();
     const onNavigate = vi.fn();

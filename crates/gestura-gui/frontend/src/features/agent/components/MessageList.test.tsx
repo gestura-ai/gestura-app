@@ -1,19 +1,28 @@
+import { useState } from 'react';
 import { fireEvent, render, screen, within } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 
-import type { AgentMessage } from '../types';
+import type { AgentMessage, TaskHierarchy } from '../types';
 import { parseMarkdown } from '../utils/markdown';
+import { taskLinkHref } from '../utils/taskLinks';
 import { MessageList } from './MessageList';
 
 vi.mock('@tauri-apps/api/core', () => ({
   convertFileSrc: (path: string) => `asset://${path}`,
 }));
 
-function renderMessageList(messages: AgentMessage[], onRevealShellSession = vi.fn()) {
+function renderMessageList(
+  messages: AgentMessage[],
+  tasks: TaskHierarchy = [],
+  onRevealShellSession = vi.fn(),
+  userScrolledUp = false,
+) {
   render(
     <MessageList
       messages={messages}
       streamingMessage={null}
+      tasks={tasks}
+      userScrolledUp={userScrolledUp}
       onScrollChange={vi.fn()}
       onRevealShellSession={onRevealShellSession}
     />,
@@ -23,6 +32,43 @@ function renderMessageList(messages: AgentMessage[], onRevealShellSession = vi.f
 }
 
 describe('MessageList', () => {
+  it('scrolls to the latest content with a single click on the new-messages badge', () => {
+    const message: AgentMessage = {
+      id: 'message-scroll',
+      role: 'assistant',
+      rawMarkdown: 'Latest reply',
+      isStreaming: false,
+      timestamp: Date.now(),
+      blocks: [{ kind: 'text', id: 'text-scroll', content: 'Latest reply' }],
+    };
+
+    function ScrollHarness() {
+      const [scrolledUp, setScrolledUp] = useState(true);
+
+      return (
+        <MessageList
+          messages={[message]}
+          streamingMessage={null}
+          userScrolledUp={scrolledUp}
+          onScrollChange={setScrolledUp}
+          onRevealShellSession={vi.fn()}
+        />
+      );
+    }
+
+    const { container } = render(<ScrollHarness />);
+    const messagesContainer = container.querySelector('.messages-container') as HTMLDivElement;
+
+    Object.defineProperty(messagesContainer, 'scrollHeight', { configurable: true, value: 480 });
+    Object.defineProperty(messagesContainer, 'clientHeight', { configurable: true, value: 120 });
+    messagesContainer.scrollTop = 40;
+
+    fireEvent.click(screen.getByRole('button', { name: /new messages/i }));
+
+    expect(messagesContainer.scrollTop).toBe(480);
+    expect(screen.queryByRole('button', { name: /new messages/i })).not.toBeInTheDocument();
+  });
+
   it('renders compact tool summaries with structured parameters and responses', () => {
     renderMessageList([{
       id: 'message-1',
@@ -56,6 +102,35 @@ describe('MessageList', () => {
     expect(screen.getAllByText('src/main.ts').length).toBeGreaterThan(0);
     expect(screen.getAllByText('Wrote src/main.ts').length).toBeGreaterThan(0);
     expect(screen.getByText('35 chars')).toBeInTheDocument();
+  });
+
+  it('links task names and replaces raw task ids with titles in assistant text', () => {
+    const tasks: TaskHierarchy = [{
+      id: 'task-run-tests',
+      name: 'Run tests',
+      description: 'Verify the build.',
+      status: 'NotStarted',
+      subtasks: [],
+    }];
+
+    renderMessageList([{
+      id: 'message-task-links',
+      role: 'assistant',
+      rawMarkdown: 'Please start with Run tests, then update task-run-tests once validation finishes.',
+      isStreaming: false,
+      timestamp: Date.now(),
+      blocks: [{
+        kind: 'text',
+        id: 'text-task-links',
+        content: 'Please start with Run tests, then update task-run-tests once validation finishes.',
+      }],
+    }], tasks);
+
+    const links = screen.getAllByRole('link', { name: 'Run tests' });
+    expect(links).toHaveLength(2);
+    expect(links[0]).toHaveAttribute('href', taskLinkHref('task-run-tests'));
+    expect(links[1]).toHaveAttribute('href', taskLinkHref('task-run-tests'));
+    expect(screen.queryByText('task-run-tests')).not.toBeInTheDocument();
   });
 
   it('hides duplicate shell tool cards and links inline shells to the manager', () => {
@@ -92,7 +167,7 @@ describe('MessageList', () => {
           collapsed: true,
         },
       ],
-    }], onRevealShellSession);
+    }], [], onRevealShellSession);
 
     expect(screen.queryByText('Running shell command')).not.toBeInTheDocument();
     expect(screen.getByText('cargo test')).toBeInTheDocument();
@@ -104,6 +179,39 @@ describe('MessageList', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Open in Shell Session Manager' }));
     expect(onRevealShellSession).toHaveBeenCalledWith('shell-session-1');
+  });
+
+  it('explains when a stalled inline shell looks like it is waiting for input', () => {
+    const nowSpy = vi.spyOn(Date, 'now').mockReturnValue(120_000);
+
+    renderMessageList([{
+      id: 'message-2b',
+      role: 'assistant',
+      rawMarkdown: '',
+      isStreaming: false,
+      timestamp: 120_000,
+      blocks: [{
+        kind: 'shell',
+        id: 'shell-prompt',
+        processId: 'proc-prompt',
+        shellSessionId: 'shell-session-prompt',
+        command: 'pnpm add vite',
+        cwd: '/workspace',
+        state: 'Running',
+        lastActivityAt: 10_000,
+        lines: [{ stream: 'Stdout', data: 'Need to install the following packages:\nProceed? (y/n)' }],
+        collapsed: true,
+      }],
+    }]);
+
+    fireEvent.click(screen.getByRole('button', { name: /pnpm add vite/i }));
+
+    const note = screen.getByText('Likely waiting for input').closest('.shell-console-note');
+    expect(note).not.toBeNull();
+    expect(within(note as HTMLElement).getByText(/Open the Shell Session Manager to respond/i)).toBeInTheDocument();
+    expect(within(note as HTMLElement).getByText(/Proceed\? \(y\/n\)/i)).toBeInTheDocument();
+
+    nowSpy.mockRestore();
   });
 
   it('renders short narration inline without a collapse control', () => {

@@ -12,6 +12,7 @@ import {
   explorerGetRoot,
   explorerListDir,
   explorerGitStatus,
+  explorerOpenEntryInFileManager,
   explorerOpenRootInFileManager,
 } from '../../../services/tauri/explorer';
 import { pickWorkspaceDirectory } from '../../../services/tauri/agent';
@@ -20,11 +21,8 @@ import {
   editorDeleteFile,
   editorRenameFile,
 } from '../../../services/tauri/editor';
-import type {
-  ExplorerEntry,
-  ExplorerGitChangeKind,
-  ExplorerGitPathStatus,
-} from '../types';
+import type { EditorOpenOptions, ExplorerEntry, ExplorerGitChangeKind, ExplorerGitPathStatus } from '../types';
+import { isMarkdownPath } from '../utils/language';
 import './ExplorerPanel.css';
 
 // ─── helpers ─────────────────────────────────────────────────────────────────
@@ -169,7 +167,7 @@ interface ContextMenu {
 export interface ExplorerPanelProps {
   sessionId: string;
   workspaceRoot?: string | null;
-  onOpenFile: (relPath: string) => void;
+  onOpenFile: (relPath: string, options?: EditorOpenOptions) => void;
   onWorkspaceChanged?: (workspace: string) => void;
   onShowToast?: (message: string, kind?: 'success' | 'error' | 'warning' | 'info') => void;
   style?: React.CSSProperties;
@@ -273,6 +271,11 @@ export const ExplorerPanel: React.FC<ExplorerPanelProps> = ({
     setCtxMenu({ x: e.clientX, y: e.clientY, entry, parentDir });
   }, []);
 
+  const handleOpenRenderedView = useCallback((relPath: string) => {
+    setCtxMenu(null);
+    onOpenFile(relPath, { viewMode: 'preview' });
+  }, [onOpenFile]);
+
   const handleCreate = useCallback(async (isDir: boolean) => {
     if (!newName.trim() || !creating) return;
     const rel = creating.parentDir ? `${creating.parentDir}/${newName.trim()}` : newName.trim();
@@ -317,6 +320,22 @@ export const ExplorerPanel: React.FC<ExplorerPanelProps> = ({
       onShowToast?.(`Failed to open project root: ${error}`, 'error');
     }
   }, [onShowToast, openInLabel, root, sessionId]);
+
+  const handleShowEntryInFileManager = useCallback(async (entry: ExplorerEntry) => {
+    setCtxMenu(null);
+
+    try {
+      await explorerOpenEntryInFileManager(sessionId, entry.rel_path);
+      onShowToast?.(
+        entry.kind === 'dir'
+          ? `Opened ${entry.name} in ${openInLabel}`
+          : `Opened ${entry.name}'s folder in ${openInLabel}`,
+        'success'
+      );
+    } catch (error) {
+      onShowToast?.(`Failed to show ${entry.name} in ${openInLabel}: ${error}`, 'error');
+    }
+  }, [onShowToast, openInLabel, sessionId]);
 
   const handleChangeProjectRoot = useCallback(async () => {
     setHeaderMenuOpen(false);
@@ -459,6 +478,14 @@ export const ExplorerPanel: React.FC<ExplorerPanelProps> = ({
             </button>
             {ctxMenu.entry && <>
               <div className="context-menu-sep" />
+              <button onClick={() => { void handleShowEntryInFileManager(ctxMenu.entry!); }}>
+                📂 Show in {openInLabel}
+              </button>
+              {ctxMenu.entry.kind === 'file' && isMarkdownPath(ctxMenu.entry.rel_path) && (
+                <button onClick={() => { void handleOpenRenderedView(ctxMenu.entry!.rel_path); }}>
+                  👁 Rendered View
+                </button>
+              )}
               <button onClick={() => {
                 if (!ctxMenu.entry) return;
                 setCtxMenu(null); setRenaming(ctxMenu.entry); setRenameValue(ctxMenu.entry.name);
@@ -487,7 +514,7 @@ interface TreeNodeProps {
   gitDirAgg: Map<string, ExplorerGitPathStatus>;
   /** Incremented by ExplorerPanel when the workspace changes; causes open dirs to re-fetch. */
   refreshKey: number;
-  onOpenFile: (relPath: string) => void;
+  onOpenFile: (relPath: string, options?: EditorOpenOptions) => void;
   onContextMenu: (e: React.MouseEvent, entry: ExplorerEntry) => void;
   /** Rel-path of the entry currently being renamed (null = none). */
   renamingPath: string | null;

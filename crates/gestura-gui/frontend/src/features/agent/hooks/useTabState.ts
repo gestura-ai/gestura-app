@@ -9,10 +9,44 @@ function nextTabId(): string {
 const TABS_STORAGE_KEY = 'gestura:agent:tabs';
 const ACTIVE_STORAGE_KEY = 'gestura:agent:activeTab';
 
+function normalizePersistedTab(tab: Partial<EditorTab>): EditorTab | null {
+  if (
+    typeof tab.id !== 'string'
+    || typeof tab.relPath !== 'string'
+    || typeof tab.label !== 'string'
+    || typeof tab.content !== 'string'
+    || typeof tab.language !== 'string'
+    || (tab.kind !== 'text' && tab.kind !== 'image' && tab.kind !== 'binary')
+  ) {
+    return null;
+  }
+
+  return {
+    ...tab,
+    id: tab.id,
+    relPath: tab.relPath,
+    label: tab.label,
+    content: tab.content,
+    language: tab.language,
+    kind: tab.kind,
+    isDirty: Boolean(tab.isDirty),
+    scrollOffset: typeof tab.scrollOffset === 'number' ? tab.scrollOffset : 0,
+    viewMode: tab.viewMode === 'preview' ? 'preview' : 'edit',
+    isDiffView: tab.viewMode === 'preview' ? false : Boolean(tab.isDiffView),
+  };
+}
+
 function loadPersistedTabs(): EditorTab[] {
   try {
     const raw = sessionStorage.getItem(TABS_STORAGE_KEY);
-    if (raw) return JSON.parse(raw) as EditorTab[];
+    if (raw) {
+      const parsed = JSON.parse(raw) as Partial<EditorTab>[];
+      if (Array.isArray(parsed)) {
+        return parsed
+          .map(normalizePersistedTab)
+          .filter((tab): tab is EditorTab => tab !== null);
+      }
+    }
   } catch {
     // ignore
   }
@@ -53,7 +87,7 @@ export function useTabState() {
     (file: Omit<EditorTab, 'id' | 'isDirty' | 'scrollOffset' | 'isDiffView'>) => {
       setTabs((prev) => {
         // If already open, just activate it
-        const existing = prev.find((t) => t.relPath === file.relPath);
+        const existing = prev.find((t) => t.relPath === file.relPath && t.viewMode === file.viewMode);
         if (existing) {
           setActiveTabId(existing.id);
           persistTabs(prev, existing.id);
@@ -180,9 +214,11 @@ export function useTabState() {
    */
   const renameTab = useCallback((tabId: string, newLabel: string, newRelPath: string) => {
     setTabs((prev) => {
-      const next = prev.map((t) =>
-        t.id === tabId ? { ...t, label: newLabel, relPath: newRelPath } : t
-      );
+      const target = prev.find((t) => t.id === tabId);
+      if (!target) return prev;
+      const next = prev.map((t) => (
+        t.relPath === target.relPath ? { ...t, label: newLabel, relPath: newRelPath } : t
+      ));
       persistTabs(next, activeTabId);
       return next;
     });

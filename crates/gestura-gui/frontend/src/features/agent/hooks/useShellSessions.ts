@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow';
 import type { UnlistenFn } from '@tauri-apps/api/event';
 
@@ -214,12 +214,18 @@ function applyShellOutputPayload(
  * from chat message rendering. The Shell Manager renders session-level state,
  * while chat retains command-level shell blocks.
  */
-export function useShellSessions(sessionId: string): ShellSessionRecord[] {
+export function useShellSessions(
+  sessionId: string,
+  options: { restoreHistory?: boolean } = {},
+): ShellSessionRecord[] {
   const [shells, setShells] = useState<ShellSessionRecord[]>([]);
-  const markActivity = () => Date.now();
+  const historyHydratedSessionRef = useRef<string | null>(null);
+  const markActivity = useCallback(() => Date.now(), []);
+  const { restoreHistory = true } = options;
 
   useEffect(() => {
     setShells([]);
+    historyHydratedSessionRef.current = null;
     const win = getCurrentWebviewWindow();
     const unlisten: UnlistenFn[] = [];
     let cancelled = false;
@@ -251,34 +257,6 @@ export function useShellSessions(sessionId: string): ShellSessionRecord[] {
     }
 
     async function setup(): Promise<void> {
-      const activityLog = await getSessionActivityLog(sessionId).catch(() => []);
-      if (!cancelled && activityLog.length > 0) {
-        const restored = activityLog.reduce<ShellSessionRecord[]>((current, entry) => {
-          const { incomingSessionId, value } = unpackPayload<Record<string, unknown>>(entry.payload);
-          if (sessionId && incomingSessionId && incomingSessionId !== sessionId) {
-            return current;
-          }
-          if (!value || typeof value !== 'object') {
-            return current;
-          }
-
-          const timestamp = Date.parse(entry.timestamp);
-          const activityAt = Number.isFinite(timestamp) ? timestamp : markActivity();
-
-          switch (entry.event_type) {
-            case 'agent-stream-shell-session-lifecycle':
-              return applyShellSessionLifecyclePayload(current, value, activityAt);
-            case 'agent-stream-shell-lifecycle':
-              return applyShellLifecyclePayload(current, value, activityAt);
-            case 'agent-stream-shell-output':
-              return applyShellOutputPayload(current, value, activityAt);
-            default:
-              return current;
-          }
-        }, []);
-        setShells(restored);
-      }
-
       await safeListen('agent-stream-shell-session-lifecycle', (event) => {
         const payload = accept<Record<string, unknown>>(event.payload);
         if (!payload) return;
@@ -316,7 +294,55 @@ export function useShellSessions(sessionId: string): ShellSessionRecord[] {
         }
       });
     };
-  }, [sessionId]);
+  }, [markActivity, sessionId]);
+
+  useEffect(() => {
+    if (!restoreHistory || historyHydratedSessionRef.current === sessionId) {
+      return;
+    }
+
+    let cancelled = false;
+
+    void getSessionActivityLog(sessionId)
+      .then((activityLog) => {
+        if (cancelled) return;
+        historyHydratedSessionRef.current = sessionId;
+        if (activityLog.length === 0) return;
+
+        const restored = activityLog.reduce<ShellSessionRecord[]>((current, entry) => {
+          const { incomingSessionId, value } = unpackPayload<Record<string, unknown>>(entry.payload);
+          if (sessionId && incomingSessionId && incomingSessionId !== sessionId) {
+            return current;
+          }
+          if (!value || typeof value !== 'object') {
+            return current;
+          }
+
+          const timestamp = Date.parse(entry.timestamp);
+          const activityAt = Number.isFinite(timestamp) ? timestamp : markActivity();
+
+          switch (entry.event_type) {
+            case 'agent-stream-shell-session-lifecycle':
+              return applyShellSessionLifecyclePayload(current, value, activityAt);
+            case 'agent-stream-shell-lifecycle':
+              return applyShellLifecyclePayload(current, value, activityAt);
+            case 'agent-stream-shell-output':
+              return applyShellOutputPayload(current, value, activityAt);
+            default:
+              return current;
+          }
+        }, []);
+
+        setShells((current) => (current.length > 0 ? current : restored));
+      })
+      .catch(() => {
+        historyHydratedSessionRef.current = sessionId;
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [markActivity, restoreHistory, sessionId]);
 
   return shells;
 }

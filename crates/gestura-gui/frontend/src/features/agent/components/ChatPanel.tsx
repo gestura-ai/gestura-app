@@ -1,11 +1,9 @@
 /**
- * ChatPanel — agent chat panel (header + messages + overlays).
+ * ChatPanel — agent chat panel (messages + overlays).
  * Orchestrates useChatSession and renders overlays using app-scoped panel/toast state.
  *
- * Header matches agent.html: Gestura brand logo, "Gestura Agent", status badge,
- * settings gear (opens MenuPanel). The header and quick launch bar are portaled
- * into app-level docks so they can span the full window, while the text input
- * and message list stay inside the chat panel.
+ * The quick launch bar is portaled into the app-level bottom dock so it can span
+ * the full window, while the text input and message list stay inside the chat panel.
  */
 import React, { useCallback, useEffect, useState } from 'react';
 import { createPortal } from 'react-dom';
@@ -13,6 +11,7 @@ import '../ChatPanel.css';
 import { useChatSession } from '../hooks/useChatSession';
 import type { PanelName, PanelState } from '../hooks/usePanelState';
 import type { ToastState } from '../hooks/useToast';
+import { TASK_LINK_SCHEME } from '../utils/taskLinks';
 import { MessageList } from './MessageList';
 import { MessageInput, QuickAccessBar } from './MessageInput';
 import { ToolConfirmationDialog } from './ToolConfirmationDialog';
@@ -35,8 +34,6 @@ export interface ChatPanelProps {
   viewMode?: 'message-only' | 'editor';
   /** Optional inline style — used by parent for dynamic width (resizable panel). */
   style?: React.CSSProperties;
-  /** Optional app-level host for the shared top header dock. */
-  headerHost?: HTMLElement | null;
   /** Optional app-level host for the shared bottom quick-launch dock. */
   quickAccessHost?: HTMLElement | null;
   /** App-scoped overlay panel state. */
@@ -51,12 +48,12 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
   onWorkspaceChanged,
   viewMode,
   style,
-  headerHost,
   quickAccessHost,
   panelState,
   toastState,
 }) => {
   const [cliInstalled, setCliInstalled] = useState(false);
+  const [highlightedTaskId, setHighlightedTaskId] = useState<string | null>(null);
   const {
     messages, streamingMessage, isProcessing, isStopping, isListening, status,
     pendingConfirmation, tasks, runtimeTaskSnapshot, knowledgeItems, toolSettings, memoryRevision,
@@ -77,6 +74,29 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
     setActiveShell,
   } = panelState;
   const { showToast } = toastState;
+  const tasksOpen = isOpen('tasks');
+  const memoryOpen = isOpen('memory');
+  const knowledgeOpen = isOpen('knowledge');
+  const toolsOpen = isOpen('tools');
+  const settingsOpen = isOpen('settings');
+
+  useEffect(() => {
+    if (tasksOpen || memoryOpen) {
+      void refreshTasks();
+    }
+  }, [memoryOpen, refreshTasks, tasksOpen]);
+
+  useEffect(() => {
+    if (knowledgeOpen) {
+      void refreshKnowledge();
+    }
+  }, [knowledgeOpen, refreshKnowledge]);
+
+  useEffect(() => {
+    if (toolsOpen || settingsOpen) {
+      void refreshToolSettings();
+    }
+  }, [refreshToolSettings, settingsOpen, toolsOpen]);
 
   // External link handler — open https:// links in system browser
   useEffect(() => {
@@ -106,6 +126,13 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
       const anchor = target?.closest('a[href]') as HTMLAnchorElement | null;
       if (!anchor) return;
       const href = anchor.getAttribute('href') ?? '';
+      if (href.startsWith(TASK_LINK_SCHEME)) {
+        e.preventDefault();
+        const taskId = decodeURIComponent(href.slice(TASK_LINK_SCHEME.length));
+        setHighlightedTaskId(taskId);
+        openPanel('tasks');
+        return;
+      }
       if (/^https?:\/\//i.test(href)) {
         e.preventDefault();
         // Use Tauri opener plugin if available, otherwise log
@@ -119,7 +146,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
     };
     document.addEventListener('click', handleClick);
     return () => document.removeEventListener('click', handleClick);
-  }, []);
+  }, [openPanel, refreshTasks]);
 
   const handleScrollChange = useCallback((scrolled: boolean) => {
     setUserScrolledUp(scrolled);
@@ -161,79 +188,25 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
     if (shellSessionId) setActiveShell(shellSessionId);
   }, [openShellManager, setActiveShell]);
 
-  const badgeClass =
-    status.kind === 'busy' ? ' busy' :
-      status.kind === 'reflection' ? ' busy' :
-        status.kind === 'listening' ? ' active' :
-          status.kind === 'error' ? ' error' : '';
-
   const quickAccessDock = (
     <QuickAccessBar
       viewMode={viewMode}
       onToggleEditor={onToggleEditor}
+      onOpenMenu={() => togglePanel('menu')}
       onOpenTasks={() => togglePanel('tasks')}
       onToggleShellManager={toggleShellManager}
       shellManagerOpen={shellManager.visible}
       showOpenTerminal={cliInstalled}
       onOpenTerminal={handleOpenTerminal}
+      status={status}
       dockMode="window"
     />
   );
 
-  const header = (
-    <div className="header">
-      <div className="header-title">
-        <img className="header-logo" src="/assets/gestura-app.svg" alt="" aria-hidden="true" />
-        Gestura Agent
-      </div>
-      <div className="header-controls">
-        <div className={`status-badge${badgeClass}`}>{status.text}</div>
-        <button type="button" className="btn-settings" title="Menu"
-          onClick={() => togglePanel('menu')}>
-          <span className="icon-settings"></span>
-        </button>
-      </div>
-    </div>
-  );
+  const overlayRoot = typeof document !== 'undefined' ? document.body : null;
 
-  return (
-    <div className="agent-panel agent-panel--chat" style={style}>
-      {headerHost ? createPortal(header, headerHost) : header}
-
-      <div className="chat-workspace">
-        <MessageList messages={messages} streamingMessage={streamingMessage}
-          onScrollChange={handleScrollChange}
-          onRevealShellSession={handleRevealShellSession}
-          canResume={canResume} isResuming={isResuming}
-          onResume={() => { void resumeStream(); }} />
-      </div>
-
-      {/* Scroll-to-bottom indicator */}
-      {userScrolledUp && (
-        <div className="scroll-indicator" aria-live="polite">
-          <button type="button" className="scroll-to-bottom-btn visible"
-            onClick={() => setUserScrolledUp(false)}>
-            ↓ New messages
-          </button>
-        </div>
-      )}
-
-      {/* Tool confirmation overlay */}
-      {pendingConfirmation && (
-        <ToolConfirmationDialog confirmation={pendingConfirmation} onDecide={resolveConfirmation} />
-      )}
-
-      <MessageInput
-        isProcessing={isProcessing} isStopping={isStopping}
-        isListening={isListening} status={status}
-        onSend={handleSend} onCancel={handleCancel} onVoiceToggle={toggleVoice}
-        onEnhance={handleEnhance} viewMode={viewMode}
-      />
-
-      {/* App-level bottom quick launch dock */}
-      {quickAccessHost ? createPortal(quickAccessDock, quickAccessHost) : null}
-
-      {/* ── Side Panels ── */}
+  const sidePanels = (
+    <>
       <MenuPanel
         isOpen={isOpen('menu')}
         onClose={closePanel}
@@ -244,6 +217,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
       <TaskPanel isOpen={isOpen('tasks')} onClose={closePanel} sessionId={sessionId}
         tasks={tasks} onRefreshTasks={refreshTasks} onSendMessage={sendMessage}
         runtimeTaskSnapshot={runtimeTaskSnapshot}
+        highlightedTaskId={tasksOpen ? highlightedTaskId : null}
         onShowToast={showToast} />
 
       <MemoryConsolePanel
@@ -272,6 +246,38 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
         sessionId={sessionId} toolSettings={toolSettings}
         onWorkspaceChanged={onWorkspaceChanged}
         onShowToast={showToast} />
+    </>
+  );
+
+  return (
+    <div className="agent-panel agent-panel--chat" style={style}>
+      <div className="chat-workspace">
+        <MessageList messages={messages} streamingMessage={streamingMessage}
+          tasks={tasks}
+          userScrolledUp={userScrolledUp}
+          onScrollChange={handleScrollChange}
+          onRevealShellSession={handleRevealShellSession}
+          canResume={canResume} isResuming={isResuming}
+          onResume={() => { void resumeStream(); }} />
+      </div>
+
+      {/* Tool confirmation overlay */}
+      {pendingConfirmation && (
+        <ToolConfirmationDialog confirmation={pendingConfirmation} onDecide={resolveConfirmation} />
+      )}
+
+      <MessageInput
+        isProcessing={isProcessing} isStopping={isStopping}
+        isListening={isListening} status={status}
+        onSend={handleSend} onCancel={handleCancel} onVoiceToggle={toggleVoice}
+        onEnhance={handleEnhance} viewMode={viewMode}
+      />
+
+      {/* App-level bottom quick launch dock */}
+      {quickAccessHost ? createPortal(quickAccessDock, quickAccessHost) : null}
+
+      {/* ── Side Panels ── */}
+      {overlayRoot ? createPortal(sidePanels, overlayRoot) : sidePanels}
     </div>
   );
 };

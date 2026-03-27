@@ -14,12 +14,12 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { useTabState } from '../hooks/useTabState';
 import { editorReadFile, editorWriteFile, editorGitDiff, editorRenameFile } from '../../../services/tauri/editor';
-import { languageFromPath } from '../utils/language';
+import { isMarkdownPath, languageFromPath } from '../utils/language';
 import type { EditorLanguage } from '../utils/language';
 import { TabBar } from './TabBar';
 import { EditorPane } from './EditorPane';
 import { DiffPane } from './DiffPane';
-import type { EditorTab } from '../types';
+import type { EditorOpenOptions, EditorTab } from '../types';
 import './EditorArea.css';
 
 export interface EditorAreaProps {
@@ -47,9 +47,11 @@ export const EditorArea: React.FC<EditorAreaProps> = ({ sessionId, isDark }) => 
   } = useTabState();
 
   // ── Open a file by rel path ─────────────────────────────────────────────────
-  const handleOpenFile = useCallback(async (relPath: string) => {
+  const handleOpenFile = useCallback(async (relPath: string, options?: EditorOpenOptions) => {
+    const viewMode = options?.viewMode ?? 'edit';
+    if (viewMode === 'preview' && !isMarkdownPath(relPath)) return;
     // If already open, just activate
-    const existing = tabs.find((t) => t.relPath === relPath);
+    const existing = tabs.find((t) => t.relPath === relPath && t.viewMode === viewMode);
     if (existing) {
       activateTab(existing.id);
       return;
@@ -63,11 +65,37 @@ export const EditorArea: React.FC<EditorAreaProps> = ({ sessionId, isDark }) => 
         content: res.kind === 'image' ? (res.data_url ?? '') : res.content,
         language: lang,
         kind: res.kind,
+        viewMode,
       });
     } catch (err) {
       console.warn('[EditorArea] failed to read file:', relPath, err);
     }
   }, [tabs, sessionId, openTab, activateTab]);
+
+  const handleOpenRenderedView = useCallback((tabId: string) => {
+    const sourceTab = tabs.find((tab) => tab.id === tabId);
+    if (!sourceTab || sourceTab.viewMode !== 'edit' || sourceTab.kind !== 'text' || !isMarkdownPath(sourceTab.relPath)) {
+      return;
+    }
+
+    const existingPreview = tabs.find((tab) => tab.relPath === sourceTab.relPath && tab.viewMode === 'preview');
+    if (existingPreview) {
+      if (existingPreview.content !== sourceTab.content) {
+        refreshTabContent(existingPreview.id, sourceTab.content);
+      }
+      activateTab(existingPreview.id);
+      return;
+    }
+
+    openTab({
+      relPath: sourceTab.relPath,
+      label: sourceTab.label,
+      content: sourceTab.content,
+      language: sourceTab.language,
+      kind: sourceTab.kind,
+      viewMode: 'preview',
+    });
+  }, [activateTab, openTab, refreshTabContent, tabs]);
 
   // ── Rename a tab (renames on disk + updates tab state) ─────────────────────
   const handleRenameTab = useCallback(async (tabId: string, newLabel: string) => {
@@ -86,19 +114,24 @@ export const EditorArea: React.FC<EditorAreaProps> = ({ sessionId, isDark }) => 
   // ── Save a tab ──────────────────────────────────────────────────────────────
   const handleSave = useCallback(async (tabId: string) => {
     const tab = tabs.find((t) => t.id === tabId);
-    if (!tab || tab.kind !== 'text') return;
+    if (!tab || tab.kind !== 'text' || tab.viewMode !== 'edit') return;
     try {
       await editorWriteFile(sessionId, tab.relPath, tab.content);
       markTabClean(tabId);
+      tabs
+        .filter((openTabItem) => openTabItem.relPath === tab.relPath && openTabItem.viewMode === 'preview')
+        .forEach((previewTab) => refreshTabContent(previewTab.id, tab.content));
     } catch (err) {
       console.warn('[EditorArea] save failed:', tab.relPath, err);
     }
-  }, [tabs, sessionId, markTabClean]);
+  }, [tabs, sessionId, markTabClean, refreshTabContent]);
 
   // ── Toggle diff view for a tab ──────────────────────────────────────────────
   const handleToggleDiff = useCallback(async (tabId: string) => {
+    const tab = tabs.find((candidate) => candidate.id === tabId);
+    if (!tab || tab.kind !== 'text' || tab.viewMode !== 'edit') return;
     toggleDiffView(tabId);
-  }, [toggleDiffView]);
+  }, [tabs, toggleDiffView]);
 
   // ── Listen for the global save event (fired by AgentApp on Cmd+S) ───────────
   // AgentApp may or may not include a tabId; fall back to activeTabId.
@@ -160,6 +193,16 @@ export const EditorArea: React.FC<EditorAreaProps> = ({ sessionId, isDark }) => 
   useEffect(() => {
     const handler = async () => {
       for (const tab of tabsRef.current) {
+        if (
+          tab.viewMode === 'preview'
+          && tabsRef.current.some((openTabItem) => (
+            openTabItem.relPath === tab.relPath
+            && openTabItem.viewMode === 'edit'
+            && openTabItem.isDirty
+          ))
+        ) {
+          continue;
+        }
         if (tab.isDirty || tab.kind !== 'text') continue;
         try {
           const res = await editorReadFile(sessionId, tab.relPath);
@@ -190,6 +233,7 @@ export const EditorArea: React.FC<EditorAreaProps> = ({ sessionId, isDark }) => 
           onClose={closeTab}
           onReorder={reorderTabs}
           onRenameTab={handleRenameTab}
+          onOpenRenderedView={handleOpenRenderedView}
         />
         <div className="editor-area__pane">
           {activeTab ? (

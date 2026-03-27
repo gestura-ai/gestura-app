@@ -6,6 +6,7 @@ import { ExplorerPanel } from './ExplorerPanel';
 const explorerGetRootMock = vi.fn();
 const explorerListDirMock = vi.fn();
 const explorerGitStatusMock = vi.fn();
+const explorerOpenEntryInFileManagerMock = vi.fn();
 const explorerOpenRootInFileManagerMock = vi.fn();
 const pickWorkspaceDirectoryMock = vi.fn();
 
@@ -13,6 +14,7 @@ vi.mock('../../../services/tauri/explorer', () => ({
   explorerGetRoot: (sessionId: string) => explorerGetRootMock(sessionId),
   explorerListDir: (sessionId: string, dirRel: string) => explorerListDirMock(sessionId, dirRel),
   explorerGitStatus: (sessionId: string) => explorerGitStatusMock(sessionId),
+  explorerOpenEntryInFileManager: (sessionId: string, relPath: string) => explorerOpenEntryInFileManagerMock(sessionId, relPath),
   explorerOpenRootInFileManager: (sessionId: string) => explorerOpenRootInFileManagerMock(sessionId),
 }));
 
@@ -29,12 +31,14 @@ describe('ExplorerPanel header menu', () => {
     explorerGetRootMock.mockReset();
     explorerListDirMock.mockReset();
     explorerGitStatusMock.mockReset();
+    explorerOpenEntryInFileManagerMock.mockReset();
     explorerOpenRootInFileManagerMock.mockReset();
     pickWorkspaceDirectoryMock.mockReset();
 
     explorerGetRootMock.mockResolvedValue({ root: '/workspace', is_git_repo: true });
     explorerListDirMock.mockResolvedValue({ root: '/workspace', dir_rel: '', entries: [], truncated: false });
     explorerGitStatusMock.mockResolvedValue({ root: '/workspace', is_git_repo: true, paths: {} });
+    explorerOpenEntryInFileManagerMock.mockResolvedValue(undefined);
     explorerOpenRootInFileManagerMock.mockResolvedValue(undefined);
     pickWorkspaceDirectoryMock.mockResolvedValue('/workspace/updated');
   });
@@ -79,5 +83,79 @@ describe('ExplorerPanel header menu', () => {
       expect(onWorkspaceChanged).toHaveBeenCalledWith('/workspace/updated');
     });
     expect(onShowToast).toHaveBeenCalledWith('Workspace updated', 'success');
+  });
+
+  it('opens markdown files in rendered view from the file tree context menu', async () => {
+    const onOpenFile = vi.fn();
+    explorerListDirMock.mockResolvedValue({
+      root: '/workspace',
+      dir_rel: '',
+      entries: [{ name: 'README.md', rel_path: 'README.md', kind: 'file', is_symlink: false }],
+      truncated: false,
+    });
+
+    const { container } = render(<ExplorerPanel sessionId="session-3" onOpenFile={onOpenFile} />);
+
+    await waitFor(() => {
+      expect(screen.getByText('README.md')).toBeInTheDocument();
+    });
+
+    const row = container.querySelector('.explorer-row');
+    expect(row).not.toBeNull();
+
+    fireEvent.contextMenu(row!);
+    fireEvent.click(screen.getByRole('button', { name: /Rendered View/i }));
+
+    expect(onOpenFile).toHaveBeenCalledWith('README.md', { viewMode: 'preview' });
+  });
+
+  it('shows a file in Finder from the file tree context menu', async () => {
+    explorerListDirMock.mockResolvedValue({
+      root: '/workspace',
+      dir_rel: '',
+      entries: [{ name: 'README.md', rel_path: 'README.md', kind: 'file', is_symlink: false }],
+      truncated: false,
+    });
+
+    const { container } = render(<ExplorerPanel sessionId="session-4" onOpenFile={vi.fn()} />);
+
+    await waitFor(() => {
+      expect(screen.getByText('README.md')).toBeInTheDocument();
+    });
+
+    const row = container.querySelector('.explorer-row');
+    expect(row).not.toBeNull();
+
+    fireEvent.contextMenu(row!);
+    fireEvent.click(screen.getByRole('button', { name: /Show in /i }));
+
+    await waitFor(() => {
+      expect(explorerOpenEntryInFileManagerMock).toHaveBeenCalledWith('session-4', 'README.md');
+    });
+  });
+
+  it('shows a directory in Finder from the file tree context menu', async () => {
+    explorerListDirMock.mockResolvedValue({
+      root: '/workspace',
+      dir_rel: '',
+      entries: [{ name: 'docs', rel_path: 'docs', kind: 'dir', is_symlink: false }],
+      truncated: false,
+    });
+
+    const { container } = render(<ExplorerPanel sessionId="session-5" onOpenFile={vi.fn()} />);
+
+    await waitFor(() => {
+      expect(screen.getByText('docs')).toBeInTheDocument();
+    });
+
+    const row = container.querySelector('.explorer-row');
+    expect(row).not.toBeNull();
+
+    fireEvent.contextMenu(row!);
+    fireEvent.click(screen.getByRole('button', { name: /Show in /i }));
+
+    await waitFor(() => {
+      expect(explorerOpenEntryInFileManagerMock).toHaveBeenCalledWith('session-5', 'docs');
+    });
   });
 });

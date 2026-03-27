@@ -25,6 +25,7 @@ import { json } from '@codemirror/lang-json';
 import { markdown } from '@codemirror/lang-markdown';
 import type { EditorTab } from '../types';
 import type { EditorLanguage } from '../utils/language';
+import { parseMarkdown } from '../utils/markdown';
 import './EditorPane.css';
 
 // ─── theme ────────────────────────────────────────────────────────────────────
@@ -187,6 +188,22 @@ export const EditorPane: React.FC<EditorPaneProps> = ({
       });
     }
   }, [tab.content]);
+
+  if (tab.viewMode === 'preview' && tab.kind === 'text') {
+    return (
+      <div className="editor-pane editor-pane--markdown-preview">
+        <div className="editor-preview-toolbar">
+          <span className="editor-preview-badge">Rendered</span>
+          <span className="editor-preview-hint">Read-only</span>
+        </div>
+        <div
+          className="editor-markdown-preview markdown-body"
+          data-testid="markdown-preview"
+          dangerouslySetInnerHTML={{ __html: parseMarkdown(tab.content) }}
+        />
+      </div>
+    );
+  }
 
   if (tab.kind === 'image') {
     return (

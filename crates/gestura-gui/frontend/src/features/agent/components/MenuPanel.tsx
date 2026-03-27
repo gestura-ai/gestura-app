@@ -55,18 +55,18 @@ export function MenuPanel({ isOpen, onClose, onNavigate, onExportSession }: Menu
 
           <div
             className="menu-item"
-            onClick={() => handleItem("tools")}
-          >
-            <span className="icon-tools" />
-            <span className="menu-item-label">Tools</span>
-          </div>
-
-          <div
-            className="menu-item"
             onClick={() => handleItem("providers")}
           >
             <span className="icon-server-01" />
             <span className="menu-item-label">Providers</span>
+          </div>
+
+          <div
+            className="menu-item"
+            onClick={() => handleItem("tools")}
+          >
+            <span className="icon-tools" />
+            <span className="menu-item-label">Tools</span>
           </div>
 
           <div

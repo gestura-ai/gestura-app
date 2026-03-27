@@ -12,6 +12,7 @@
  */
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import type { EditorTab } from '../types';
+import { isMarkdownPath } from '../utils/language';
 import './TabBar.css';
 
 export interface TabBarProps {
@@ -23,6 +24,7 @@ export interface TabBarProps {
   onReorder: (fromIndex: number, toIndex: number) => void;
   /** Called when user confirms a rename; should persist the new name on disk. */
   onRenameTab?: (tabId: string, newLabel: string) => Promise<void>;
+  onOpenRenderedView?: (tabId: string) => void;
 }
 
 interface CtxMenu {
@@ -32,7 +34,7 @@ interface CtxMenu {
 }
 
 export const TabBar: React.FC<TabBarProps> = ({
-  tabs, activeTabId, onActivate, onClose, onReorder, onRenameTab,
+  tabs, activeTabId, onActivate, onClose, onReorder, onRenameTab, onOpenRenderedView,
 }) => {
   const [dragSrc, setDragSrc] = useState<number | null>(null);
   const [dragOverIdx, setDragOverIdx] = useState<number | null>(null);
@@ -82,6 +84,12 @@ export const TabBar: React.FC<TabBarProps> = ({
     setEditValue(tab.label);
   }, [ctxMenu, tabs]);
 
+  const openRenderedViewFromMenu = useCallback(() => {
+    if (!ctxMenu || !onOpenRenderedView) return;
+    setCtxMenu(null);
+    onOpenRenderedView(ctxMenu.tabId);
+  }, [ctxMenu, onOpenRenderedView]);
+
   const commitRename = useCallback(async () => {
     if (!editingTabId || !editValue.trim()) { setEditingTabId(null); return; }
     const newLabel = editValue.trim();
@@ -130,6 +138,7 @@ export const TabBar: React.FC<TabBarProps> = ({
           const isActive = tab.id === activeTabId;
           const isDragTarget = dragOverIdx === idx && dragSrc !== idx;
           const isEditing = editingTabId === tab.id;
+          const tabTitle = tab.viewMode === 'preview' ? `${tab.relPath} · Rendered preview` : tab.relPath;
           return (
             <div
               key={tab.id}
@@ -141,7 +150,7 @@ export const TabBar: React.FC<TabBarProps> = ({
                 tab.isDirty ? 'tab--dirty' : '',
                 isDragTarget ? 'tab--drag-target' : '',
               ].filter(Boolean).join(' ')}
-              title={tab.relPath}
+              title={tabTitle}
               draggable={!isEditing}
               onClick={() => { if (!isEditing) onActivate(tab.id); }}
               onContextMenu={(e) => handleContextMenu(e, tab)}
@@ -166,7 +175,10 @@ export const TabBar: React.FC<TabBarProps> = ({
                   onBlur={cancelRename}
                 />
               ) : (
-                <span className="tab-label">{tab.label}</span>
+                <span className="tab-label-wrap">
+                  <span className="tab-label">{tab.label}</span>
+                  {tab.viewMode === 'preview' && <span className="tab-view-badge">Rendered</span>}
+                </span>
               )}
               {tab.isDirty && !isEditing && (
                 <span className="tab-dirty-dot" aria-label="Unsaved">●</span>
@@ -186,13 +198,29 @@ export const TabBar: React.FC<TabBarProps> = ({
       </div>
 
       {ctxMenu && (
-        <div
-          ref={menuRef}
-          className="tab-context-menu"
-          style={{ top: ctxMenu.y, left: ctxMenu.x }}
-        >
-          <button onClick={startEditFromMenu}>✏️ Rename</button>
-        </div>
+        (() => {
+          const ctxTab = tabs.find((tab) => tab.id === ctxMenu.tabId);
+          const canOpenRenderedView = Boolean(
+            ctxTab
+            && ctxTab.viewMode === 'edit'
+            && ctxTab.kind === 'text'
+            && isMarkdownPath(ctxTab.relPath)
+            && onOpenRenderedView,
+          );
+
+          return (
+            <div
+              ref={menuRef}
+              className="tab-context-menu"
+              style={{ top: ctxMenu.y, left: ctxMenu.x }}
+            >
+              {canOpenRenderedView && (
+                <button onClick={openRenderedViewFromMenu}>👁 Rendered View</button>
+              )}
+              <button onClick={startEditFromMenu}>✏️ Rename</button>
+            </div>
+          );
+        })()
       )}
     </>
   );

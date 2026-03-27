@@ -4,8 +4,10 @@
  * Uses a glassmorphism pill (input-container) with icon-microphone, icon-sparkles,
  * and icon-send buttons.
  */
-import React, { useCallback, useRef, useState, KeyboardEvent } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState, KeyboardEvent } from 'react';
 import type { StatusState } from '../types';
+import { SessionStatusText } from './SessionStatusText';
+import { calculateVisibleQuickAccessExtras } from './quickAccessLayout';
 
 export interface MessageInputProps {
   isProcessing: boolean;
@@ -23,6 +25,8 @@ export interface MessageInputProps {
 export interface QuickAccessBarProps {
   /** Called when the explorer/message toggle icon is clicked. */
   onToggleEditor?: () => void;
+  /** Called when the footer menu/options button is clicked. */
+  onOpenMenu?: () => void;
   /** Called when the Tasks quick-access button is clicked. */
   onOpenTasks?: () => void;
   /** Called when the Shell Manager quick-access button is clicked. */
@@ -31,6 +35,8 @@ export interface QuickAccessBarProps {
   shellManagerOpen?: boolean;
   /** Called when the Terminal quick-access button is clicked. */
   onOpenTerminal?: () => void;
+  /** Session status shown in the shared footer dock. */
+  status?: StatusState;
   /** Current view mode — drives the explorer/message icon swap. */
   viewMode?: 'message-only' | 'editor';
   /** Layout mode for rendering within the chat panel vs. the shared window-bottom dock. */
@@ -170,51 +176,212 @@ export const MessageInput: React.FC<MessageInputProps> = ({
 
 export const QuickAccessBar: React.FC<QuickAccessBarProps> = ({
   onToggleEditor,
+  onOpenMenu,
   onOpenTasks,
   onToggleShellManager,
   shellManagerOpen = false,
   onOpenTerminal,
+  status,
   viewMode,
   dockMode = 'panel',
   showOpenTerminal = true,
 }) => {
   const isEditor = viewMode === 'editor';
+  const showFooterChrome = dockMode === 'window';
+  const iconButtonSize = isEditor ? 26 : 30;
+  const barRef = useRef<HTMLDivElement>(null);
+  const brandGroupRef = useRef<HTMLDivElement>(null);
+  const rightGroupRef = useRef<HTMLDivElement>(null);
   const dockClassName = [
     'quick-access-dock',
     dockMode === 'window' ? 'quick-access-dock--window' : '',
     isEditor ? 'quick-access-dock--editor' : '',
   ].filter(Boolean).join(' ');
 
+  const actionItems = useMemo(() => {
+    const items: Array<{
+      key: string;
+      title: string;
+      onClick?: () => void;
+      iconClass: string;
+      active?: boolean;
+    }> = [];
+
+    if (onToggleEditor) {
+      items.push({
+        key: 'toggle-editor',
+        title: isEditor ? 'Messages (Cmd/Ctrl+E)' : 'Explorer (Cmd/Ctrl+E)',
+        onClick: onToggleEditor,
+        iconClass: isEditor ? 'icon-message' : 'icon-folder',
+      });
+    }
+
+    if (onOpenTasks) {
+      items.push({
+        key: 'tasks',
+        title: 'Tasks (Cmd/Ctrl+T)',
+        onClick: onOpenTasks,
+        iconClass: 'icon-checklist',
+      });
+    }
+
+    if (onToggleShellManager) {
+      items.push({
+        key: 'shell-manager',
+        title: 'Shell Manager (Cmd/Ctrl+`)',
+        onClick: onToggleShellManager,
+        iconClass: 'icon-terminal',
+        active: shellManagerOpen,
+      });
+    }
+
+    if (showOpenTerminal && onOpenTerminal) {
+      items.push({
+        key: 'open-terminal',
+        title: 'Open Session in Shell',
+        onClick: onOpenTerminal,
+        iconClass: 'icon-terminal-square',
+      });
+    }
+
+    return items;
+  }, [isEditor, onOpenTasks, onOpenTerminal, onToggleEditor, onToggleShellManager, shellManagerOpen, showOpenTerminal]);
+
+  const [primaryAction, ...extraActions] = actionItems;
+  const [visibleExtraActionCount, setVisibleExtraActionCount] = useState(extraActions.length);
+
+  useEffect(() => {
+    const syncVisibleActions = () => {
+      if (!showFooterChrome) {
+        setVisibleExtraActionCount(extraActions.length);
+        return;
+      }
+
+      const containerWidth = barRef.current?.clientWidth ?? 0;
+      const brandWidth = brandGroupRef.current?.offsetWidth ?? 0;
+      const rightWidth = rightGroupRef.current?.offsetWidth ?? 0;
+      const nextCount = calculateVisibleQuickAccessExtras({
+        containerWidth,
+        brandWidth,
+        primaryActionWidth: primaryAction ? iconButtonSize : 0,
+        rightWidth,
+        extraActionCount: extraActions.length,
+        extraActionWidth: iconButtonSize,
+        leftGap: showFooterChrome && primaryAction && brandWidth > 0 ? 12 : 0,
+        actionGap: 4,
+        barGap: 12,
+        safetyBuffer: 12,
+      });
+      setVisibleExtraActionCount(nextCount);
+    };
+
+    syncVisibleActions();
+
+    const ResizeObserverCtor = window.ResizeObserver;
+    if (!ResizeObserverCtor) {
+      return;
+    }
+
+    const observer = new ResizeObserverCtor(() => {
+      syncVisibleActions();
+    });
+
+    if (barRef.current) {
+      observer.observe(barRef.current);
+    }
+    if (brandGroupRef.current) {
+      observer.observe(brandGroupRef.current);
+    }
+    if (rightGroupRef.current) {
+      observer.observe(rightGroupRef.current);
+    }
+
+    return () => {
+      observer.disconnect();
+    };
+  }, [extraActions.length, iconButtonSize, primaryAction, showFooterChrome]);
+
   return (
     <div className={dockClassName}>
-      <div className="quick-access-bar">
-        {onToggleEditor && (
-          <button
-            type="button"
-            className="btn-icon"
-            title={isEditor ? 'Messages (Cmd/Ctrl+E)' : 'Explorer (Cmd/Ctrl+E)'}
-            onClick={onToggleEditor}
-          >
-            <span className={isEditor ? 'icon-message' : 'icon-folder'}></span>
-          </button>
-        )}
-        <button type="button" className="btn-icon" title="Tasks (Cmd/Ctrl+T)"
-          onClick={onOpenTasks}>
-          <span className="icon-checklist"></span>
-        </button>
-        <button
-          type="button"
-          className={`btn-icon${shellManagerOpen ? ' active' : ''}`}
-          title="Shell Manager (Cmd/Ctrl+`)"
-          onClick={onToggleShellManager}
-        >
-          <span className="icon-terminal" aria-hidden="true"></span>
-        </button>
-        {showOpenTerminal && (
-          <button type="button" className="btn-icon" title="Open Session in Shell"
-            onClick={onOpenTerminal}>
-            <span className="icon-terminal-square" aria-hidden="true"></span>
-          </button>
+      <div className="quick-access-bar" ref={barRef}>
+        <div className="quick-access-bar__left">
+          {showFooterChrome && (
+            <div className="quick-access-brand-group" ref={brandGroupRef}>
+              <div className="quick-access-brand">
+                <img
+                  className="quick-access-brand-logo"
+                  src="/assets/gestura-app.svg"
+                  alt=""
+                  aria-hidden="true"
+                />
+                <span className="quick-access-brand-text">Gestura Agent</span>
+              </div>
+              <div className="quick-access-divider" aria-hidden="true" />
+            </div>
+          )}
+
+          <div className="quick-access-actions">
+            {primaryAction && (
+              <div className="quick-access-action-item quick-access-action-item--primary">
+                <button
+                  type="button"
+                  className={`btn-icon${primaryAction.active ? ' active' : ''}`}
+                  title={primaryAction.title}
+                  onClick={primaryAction.onClick}
+                >
+                  <span className={primaryAction.iconClass} aria-hidden="true"></span>
+                </button>
+              </div>
+            )}
+
+            {extraActions.map((action, index) => {
+              const hidden = index >= visibleExtraActionCount;
+              return (
+                <div
+                  key={action.key}
+                  className={`quick-access-action-item${hidden ? ' quick-access-action-item--hidden' : ''}`}
+                  aria-hidden={hidden}
+                >
+                  <button
+                    type="button"
+                    className={`btn-icon${action.active ? ' active' : ''}`}
+                    title={action.title}
+                    onClick={action.onClick}
+                    disabled={hidden}
+                    tabIndex={hidden ? -1 : 0}
+                  >
+                    <span className={action.iconClass} aria-hidden="true"></span>
+                  </button>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+
+        {showFooterChrome && (
+          <div className="quick-access-bar__right" ref={rightGroupRef}>
+            {status && (
+              <div className="quick-access-status" aria-live="polite">
+                <div className="quick-access-divider" aria-hidden="true" />
+                <div className="quick-access-status__content">
+                  <SessionStatusText key={`${status.kind}:${status.text}`} status={status} />
+                </div>
+                <div className="quick-access-divider" aria-hidden="true" />
+              </div>
+            )}
+
+            {onOpenMenu && (
+              <button
+                type="button"
+                className="btn-settings btn-settings--footer"
+                title="Menu"
+                aria-label="Menu"
+                onClick={onOpenMenu}
+              >
+                <span className="icon-settings"></span>
+              </button>
+            )}
+          </div>
         )}
       </div>
     </div>

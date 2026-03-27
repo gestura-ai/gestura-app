@@ -106,6 +106,7 @@ function Harness() {
         })))}
       </div>
       <div data-testid="streaming">{state.streamingMessage ? blocksToText(state.streamingMessage.blocks) : ''}</div>
+      <div data-testid="streaming-blocks">{state.streamingMessage ? JSON.stringify(state.streamingMessage.blocks) : '[]'}</div>
       <div data-testid="streaming-narration-titles">
         {state.streamingMessage
           ? JSON.stringify(
@@ -338,6 +339,33 @@ describe('useChatSession', () => {
     });
   });
 
+  it('restores the active status after a retry succeeds and streaming resumes', async () => {
+    render(<Harness />);
+
+    await waitFor(() => {
+      expect(streamDispatch).not.toBeNull();
+    });
+
+    await act(async () => {
+      streamDispatch?.({ type: 'status', text: 'Thinking…', kind: 'busy' });
+    });
+
+    expect(screen.getByTestId('status')).toHaveTextContent('Thinking…');
+
+    await act(async () => {
+      streamDispatch?.({ type: 'retry', attempt: 1, reason: 'temporary provider failure' });
+    });
+
+    expect(screen.getByTestId('status')).toHaveTextContent('Retrying (attempt 1)…');
+
+    await act(async () => {
+      streamDispatch?.({ type: 'chunk', chunk: 'Recovered output' });
+    });
+
+    expect(screen.getByTestId('status')).toHaveTextContent('Thinking…');
+    expect(screen.getByTestId('streaming')).toHaveTextContent('Recovered output');
+  });
+
   it('rehydrates interrupted thinking-only messages from session history', async () => {
     getSessionReplaySnapshotMock.mockResolvedValue({
       history: [
@@ -386,6 +414,29 @@ describe('useChatSession', () => {
     const updatedStreaming = screen.getByTestId('streaming').textContent ?? '';
     expect(updatedStreaming).toContain('narration:Checking cargo test:I have the latest command result from "cargo test" in hand');
     expect(updatedStreaming.match(/narration:/g)).toHaveLength(2);
+  });
+
+  it('applies delayed tool results to the correct tool block when a newer tool has already started', async () => {
+    render(<Harness />);
+
+    await waitFor(() => {
+      expect(streamDispatch).not.toBeNull();
+    });
+
+    await act(async () => {
+      streamDispatch?.({ type: 'tool-start', toolName: 'web_search', toolCallId: 'tool-1' });
+      streamDispatch?.({ type: 'tool-end', toolCallId: 'tool-1' });
+      streamDispatch?.({ type: 'tool-start', toolName: 'file', toolCallId: 'tool-2' });
+      streamDispatch?.({ type: 'tool-result', name: 'web_search', success: true, output: 'done', durationMs: 12, toolCallId: 'tool-1' });
+    });
+
+    const blocks = JSON.parse(screen.getByTestId('streaming-blocks').textContent ?? '[]') as Array<Record<string, unknown>>;
+    const firstTool = blocks.find((block) => block['kind'] === 'tool' && block['name'] === 'web_search');
+    const secondTool = blocks.find((block) => block['kind'] === 'tool' && block['name'] === 'file');
+
+    expect(firstTool?.['status']).toBe('success');
+    expect(firstTool?.['result']).toBe('done');
+    expect(secondTool?.['status']).toBe('running');
   });
 
   it('derives failed shell review titles from command context instead of repeating a generic label', async () => {

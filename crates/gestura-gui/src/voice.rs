@@ -23,7 +23,9 @@ impl WhisperFasterLocal {
         // For now, return mock audio data
         // In production, this would use faster-whisper's audio loading
         tracing::info!("Loading audio from: {}", path);
-        let _ = std::fs::metadata(path).map_err(|e| AppError::Voice(e.to_string()))?;
+        let _ = tokio::fs::metadata(path)
+            .await
+            .map_err(|e| AppError::Voice(e.to_string()))?;
 
         // Mock 1 second of audio at 16kHz
         Ok(vec![0.0; 16000])
@@ -233,41 +235,13 @@ impl VoiceProcessor for WhisperLocal {
                 "no input_path configured for local STT".into(),
             ));
         };
-        // Load model with default parameters
-        let params = whisper_rs::WhisperContextParameters::default();
-        let ctx = whisper_rs::WhisperContext::new_with_params(&self.model_path, params)
-            .map_err(|e| AppError::Voice(format!("load whisper: {e}")))?;
-        let mut state = ctx
-            .create_state()
-            .map_err(|e| AppError::Voice(format!("state: {e}")))?;
-        // Read audio samples from WAV, propagating decode errors
-        let mut rdr = hound::WavReader::open(&input).map_err(|e| AppError::Voice(e.to_string()))?;
-        let raw_samples: Result<Vec<i16>, _> = rdr.samples::<i16>().collect();
-        let samples: Vec<f32> = raw_samples
-            .map_err(|e| AppError::Voice(format!("Failed to decode audio samples: {}", e)))?
-            .into_iter()
-            .map(|s| s as f32 / i16::MAX as f32)
-            .collect();
-        // Run full transcribe
-        state
-            .full(
-                whisper_rs::FullParams::new(whisper_rs::SamplingStrategy::Greedy { best_of: 1 }),
-                &samples,
-            )
-            .map_err(|e| AppError::Voice(format!("whisper run: {e}")))?;
-        // Collect segments
-        let num_segments = state
-            .full_n_segments()
-            .map_err(|e| AppError::Voice(format!("segments: {e}")))?;
-        let mut text = String::new();
-        for i in 0..num_segments {
-            let seg = state
-                .full_get_segment_text(i)
-                .map_err(|e| AppError::Voice(format!("seg: {e}")))?;
-            text.push_str(seg.trim());
-            text.push(' ');
-        }
-        let text = text.trim().to_string();
+        let model_path = self.model_path.clone();
+        let input_path = std::path::PathBuf::from(input);
+        let text = tokio::task::spawn_blocking(move || {
+            WhisperLocal { model_path }.transcribe_file(&input_path)
+        })
+        .await
+        .map_err(|e| AppError::Voice(format!("whisper task join error: {e}")))??;
 
         #[cfg(feature = "nats")]
         if let Some(nc) = nats {
@@ -304,7 +278,9 @@ impl OpenAiWhisperVoice {
         let url = format!("{}/v1/audio/transcriptions", self.base_url);
         tracing::debug!("Sending transcription request to: {}", url);
 
-        let bytes = std::fs::read(audio_path).map_err(|e| AppError::Voice(e.to_string()))?;
+        let bytes = tokio::fs::read(audio_path)
+            .await
+            .map_err(|e| AppError::Voice(e.to_string()))?;
         let file_name = audio_path
             .file_name()
             .and_then(|s| s.to_str())
@@ -361,7 +337,9 @@ impl VoiceProcessor for OpenAiWhisperVoice {
             .ok_or_else(|| AppError::Voice("no input_path configured".into()))?;
         let client = reqwest::Client::new();
         let url = format!("{}/v1/audio/transcriptions", self.base_url);
-        let bytes = std::fs::read(&input).map_err(|e| AppError::Voice(e.to_string()))?;
+        let bytes = tokio::fs::read(&input)
+            .await
+            .map_err(|e| AppError::Voice(e.to_string()))?;
         let file_name = std::path::Path::new(&input)
             .file_name()
             .and_then(|s| s.to_str())

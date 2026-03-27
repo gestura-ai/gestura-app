@@ -5,6 +5,7 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { convertFileSrc } from '@tauri-apps/api/core';
 
 import { parseMarkdown } from '../utils/markdown';
+import { enhanceTaskReferenceHtml } from '../utils/taskLinks';
 import { buildToolPresentation } from '../utils/toolActivity';
 import type {
   AgentMessage,
@@ -14,6 +15,7 @@ import type {
   ToolBlock,
   IterationMarkerBlock,
   NarrationBlock,
+  TaskHierarchy,
 } from '../types';
 import { ShellConsoleView } from './ShellConsoleView';
 
@@ -38,10 +40,14 @@ const ThinkingBlockView: React.FC<{ block: ThinkingBlock }> = ({ block }) => {
   );
 };
 
-const TextBlockView: React.FC<{ block: TextBlock }> = ({ block }) => (
+function renderMessageHtml(content: string, tasks: TaskHierarchy): string {
+  return enhanceTaskReferenceHtml(parseMarkdown(content), tasks);
+}
+
+const TextBlockView: React.FC<{ block: TextBlock; tasks: TaskHierarchy }> = ({ block, tasks }) => (
   <div
     className="text-content markdown-body"
-    dangerouslySetInnerHTML={{ __html: parseMarkdown(block.content) }}
+    dangerouslySetInnerHTML={{ __html: renderMessageHtml(block.content, tasks) }}
   />
 );
 
@@ -288,10 +294,11 @@ function narrationDisplayMessage(block: NarrationBlock): string {
 const NarrationMarkdown: React.FC<{
   content: string;
   indented?: boolean;
-}> = ({ content, indented = false }) => (
+  tasks: TaskHierarchy;
+}> = ({ content, indented = false, tasks }) => (
   <div
     className={`agent-narration-text markdown-body${indented ? ' agent-narration-text--indented' : ''}`}
-    dangerouslySetInnerHTML={{ __html: parseMarkdown(content) }}
+    dangerouslySetInnerHTML={{ __html: renderMessageHtml(content, tasks) }}
   />
 );
 
@@ -300,11 +307,13 @@ const NarrationBlockView: React.FC<{
   isFirstNarrationInMessage: boolean;
   hasPreviousNarration: boolean;
   hasNextNarration: boolean;
+  tasks: TaskHierarchy;
 }> = ({
   block,
   isFirstNarrationInMessage,
   hasPreviousNarration,
   hasNextNarration,
+  tasks,
 }) => {
     const displayMessage = narrationDisplayMessage(block);
     const wordCount = narrationWordCount(displayMessage);
@@ -326,7 +335,7 @@ const NarrationBlockView: React.FC<{
     if (!usesTitle || shouldStayInline) {
       return (
         <div className={narrationClassName}>
-          <NarrationMarkdown content={displayMessage} />
+          <NarrationMarkdown content={displayMessage} tasks={tasks} />
         </div>
       );
     }
@@ -342,7 +351,7 @@ const NarrationBlockView: React.FC<{
           <strong className="agent-narration-title">{title}</strong>
           <span className="agent-narration-chevron" aria-hidden="true">{expanded ? '▾' : '▸'}</span>
         </button>
-        {expanded && <NarrationMarkdown content={displayMessage} indented />}
+        {expanded && <NarrationMarkdown content={displayMessage} indented tasks={tasks} />}
       </div>
     );
   };
@@ -351,8 +360,9 @@ const NarrationBlockView: React.FC<{
 
 const MessageView: React.FC<{
   message: AgentMessage;
+  tasks: TaskHierarchy;
   onRevealShellSession?: (shellSessionId: string | null) => void;
-}> = ({ message, onRevealShellSession }) => {
+}> = ({ message, tasks, onRevealShellSession }) => {
   const copyText = useCallback(() => {
     navigator.clipboard.writeText(message.rawMarkdown).catch(console.error);
   }, [message.rawMarkdown]);
@@ -370,7 +380,7 @@ const MessageView: React.FC<{
           const nextBlock = message.blocks[index + 1];
           switch (block.kind) {
             case 'thinking': return <ThinkingBlockView key={block.id} block={block} />;
-            case 'text': return <TextBlockView key={block.id} block={block} />;
+            case 'text': return <TextBlockView key={block.id} block={block} tasks={tasks} />;
             case 'narration':
               return (
                 <NarrationBlockView
@@ -379,6 +389,7 @@ const MessageView: React.FC<{
                   isFirstNarrationInMessage={message.blocks[firstNarrationIndex]?.id === block.id}
                   hasPreviousNarration={previousBlock?.kind === 'narration'}
                   hasNextNarration={nextBlock?.kind === 'narration'}
+                  tasks={tasks}
                 />
               );
             case 'tool':
@@ -410,6 +421,8 @@ const MessageView: React.FC<{
 export interface MessageListProps {
   messages: AgentMessage[];
   streamingMessage: AgentMessage | null;
+  tasks?: TaskHierarchy;
+  userScrolledUp: boolean;
   onScrollChange: (scrolledUp: boolean) => void;
   onRevealShellSession?: (shellSessionId: string | null) => void;
   canResume?: boolean;
@@ -422,6 +435,8 @@ const SCROLL_THRESHOLD = 60;
 export const MessageList: React.FC<MessageListProps> = ({
   messages,
   streamingMessage,
+  tasks = [],
+  userScrolledUp,
   onScrollChange,
   onRevealShellSession,
   canResume = false,
@@ -429,7 +444,6 @@ export const MessageList: React.FC<MessageListProps> = ({
   onResume,
 }) => {
   const containerRef = useRef<HTMLDivElement>(null);
-  const [userScrolledUp, setUserScrolledUp] = useState(false);
 
   // Auto-scroll unless user has scrolled up
   useEffect(() => {
@@ -442,12 +456,10 @@ export const MessageList: React.FC<MessageListProps> = ({
     if (!el) return;
     const dist = el.scrollHeight - el.scrollTop - el.clientHeight;
     const scrolled = dist > SCROLL_THRESHOLD;
-    setUserScrolledUp(scrolled);
     onScrollChange(scrolled);
   }, [onScrollChange]);
 
   const scrollToBottom = useCallback(() => {
-    setUserScrolledUp(false);
     onScrollChange(false);
     if (containerRef.current) containerRef.current.scrollTop = containerRef.current.scrollHeight;
   }, [onScrollChange]);
@@ -455,30 +467,37 @@ export const MessageList: React.FC<MessageListProps> = ({
   const allMessages = streamingMessage ? [...messages, streamingMessage] : messages;
 
   return (
-    <div className="messages-container" ref={containerRef} onScroll={handleScroll}>
-      {allMessages.map((msg) => (
-        <MessageView
-          key={msg.id}
-          message={msg}
-          onRevealShellSession={onRevealShellSession}
-        />
-      ))}
-      {canResume && (
-        <div className={`paused-marker${isResuming ? ' resumed' : ''}`}>
-          <span className="pause-icon" aria-hidden="true">⏸</span>
-          <span>{isResuming ? 'Resuming interrupted response…' : 'Response interrupted. Resume from where it stopped.'}</span>
-          {!isResuming && onResume && (
-            <button type="button" className="resume-btn" onClick={onResume}>
-              Resume
-            </button>
-          )}
-        </div>
-      )}
-      {userScrolledUp && (
-        <button type="button" className="scroll-to-bottom-btn visible" onClick={scrollToBottom}>
-          ↓
-        </button>
-      )}
+    <div className="messages-viewport">
+      <div className="messages-container" ref={containerRef} onScroll={handleScroll}>
+        {allMessages.map((msg) => (
+          <MessageView
+            key={msg.id}
+            message={msg}
+            tasks={tasks}
+            onRevealShellSession={onRevealShellSession}
+          />
+        ))}
+        {canResume && (
+          <div className={`paused-marker${isResuming ? ' resumed' : ''}`}>
+            <span className="pause-icon" aria-hidden="true">⏸</span>
+            <span>{isResuming ? 'Resuming interrupted response…' : 'Response interrupted. Resume from where it stopped.'}</span>
+            {!isResuming && onResume && (
+              <button type="button" className="resume-btn" onClick={onResume}>
+                Resume
+              </button>
+            )}
+          </div>
+        )}
+      </div>
+      <button
+        type="button"
+        className={`scroll-to-bottom-btn${userScrolledUp ? ' visible' : ''}`}
+        onClick={scrollToBottom}
+        aria-hidden={!userScrolledUp}
+        tabIndex={userScrolledUp ? 0 : -1}
+      >
+        ↓ New messages
+      </button>
     </div>
   );
 };

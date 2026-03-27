@@ -30,6 +30,16 @@ describe('useStreamEvents', () => {
   beforeEach(() => {
     listeners.clear();
     listenMock.mockClear();
+    if (!window.requestAnimationFrame) {
+      window.requestAnimationFrame = (callback: FrameRequestCallback): number => {
+        return window.setTimeout(() => callback(performance.now()), 0);
+      };
+    }
+    if (!window.cancelAnimationFrame) {
+      window.cancelAnimationFrame = (handle: number) => {
+        window.clearTimeout(handle);
+      };
+    }
   });
 
   it('refreshes tasks when a task tool result succeeds', async () => {
@@ -73,6 +83,7 @@ describe('useStreamEvents', () => {
       success: false,
       output: 'nope',
       durationMs: null,
+      toolCallId: null,
     });
   });
 
@@ -121,19 +132,40 @@ describe('useStreamEvents', () => {
       });
     });
 
-    expect(dispatch).toHaveBeenCalledWith({
-      type: 'task-runtime-state',
-      snapshot: {
-        root_task_id: 'root-task',
-        current_task: { id: 'verify-task', name: 'Verify facts', status: 'not_started' },
-        ready_tasks: [{ id: 'verify-task', name: 'Verify facts', status: 'not_started' }],
-        parallel_ready_tasks: [],
-        blocked_tasks: [],
-        open_tasks: [{ id: 'verify-task', name: 'Verify facts', status: 'not_started' }],
-        completed_tasks: [],
-        missing_requirements: ['verification still required'],
-        status_message: 'Verification remains open',
-      },
+    await waitFor(() => {
+      expect(dispatch).toHaveBeenCalledWith({
+        type: 'task-runtime-state',
+        snapshot: {
+          root_task_id: 'root-task',
+          current_task: { id: 'verify-task', name: 'Verify facts', status: 'not_started' },
+          ready_tasks: [{ id: 'verify-task', name: 'Verify facts', status: 'not_started' }],
+          parallel_ready_tasks: [],
+          blocked_tasks: [],
+          open_tasks: [{ id: 'verify-task', name: 'Verify facts', status: 'not_started' }],
+          completed_tasks: [],
+          missing_requirements: ['verification still required'],
+          status_message: 'Verification remains open',
+        },
+      });
     });
+  });
+
+  it('coalesces adjacent chunk events before dispatching', async () => {
+    const dispatch = vi.fn<[StreamEventAction], void>();
+    render(<HookHarness sessionId="session-123" dispatch={dispatch} />);
+
+    await waitFor(() => {
+      expect(listeners.has('agent-stream-chunk')).toBe(true);
+    });
+
+    await act(async () => {
+      listeners.get('agent-stream-chunk')?.({ payload: { session_id: 'session-123', value: 'hello ' } });
+      listeners.get('agent-stream-chunk')?.({ payload: { session_id: 'session-123', value: 'world' } });
+    });
+
+    await waitFor(() => {
+      expect(dispatch).toHaveBeenCalledWith({ type: 'chunk', chunk: 'hello world' });
+    });
+    expect(dispatch).toHaveBeenCalledTimes(1);
   });
 });

@@ -43,6 +43,10 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
 }
 
+function readOptionalString(value: unknown): string | null {
+  return typeof value === 'string' && value.length > 0 ? value : null;
+}
+
 function readTaskRuntimeTaskView(value: unknown): TaskRuntimeSnapshot['current_task'] {
   if (!isRecord(value)) return null;
   return {
@@ -102,10 +106,10 @@ export type StreamEventAction =
   | { type: 'tool-confirmation'; payload: ToolConfirmation }
   | { type: 'tool-blocked'; toolName: string; reason: string }
   | { type: 'agent-iteration'; iteration: number }
-  | { type: 'tool-start'; toolName: string }
-  | { type: 'tool-args'; args: string }
-  | { type: 'tool-end' }
-  | { type: 'tool-result'; name: string; success: boolean; output: string | null; durationMs: number | null }
+  | { type: 'tool-start'; toolName: string; toolCallId?: string | null }
+  | { type: 'tool-args'; args: string; toolCallId?: string | null }
+  | { type: 'tool-end'; toolCallId?: string | null }
+  | { type: 'tool-result'; name: string; success: boolean; output: string | null; durationMs: number | null; toolCallId?: string | null }
   | { type: 'shell-lifecycle'; processId: string; payload: Record<string, unknown> }
   | { type: 'shell-output'; processId: string; stream: 'Stdout' | 'Stderr'; data: string }
   | { type: 'retry'; attempt: number; reason: string }
@@ -136,6 +140,8 @@ export function useStreamEvents(sessionId: string, dispatch: StreamEventDispatch
     const win = getCurrentWebviewWindow();
     const unlisten: UnlistenFn[] = [];
     let cancelled = false;
+    let dispatchFlushHandle: number | null = null;
+    const pendingActions: StreamEventAction[] = [];
 
     // Debounced notification that the agent likely mutated the workspace.
     // ExplorerPanel + EditorArea both listen for this to refresh without polling.
@@ -163,6 +169,72 @@ export function useStreamEvents(sessionId: string, dispatch: StreamEventDispatch
         if (cancelled) return;
         window.dispatchEvent(new CustomEvent('gestura:workspace:changed'));
       }, 250);
+    }
+
+    function flushBufferedActions(): void {
+      dispatchFlushHandle = null;
+      if (cancelled || pendingActions.length === 0) return;
+      const actions = pendingActions.splice(0, pendingActions.length);
+      actions.forEach((action) => dispatch(action));
+    }
+
+    function scheduleBufferedFlush(): void {
+      if (cancelled || dispatchFlushHandle != null) return;
+      if (typeof window.requestAnimationFrame === 'function') {
+        dispatchFlushHandle = window.requestAnimationFrame(() => {
+          flushBufferedActions();
+        });
+        return;
+      }
+      dispatchFlushHandle = window.setTimeout(() => {
+        flushBufferedActions();
+      }, 16);
+    }
+
+    function cancelBufferedFlush(): void {
+      if (dispatchFlushHandle == null) return;
+      if (typeof window.cancelAnimationFrame === 'function') {
+        window.cancelAnimationFrame(dispatchFlushHandle);
+      } else {
+        window.clearTimeout(dispatchFlushHandle);
+      }
+      dispatchFlushHandle = null;
+    }
+
+    function dispatchNow(action: StreamEventAction): void {
+      flushBufferedActions();
+      dispatch(action);
+    }
+
+    function dispatchBuffered(action: StreamEventAction): void {
+      const last = pendingActions[pendingActions.length - 1];
+
+      if (last?.type === 'thinking' && action.type === 'thinking') {
+        last.chunk += action.chunk;
+      } else if (last?.type === 'chunk' && action.type === 'chunk') {
+        last.chunk += action.chunk;
+      } else if (
+        last?.type === 'tool-args'
+        && action.type === 'tool-args'
+        && last.toolCallId === action.toolCallId
+      ) {
+        last.args += action.args;
+      } else if (
+        last?.type === 'shell-output'
+        && action.type === 'shell-output'
+        && last.processId === action.processId
+        && last.stream === action.stream
+      ) {
+        last.data += action.data;
+      } else if (last?.type === 'status' && action.type === 'status') {
+        pendingActions[pendingActions.length - 1] = action;
+      } else if (last?.type === 'task-runtime-state' && action.type === 'task-runtime-state') {
+        pendingActions[pendingActions.length - 1] = action;
+      } else {
+        pendingActions.push(action);
+      }
+
+      scheduleBufferedFlush();
     }
 
     function accept<T = unknown>(eventName: string, raw: unknown): { ok: true; value: T } | { ok: false } {
@@ -198,7 +270,7 @@ export function useStreamEvents(sessionId: string, dispatch: StreamEventDispatch
       await safeListen('agent-stream-thinking', (e) => {
         const r = accept<string>('agent-stream-thinking', e.payload);
         if (!r.ok) return;
-        dispatch({
+        dispatchBuffered({
           type: 'thinking',
           chunk: typeof r.value === 'string' ? r.value : JSON.stringify(r.value),
         });
@@ -207,7 +279,7 @@ export function useStreamEvents(sessionId: string, dispatch: StreamEventDispatch
       await safeListen('agent-stream-chunk', (e) => {
         const r = accept<string>('agent-stream-chunk', e.payload);
         if (!r.ok) return;
-        dispatch({
+        dispatchBuffered({
           type: 'chunk',
           chunk: typeof r.value === 'string' ? r.value : JSON.stringify(r.value),
         });
@@ -242,25 +314,32 @@ export function useStreamEvents(sessionId: string, dispatch: StreamEventDispatch
       await safeListen('agent-stream-tool-start', (e) => {
         const r = accept<unknown>('agent-stream-tool-start', e.payload);
         if (!r.ok) return;
+        const toolCallId = isRecord(r.value) ? readOptionalString(r.value['id']) : null;
         const toolName =
           typeof r.value === 'string'
             ? r.value
             : String((r.value as Record<string, unknown>)?.['name'] ?? 'tool');
         currentToolName = toolName;
         if (shouldSignalWorkspaceChanged(toolName)) sawWorkspaceMutation = true;
-        dispatch({ type: 'tool-start', toolName });
+        dispatch({ type: 'tool-start', toolName, toolCallId });
       });
 
       await safeListen('agent-stream-tool-args', (e) => {
         const r = accept<unknown>('agent-stream-tool-args', e.payload);
         if (!r.ok) return;
-        const args = typeof r.value === 'string' ? r.value : JSON.stringify(r.value, null, 2);
-        dispatch({ type: 'tool-args', args });
+        const toolCallId = isRecord(r.value) ? readOptionalString(r.value['id']) : null;
+        const args = typeof r.value === 'string'
+          ? r.value
+          : isRecord(r.value) && typeof r.value['args'] === 'string'
+            ? r.value['args']
+            : JSON.stringify(r.value, null, 2);
+        dispatchBuffered({ type: 'tool-args', args, toolCallId });
       });
 
       await safeListen('agent-stream-tool-end', (e) => {
-        const r = accept('agent-stream-tool-end', e.payload);
+        const r = accept<unknown>('agent-stream-tool-end', e.payload);
         if (!r.ok) return;
+        const toolCallId = isRecord(r.value) ? readOptionalString(r.value['id']) : null;
 
         if (shouldSignalWorkspaceChanged(currentToolName)) {
           sawWorkspaceMutation = true;
@@ -268,7 +347,7 @@ export function useStreamEvents(sessionId: string, dispatch: StreamEventDispatch
         }
         currentToolName = null;
 
-        dispatch({ type: 'tool-end' });
+        dispatch({ type: 'tool-end', toolCallId });
       });
 
       await safeListen('agent-stream-tool-result', (e) => {
@@ -299,6 +378,7 @@ export function useStreamEvents(sessionId: string, dispatch: StreamEventDispatch
           success,
           output: p['output'] != null ? String(p['output']) : null,
           durationMs: p['duration_ms'] != null ? Number(p['duration_ms']) : null,
+          toolCallId: readOptionalString(p['id']),
         });
       });
 
@@ -317,7 +397,7 @@ export function useStreamEvents(sessionId: string, dispatch: StreamEventDispatch
         const r = accept<Record<string, unknown>>('agent-stream-shell-output', e.payload);
         if (!r.ok) return;
         const p = r.value as Record<string, unknown>;
-        dispatch({
+        dispatchBuffered({
           type: 'shell-output',
           processId: String(p['process_id'] ?? ''),
           stream: (p['stream'] as 'Stdout' | 'Stderr') ?? 'Stdout',
@@ -340,7 +420,7 @@ export function useStreamEvents(sessionId: string, dispatch: StreamEventDispatch
         const r = accept<Record<string, unknown>>('agent-stream-status', e.payload);
         if (!r.ok) return;
         const p = r.value as Record<string, unknown>;
-        dispatch({
+        dispatchBuffered({
           type: 'status',
           text: String(p['text'] ?? ''),
           kind: String(p['kind'] ?? 'ready'),
@@ -368,7 +448,7 @@ export function useStreamEvents(sessionId: string, dispatch: StreamEventDispatch
         if (!r.ok) return;
         const snapshot = readTaskRuntimeSnapshot(r.value);
         if (!snapshot) return;
-        dispatch({ type: 'task-runtime-state', snapshot });
+        dispatchBuffered({ type: 'task-runtime-state', snapshot });
       });
 
       await safeListen('agent-context-compacted', (e) => {
@@ -384,25 +464,25 @@ export function useStreamEvents(sessionId: string, dispatch: StreamEventDispatch
         // Cheap convergence refresh at the end of a stream, only when we saw a
         // tool that commonly mutates local files.
         if (sawWorkspaceMutation) scheduleWorkspaceChanged();
-        dispatch({ type: 'done' });
+        dispatchNow({ type: 'done' });
       });
 
       await safeListen('agent-stream-paused', (e) => {
         const r = accept('agent-stream-paused', e.payload);
         if (!r.ok) return;
-        dispatch({ type: 'paused' });
+        dispatchNow({ type: 'paused' });
       });
 
       await safeListen('agent-stream-cancelled', (e) => {
         const r = accept('agent-stream-cancelled', e.payload);
         if (!r.ok) return;
-        dispatch({ type: 'cancelled' });
+        dispatchNow({ type: 'cancelled' });
       });
 
       await safeListen('agent-stream-resumed', (e) => {
         const r = accept('agent-stream-resumed', e.payload);
         if (!r.ok) return;
-        dispatch({ type: 'resumed' });
+        dispatchNow({ type: 'resumed' });
       });
 
       await safeListen('agent-stream-error', (e) => {
@@ -415,7 +495,7 @@ export function useStreamEvents(sessionId: string, dispatch: StreamEventDispatch
           const p = r.value as Record<string, unknown>;
           message = String(p['message'] ?? p['error'] ?? 'Unknown error');
         }
-        dispatch({ type: 'error', message });
+        dispatchNow({ type: 'error', message });
       });
 
       for (const evtName of [
@@ -428,7 +508,7 @@ export function useStreamEvents(sessionId: string, dispatch: StreamEventDispatch
         await safeListen(evtName, (e) => {
           const r = accept<StreamHealthPayload>(evtName, e.payload);
           if (!r.ok) return;
-          dispatch({ type: 'health', payload: r.value });
+          dispatchNow({ type: 'health', payload: r.value });
         });
       }
 
@@ -436,7 +516,7 @@ export function useStreamEvents(sessionId: string, dispatch: StreamEventDispatch
         const r = accept<Record<string, unknown>>('agent-message', e.payload);
         if (!r.ok) return;
         const p = r.value as Record<string, unknown>;
-        dispatch({
+        dispatchNow({
           type: 'agent-message',
           role: String(p['role'] ?? 'assistant'),
           content: String(p['content'] ?? ''),
@@ -450,7 +530,7 @@ export function useStreamEvents(sessionId: string, dispatch: StreamEventDispatch
           typeof r.value === 'boolean'
             ? r.value
             : Boolean((r.value as Record<string, unknown>)?.['listening']);
-        dispatch({ type: 'listening-state', listening: val });
+        dispatchNow({ type: 'listening-state', listening: val });
       });
 
       for (const evtName of ['task-created', 'task-updated', 'task-deleted'] as const) {
@@ -464,6 +544,7 @@ export function useStreamEvents(sessionId: string, dispatch: StreamEventDispatch
 
     return () => {
       cancelled = true;
+      cancelBufferedFlush();
       if (workspaceChangedTimer != null) {
         window.clearTimeout(workspaceChangedTimer);
       }

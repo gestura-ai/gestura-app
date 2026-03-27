@@ -157,6 +157,15 @@ export const ShellConsoleView: React.FC<ShellConsoleViewProps> = ({
               <span className="shell-console-duration">{(block.durationMs / 1000).toFixed(1)}s</span>
             )}
           </div>
+          {activity.diagnosis && (
+            <div className={`shell-console-note shell-console-note--${activity.diagnosis.kind}`}>
+              <strong>{activity.diagnosis.label}</strong>
+              <span>{activity.diagnosis.detail}</span>
+              {activity.diagnosis.excerpt && (
+                <code title={activity.diagnosis.excerpt}>{activity.diagnosis.excerpt}</code>
+              )}
+            </div>
+          )}
           <div className={`shell-console-output shell-console-output--${variant}`} ref={outputRef}>
             {block.lines.length > 0 ? (
               block.lines.map((line, index) => (

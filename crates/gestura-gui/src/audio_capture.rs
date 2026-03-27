@@ -21,7 +21,7 @@ pub use gestura_core::audio_capture::{
 /// The selected input device is resolved from the GUI-visible [`crate::config::AppConfig`]
 /// (`voice.audio_device`) and passed to core via [`AudioCaptureConfig`].
 pub async fn record_audio(duration: Duration, output_path: &Path) -> Result<f32, crate::AppError> {
-    let cfg = crate::config::AppConfig::load();
+    let cfg = crate::config::AppConfig::load_async().await;
 
     let capture_cfg = AudioCaptureConfig {
         device_name: cfg.voice.audio_device.clone(),

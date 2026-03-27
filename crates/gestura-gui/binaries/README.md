@@ -49,6 +49,11 @@ executable (Tauri places sidecars in the same directory as the main binary).
 If none is found it falls back to the system `ffmpeg` on `PATH`.
 You can also override via the `GESTURA_FFMPEG_PATH` environment variable.
 
+For shell-launch resume flows, the GUI now also prefers a matching Gestura CLI
+next to the running app (or in the local `target/{debug,release}` tree during
+development) before falling back to a globally installed `gestura` on `PATH`.
+Set `GESTURA_CLI_PATH` to force a specific CLI binary when needed.
+
 ## How this directory is populated
 
 The packaging scripts handle both sidecars automatically:

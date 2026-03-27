@@ -14,6 +14,7 @@ function makeFile(relPath: string) {
     content: `// ${relPath}`,
     language: 'typescript',
     kind: 'text' as const,
+    viewMode: 'edit' as const,
   };
 }
 
@@ -41,6 +42,22 @@ describe('useTabState', () => {
     act(() => { result.current.openTab(makeFile('src/lib.ts')); });
     act(() => { result.current.openTab(makeFile('src/lib.ts')); });
     expect(result.current.tabs).toHaveLength(1);
+  });
+
+  it('allows the same file to be opened in both edit and preview modes', () => {
+    const { result } = renderHook(() => useTabState());
+    act(() => { result.current.openTab(makeFile('README.md')); });
+    act(() => {
+      result.current.openTab({
+        ...makeFile('README.md'),
+        viewMode: 'preview',
+        language: 'markdown',
+        content: '# README',
+      });
+    });
+
+    expect(result.current.tabs).toHaveLength(2);
+    expect(result.current.tabs.map((tab) => tab.viewMode)).toEqual(['edit', 'preview']);
   });
 
   it('closes a clean tab and picks a neighbour as active', () => {
@@ -132,6 +149,29 @@ describe('useTabState', () => {
 
     act(() => { result.current.activateTab(idX); });
     expect(result.current.activeTabId).toBe(idX);
+  });
+
+  it('renames all open views for the same file', () => {
+    const { result } = renderHook(() => useTabState());
+    act(() => { result.current.openTab({ ...makeFile('docs/readme.md'), language: 'markdown' }); });
+    act(() => {
+      result.current.openTab({
+        ...makeFile('docs/readme.md'),
+        content: '# docs',
+        language: 'markdown',
+        viewMode: 'preview',
+      });
+    });
+
+    const editTabId = result.current.tabs.find((tab) => tab.viewMode === 'edit')?.id;
+    expect(editTabId).toBeTruthy();
+
+    act(() => {
+      result.current.renameTab(editTabId!, 'guide.md', 'docs/guide.md');
+    });
+
+    expect(result.current.tabs.every((tab) => tab.relPath === 'docs/guide.md')).toBe(true);
+    expect(result.current.tabs.every((tab) => tab.label === 'guide.md')).toBe(true);
   });
 });
 

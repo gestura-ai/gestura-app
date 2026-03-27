@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow';
 import { Agent, listAgents } from '../../services/tauri/agents';
 import {
@@ -340,6 +340,9 @@ const WorkflowsPanel: React.FC = () => {
   const environments = workflowsState.data?.environments ?? [];
   const agents = workflowsState.data?.agents ?? [];
   const threadsByRun = workflowsState.data?.threadsByRun ?? {};
+  const refreshTimerRef = useRef<number | null>(null);
+  const refreshQueuedRef = useRef(false);
+  const refreshInFlightRef = useRef(false);
 
   const sortedRuns = useMemo(
     () => [...runs].sort((left, right) => right.updated_at.localeCompare(left.updated_at)),
@@ -371,8 +374,36 @@ const WorkflowsPanel: React.FC = () => {
     [environments]
   );
 
+  const runRefresh = useCallback(async () => {
+    if (refreshInFlightRef.current) {
+      refreshQueuedRef.current = true;
+      return;
+    }
+
+    refreshInFlightRef.current = true;
+    try {
+      await workflowsState.reload({ showLoading: false });
+    } finally {
+      refreshInFlightRef.current = false;
+      if (refreshQueuedRef.current) {
+        refreshQueuedRef.current = false;
+        window.setTimeout(() => {
+          void runRefresh();
+        }, 100);
+      }
+    }
+  }, [workflowsState.reload]);
+
+  const scheduleRefresh = useCallback((delayMs = 150) => {
+    if (refreshTimerRef.current != null) return;
+    refreshTimerRef.current = window.setTimeout(() => {
+      refreshTimerRef.current = null;
+      void runRefresh();
+    }, delayMs);
+  }, [runRefresh]);
+
   useInterval(() => {
-    void workflowsState.reload({ showLoading: false });
+    scheduleRefresh(0);
   }, 4000);
 
   useEffect(() => {
@@ -387,7 +418,7 @@ const WorkflowsPanel: React.FC = () => {
             'orchestrator-team-message',
             'orchestrator-team-thread-updated',
             'orchestrator-environment-updated',
-          ].map((eventName) => appWindow.listen(eventName, () => void workflowsState.reload({ showLoading: false })))
+          ].map((eventName) => appWindow.listen(eventName, () => scheduleRefresh()))
         );
       } catch (error) {
         console.debug('Workflow event listener unavailable:', error);
@@ -396,11 +427,15 @@ const WorkflowsPanel: React.FC = () => {
 
     void bindWorkflowEvents();
     return () => {
+      if (refreshTimerRef.current != null) {
+        window.clearTimeout(refreshTimerRef.current);
+        refreshTimerRef.current = null;
+      }
       unlisten.forEach((dispose) => dispose());
     };
-  }, [workflowsState.reload]);
+  }, [scheduleRefresh]);
 
-  const refresh = () => workflowsState.reload({ showLoading: false });
+  const refresh = () => runRefresh();
 
   const childRunDraftFor = (run: SupervisorRun) => childRunDrafts[run.id] ?? buildDefaultChildRunDraft(run);
 

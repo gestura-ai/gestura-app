@@ -100,6 +100,33 @@ test.describe('@smoke Gestura App', () => {
     await expect(page.locator('#stepContent')).toContainText('System Permissions');
   });
 
+  test('@smoke onboarding window uses near-full screen height before forcing step scrolling', async ({ page }) => {
+    await page.addInitScript(() => {
+      Object.defineProperty(window.screen, 'availHeight', {
+        configurable: true,
+        get: () => 640,
+      });
+    });
+
+    await page.goto('/onboarding.html');
+
+    await page.click('#nextBtn');
+    await expect(page.locator('#stepName')).toHaveText('Permissions');
+
+    await page.click('#nextBtn');
+    await expect(page.locator('#stepName')).toHaveText('Voice Setup');
+    await expect(page.locator('#stepContent')).not.toHaveClass(/\bis-scrollable\b/);
+
+    const maxRequestedHeight = await page.evaluate(() => {
+      const calls = (window as typeof window & {
+        __gestura_e2e_window_size_calls__?: Array<{ width: number; height: number }>;
+      }).__gestura_e2e_window_size_calls__;
+      return Math.max(0, ...(calls?.map((call) => call.height) ?? []));
+    });
+
+    expect(maxRequestedHeight).toBeGreaterThan(600);
+  });
+
   test('@smoke onboarding window grok provider shows API key input', async ({ page }) => {
     await page.goto('/onboarding.html');
 

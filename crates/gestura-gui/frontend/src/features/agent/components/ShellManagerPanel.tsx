@@ -138,6 +138,12 @@ export const ShellManagerPanel: React.FC<ShellManagerPanelProps> = ({
     : defaultWorkingDirectory || 'Project workspace';
   const activeShellProcess = activeShell ? sessionProcessLabel(activeShell) : null;
   const activeShellActivity = activeShell ? describeShellActivity(activeShell, activityNow) : null;
+  const shellManagerSummary = activeShell ? `${activeShellTitle} • ${activeShellCommand}` : activeShellCommand;
+  const activeShellHeaderSummary = [
+    activeShellSecondaryHeading,
+    activeShell?.userManaged ? `cwd ${activeShellDirectory}` : null,
+    activeShellProcess,
+  ].filter((value): value is string => Boolean(value)).join(' • ');
 
   useEffect(() => {
     if (!shells.some((shell) => shell.state === 'Busy' || shell.state === 'Starting' || shell.state === 'Interrupting')) {
@@ -217,22 +223,19 @@ export const ShellManagerPanel: React.FC<ShellManagerPanelProps> = ({
     <section
       className={`shell-dock shell-dock--${mode}`}
       aria-label="Terminal workspace"
-      style={{ height: mode === 'collapsed' ? 58 : height }}
+      style={{ height: mode === 'collapsed' ? 44 : height }}
     >
       <div className="shell-dock__resize-handle" onMouseDown={handleResizeStart}>
-        <span className="shell-dock__resize-grip" />
+        <span className="shell-dock__resize-track" aria-hidden="true" />
       </div>
 
       <header className="shell-dock__bar">
         <div className="shell-dock__bar-main">
           <div className="shell-dock__title-row">
             <span className="shell-dock__title-icon"><TerminalIcon /></span>
-            <div className="shell-dock__title-stack">
-              <strong>Shell Session Manager</strong>
-              <span title={activeShellCommand}>
-                {activeShell ? `${activeShellTitle} • ${activeShellCommand}` : activeShellCommand}
-              </span>
-            </div>
+            <strong className="shell-dock__title">Shell Manager</strong>
+            <span className="shell-dock__title-divider" aria-hidden="true">•</span>
+            <span className="shell-dock__title-detail" title={shellManagerSummary}>{shellManagerSummary}</span>
           </div>
 
           <div className="shell-dock__bar-meta" aria-label="Shell manager summary">
@@ -329,10 +332,7 @@ export const ShellManagerPanel: React.FC<ShellManagerPanelProps> = ({
             }) : (
               <div className="shell-dock__empty-state shell-dock__empty-state--sidebar">
                 <strong>No terminals yet</strong>
-                <span>Start a new terminal or wait for the agent to run shell work.</span>
-                <button type="button" className="primary" onClick={() => void handleStartShell()} disabled={isStartingShell}>
-                  {isStartingShell ? 'Starting…' : 'New Terminal'}
-                </button>
+                <span>Use the header plus button or wait for the agent to run shell work.</span>
               </div>
             )}
           </aside>
@@ -344,6 +344,11 @@ export const ShellManagerPanel: React.FC<ShellManagerPanelProps> = ({
                   <div className="shell-dock__terminal-context">
                     <div className="shell-dock__terminal-title-row">
                       <strong>{activeShellPrimaryHeading}</strong>
+                      {activeShellHeaderSummary && (
+                        <span className="shell-dock__terminal-summary" title={activeShellHeaderSummary}>
+                          {activeShellHeaderSummary}
+                        </span>
+                      )}
                       <span className={`shell-dock__terminal-badge shell-dock__terminal-badge--${activeShell.userManaged ? 'user' : 'agent'}`}>
                         {sessionOwnerHeaderLabel(activeShell)}
                       </span>
@@ -356,22 +361,12 @@ export const ShellManagerPanel: React.FC<ShellManagerPanelProps> = ({
                         </span>
                       )}
                     </div>
-                    {activeShellSecondaryHeading && (
-                      <span title={activeShellSecondaryHeading}>{activeShellSecondaryHeading}</span>
-                    )}
-                    {(activeShell.userManaged || activeShellProcess) && (
-                      <div className="shell-dock__terminal-detail-row">
-                        {activeShell.userManaged && (
-                          <span className="shell-dock__terminal-detail">
-                            <span className="shell-dock__terminal-detail-label">cwd</span>
-                            <span className="shell-dock__terminal-detail-value" title={activeShellDirectory}>{activeShellDirectory}</span>
-                          </span>
-                        )}
-                        {activeShellProcess && (
-                          <span className="shell-dock__terminal-detail">
-                            <span className="shell-dock__terminal-detail-label">proc</span>
-                            <span className="shell-dock__terminal-detail-value" title={activeShellProcess}>{activeShellProcess}</span>
-                          </span>
+                    {activeShellActivity?.diagnosis && (
+                      <div className={`shell-dock__terminal-alert shell-dock__terminal-alert--${activeShellActivity.diagnosis.kind}`}>
+                        <strong>{activeShellActivity.diagnosis.label}</strong>
+                        <span>{activeShellActivity.diagnosis.detail}</span>
+                        {activeShellActivity.diagnosis.excerpt && (
+                          <code title={activeShellActivity.diagnosis.excerpt}>{activeShellActivity.diagnosis.excerpt}</code>
                         )}
                       </div>
                     )}

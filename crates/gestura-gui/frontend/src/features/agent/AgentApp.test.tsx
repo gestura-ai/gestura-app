@@ -1,14 +1,22 @@
 import { act, render, screen } from '@testing-library/react';
+import { LogicalSize } from '@tauri-apps/api/dpi';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ShellSessionRecord } from './types';
 
 let shouldCrashChatPanel = false;
 let mockViewMode: 'message-only' | 'editor' = 'message-only';
 let latestWorkspaceChanged: ((workspace: string) => void) | undefined;
-const useShellSessionsMock = vi.fn((_: string): ShellSessionRecord[] => []);
-const getSessionWorkspaceByIdMock = vi.fn((_: string): Promise<string> => Promise.resolve('/workspace'));
+const useShellSessionsMock = vi.fn((sessionId: string): ShellSessionRecord[] => {
+  void sessionId;
+  return [];
+});
+const getSessionWorkspaceByIdMock = vi.fn((sessionId: string): Promise<string> => {
+  void sessionId;
+  return Promise.resolve('/workspace');
+});
 
 const mockWindow = {
+  setMinSize: vi.fn().mockResolvedValue(undefined),
   setSize: vi.fn().mockResolvedValue(undefined),
   show: vi.fn().mockResolvedValue(undefined),
   setFocus: vi.fn().mockResolvedValue(undefined),
@@ -57,12 +65,10 @@ vi.mock('../../services/tauri/agent', () => ({
 vi.mock('./components/ChatPanel', () => ({
   ChatPanel: ({
     sessionId,
-    headerHost,
     quickAccessHost,
     onWorkspaceChanged,
   }: {
     sessionId: string;
-    headerHost?: HTMLElement | null;
     quickAccessHost?: HTMLElement | null;
     onWorkspaceChanged?: (workspace: string) => void;
   }) => {
@@ -73,7 +79,6 @@ vi.mock('./components/ChatPanel', () => ({
     return (
       <div
         data-testid="chat-panel"
-        data-header-host-attached={String(Boolean(headerHost))}
         data-quick-access-host-attached={String(Boolean(quickAccessHost))}
       >
         chat:{sessionId}
@@ -120,6 +125,12 @@ vi.mock('./components/ShellManagerPanel', () => ({
   ),
 }));
 
+vi.mock('./components/AgentSessionHeader', () => ({
+  AgentSessionHeader: ({ sessionId }: { sessionId: string }) => (
+    <div data-testid="agent-session-header">header:{sessionId}</div>
+  ),
+}));
+
 import AgentApp from './AgentApp';
 
 describe('AgentApp', () => {
@@ -132,6 +143,7 @@ describe('AgentApp', () => {
     useShellSessionsMock.mockReturnValue([]);
     getSessionWorkspaceByIdMock.mockReset();
     getSessionWorkspaceByIdMock.mockResolvedValue('/workspace');
+    mockWindow.setMinSize.mockClear();
     mockWindow.setSize.mockClear();
     mockWindow.show.mockClear();
     mockWindow.setFocus.mockClear();
@@ -153,7 +165,7 @@ describe('AgentApp', () => {
     vi.useRealTimers();
   });
 
-  it('reveals the agent UI after a bounded startup timeout when config loading hangs', async () => {
+  it('reveals the agent UI on the next startup tick even when config loading hangs', async () => {
     getConfigMock.mockReturnValue(new Promise(() => undefined));
 
     const { container } = render(<AgentApp sessionId="session-timeout" />);
@@ -162,12 +174,14 @@ describe('AgentApp', () => {
     expect(container.querySelector('.agent-app')?.className).not.toContain('app-ready');
 
     await act(async () => {
-      vi.advanceTimersByTime(1500);
+      vi.advanceTimersByTime(1);
       await Promise.resolve();
     });
 
     expect(container.querySelector('.agent-app')?.className).toContain('app-ready');
+    expect(mockWindow.setMinSize).toHaveBeenCalledWith(new LogicalSize(500, 320));
     expect(mockWindow.setSize).toHaveBeenCalled();
+    expect(mockWindow.setSize).toHaveBeenCalledWith(new LogicalSize(550, 600));
     expect(mockWindow.show).toHaveBeenCalled();
     expect(mockWindow.setFocus).toHaveBeenCalled();
   });
@@ -204,31 +218,56 @@ describe('AgentApp', () => {
     expect(manager).toHaveAttribute('data-shell-count', '1');
   });
 
-  it('renders shared top and bottom dock hosts around the main content', async () => {
+  it('renders a top header and bottom dock around the main content', async () => {
     getConfigMock.mockResolvedValue({
       ui: { theme_mode: 'system', accent: 'blue' },
     });
 
     const { container } = render(<AgentApp sessionId="session-layout" />);
 
+    const header = container.querySelector('[data-testid="agent-session-header"]');
     const chatPanel = container.querySelector('[data-testid="chat-panel"]');
-    const headerHost = container.querySelector('[data-testid="agent-header-host"]');
     const main = container.querySelector('.agent-app__main');
+    const workspace = container.querySelector('[data-testid="agent-workspace"]');
     const shellManager = container.querySelector('[data-testid="shell-manager-panel"]');
     const quickAccessHost = container.querySelector('[data-testid="agent-quick-access-host"]');
 
+    expect(header).not.toBeNull();
     expect(chatPanel).not.toBeNull();
-    expect(headerHost).not.toBeNull();
     expect(main).not.toBeNull();
+    expect(workspace).not.toBeNull();
     expect(shellManager).not.toBeNull();
     expect(quickAccessHost).not.toBeNull();
-    expect(chatPanel).toHaveAttribute('data-header-host-attached', 'true');
     expect(chatPanel).toHaveAttribute('data-quick-access-host-attached', 'true');
-
-    const headerPosition = headerHost!.compareDocumentPosition(main!);
-    expect(headerPosition & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(workspace as HTMLElement).toContainElement(header as HTMLElement);
+    expect(workspace as HTMLElement).toContainElement(chatPanel as HTMLElement);
 
     const relativePosition = shellManager!.compareDocumentPosition(quickAccessHost!);
+    expect(relativePosition & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it('keeps the header aligned with the workspace side in editor mode', async () => {
+    mockViewMode = 'editor';
+    getConfigMock.mockResolvedValue({
+      ui: { theme_mode: 'system', accent: 'blue' },
+    });
+
+    const { container } = render(<AgentApp sessionId="session-editor-layout" />);
+
+    const main = container.querySelector('.agent-app__main');
+    const explorer = container.querySelector('[data-testid="explorer-panel"]');
+    const workspace = container.querySelector('[data-testid="agent-workspace"]');
+    const header = container.querySelector('[data-testid="agent-session-header"]');
+
+    expect(main).not.toBeNull();
+    expect(explorer).not.toBeNull();
+    expect(workspace).not.toBeNull();
+    expect(header).not.toBeNull();
+    expect(main as HTMLElement).toContainElement(explorer as HTMLElement);
+    expect(main as HTMLElement).toContainElement(workspace as HTMLElement);
+    expect(workspace as HTMLElement).toContainElement(header as HTMLElement);
+
+    const relativePosition = explorer!.compareDocumentPosition(workspace!);
     expect(relativePosition & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 

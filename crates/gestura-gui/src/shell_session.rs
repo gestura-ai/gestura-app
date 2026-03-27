@@ -4,7 +4,7 @@
 //! similar to GitHub Codex or Claude's sandboxed code interface.
 
 use crate::sandbox::{SandboxConfig, create_default_sandbox};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::Path;
 use std::path::PathBuf;
@@ -114,25 +114,120 @@ impl ShellSessionConfig {
     }
 }
 
+fn gestura_executable_name() -> &'static str {
+    #[cfg(target_os = "windows")]
+    {
+        "gestura.exe"
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        "gestura"
+    }
+}
+
+fn find_cli_sibling_candidates(dir: &Path) -> Vec<PathBuf> {
+    let exact = dir.join(gestura_executable_name());
+    let mut candidates = Vec::new();
+    if exact.is_file() {
+        candidates.push(exact.clone());
+    }
+
+    let Ok(entries) = fs::read_dir(dir) else {
+        return candidates;
+    };
+
+    let mut sidecars = Vec::new();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_file() || path == exact {
+            continue;
+        }
+
+        let Some(name) = path.file_name().and_then(|value| value.to_str()) else {
+            continue;
+        };
+
+        if (name.starts_with("gestura-") || name.starts_with("gestura_"))
+            && !name.starts_with("gestura-gui")
+        {
+            sidecars.push(path);
+        }
+    }
+
+    sidecars.sort();
+    candidates.extend(sidecars);
+    candidates
+}
+
+fn collect_dev_cli_candidates(current_dir: &Path) -> Vec<PathBuf> {
+    let mut candidates = Vec::new();
+    for ancestor in current_dir.ancestors().take(8) {
+        candidates.push(
+            ancestor
+                .join("target")
+                .join("debug")
+                .join(gestura_executable_name()),
+        );
+        candidates.push(
+            ancestor
+                .join("target")
+                .join("release")
+                .join(gestura_executable_name()),
+        );
+    }
+    candidates
+}
+
 /// Find the path to the Gestura CLI binary
 ///
-/// Checks common installation locations:
-/// - /usr/local/bin/gestura (PKG install)
-/// - /opt/homebrew/bin/gestura (Homebrew on Apple Silicon)
-/// - User's PATH
+/// Resolution order:
+/// - `GESTURA_CLI_PATH` override
+/// - sibling bundled/dev binary near the running GUI executable
+/// - workspace `target/{debug,release}/gestura` candidates walking upward from CWD
+/// - common installation locations
+/// - user's `PATH`
 fn find_gestura_cli() -> Option<PathBuf> {
-    // Check absolute paths first (more reliable for GUI apps)
+    if let Some(path) = std::env::var_os("GESTURA_CLI_PATH").map(PathBuf::from) {
+        if path.is_file() {
+            tracing::info!(path = ?path, "Found Gestura CLI via GESTURA_CLI_PATH override");
+            return Some(path);
+        }
+
+        tracing::warn!(
+            path = ?path,
+            "Ignoring GESTURA_CLI_PATH because it does not point to a file"
+        );
+    }
+
+    let mut candidates = Vec::new();
+    if let Ok(current_exe) = std::env::current_exe()
+        && let Some(parent) = current_exe.parent()
+    {
+        candidates.extend(find_cli_sibling_candidates(parent));
+    }
+
+    if let Ok(current_dir) = std::env::current_dir() {
+        candidates.extend(collect_dev_cli_candidates(&current_dir));
+    }
+
     let known_paths = [
         "/usr/local/bin/gestura",
         "/opt/homebrew/bin/gestura",
         "/usr/bin/gestura",
     ];
 
-    for path in known_paths {
-        let p = PathBuf::from(path);
-        if p.exists() {
-            tracing::info!("Found Gestura CLI at: {:?}", p);
-            return Some(p);
+    candidates.extend(known_paths.into_iter().map(PathBuf::from));
+
+    let mut seen = HashSet::new();
+    for candidate in candidates {
+        if !seen.insert(candidate.clone()) {
+            continue;
+        }
+
+        if candidate.is_file() {
+            tracing::info!(path = ?candidate, "Found Gestura CLI candidate");
+            return Some(candidate);
         }
     }
 
@@ -152,6 +247,38 @@ fn find_gestura_cli() -> Option<PathBuf> {
 
     tracing::warn!("Gestura CLI not found in any known location");
     None
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+fn format_shell_command_path(path: &Path) -> String {
+    format!(
+        "'{}'",
+        sh_escape_single_quotes(path.to_string_lossy().as_ref())
+    )
+}
+
+#[cfg(target_os = "windows")]
+fn format_shell_command_path(path: &Path) -> String {
+    format!("\"{}\"", path.to_string_lossy().replace('"', "\"\""))
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
+fn format_shell_command_path(path: &Path) -> String {
+    path.to_string_lossy().to_string()
+}
+
+fn format_gestura_resume_command(cli_path: &Path, session_id: &str) -> String {
+    format!(
+        "{} agent --resume --session {}",
+        format_shell_command_path(cli_path),
+        session_id
+    )
+}
+
+/// Build a shell-safe CLI resume command using the resolved Gestura binary path.
+pub fn build_gestura_resume_command(session_id: &str) -> ShellResult<String> {
+    let cli_path = find_gestura_cli().ok_or(ShellSessionError::CliNotInstalled)?;
+    Ok(format_gestura_resume_command(&cli_path, session_id))
 }
 
 /// Check if the Gestura CLI is installed and accessible.
@@ -593,5 +720,32 @@ mod tests {
     fn test_find_cli_returns_option() {
         // Just test that it doesn't panic
         let _ = is_cli_installed();
+    }
+
+    #[test]
+    fn test_find_cli_sibling_candidates_prefers_exact_binary() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let exact = temp.path().join(gestura_executable_name());
+        let sidecar = temp.path().join("gestura-universal-apple-darwin");
+        let gui = temp.path().join("gestura-gui");
+
+        fs::write(&exact, b"bin").expect("write exact cli");
+        fs::write(&sidecar, b"bin").expect("write sidecar cli");
+        fs::write(&gui, b"bin").expect("write gui binary");
+
+        let candidates = find_cli_sibling_candidates(temp.path());
+        assert_eq!(candidates.first(), Some(&exact));
+        assert!(candidates.contains(&sidecar));
+        assert!(!candidates.contains(&gui));
+    }
+
+    #[test]
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    fn test_format_gestura_resume_command_quotes_unix_cli_path() {
+        let cli_path = PathBuf::from("/tmp/Gestura Dev/gestura");
+        let command =
+            format_gestura_resume_command(&cli_path, "00000000-0000-0000-0000-000000000000");
+
+        assert!(command.starts_with("'/tmp/Gestura Dev/gestura' agent --resume --session "));
     }
 }

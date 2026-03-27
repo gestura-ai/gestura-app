@@ -366,6 +366,7 @@ async fn main() {
             // Project explorer (agent left-side file tree)
             gestura_gui::api::explorer_get_root,
             gestura_gui::api::explorer_list_dir,
+            gestura_gui::api::explorer_open_entry_in_file_manager,
             gestura_gui::api::explorer_open_root_in_file_manager,
             gestura_gui::api::explorer_git_status,
             // Integrated file editor (agent_v2 React window)
@@ -514,6 +515,15 @@ async fn main() {
             gestura_gui::tray::init_tray(app.handle())?;
             register_hotkey(app.handle(), &config.hotkey_listen);
 
+            // macOS: start as a tray-only (accessory) app — no Dock icon.
+            // Individual agent session windows will flip the policy to Regular
+            // so they appear in the Dock, and revert back when the last one closes.
+            #[cfg(target_os = "macos")]
+            {
+                app.set_activation_policy(tauri::ActivationPolicy::Accessory);
+                gestura_gui::macos_quit::install_quit_interceptor();
+            }
+
             // Check if this is the first run and show onboarding window
             if gestura_gui::AppConfig::is_first_run() {
                 tracing::info!("First run detected - showing onboarding window");
@@ -533,7 +543,7 @@ async fn main() {
     // Tray-first behavior:
     // - Closing the last window should NOT terminate the process.
     // - Explicit Quit/Exit (tray menu) should terminate.
-    app.run(|_app_handle, event| {
+    app.run(|app_handle, event| {
         if let RunEvent::ExitRequested { api, .. } = event {
             // Only prevent exiting when we successfully created a tray icon.
             // If the tray failed to initialize, allow exit so the app doesn't become
@@ -542,9 +552,20 @@ async fn main() {
 
             if tray_ok && !gestura_gui::app_lifecycle::is_exit_requested() {
                 tracing::info!(
-                    "Exit requested while in tray-first mode (likely last window closed); preventing exit"
+                    "Exit requested while in tray-first mode; preventing exit and closing managed windows"
                 );
                 api.prevent_exit();
+
+                if let Some(manager) = gestura_gui::window_manager::get_window_manager() {
+                    manager.close_all_windows();
+                } else {
+                    // Fallback in case the window manager is unavailable for some reason.
+                    for window_label in app_handle.webview_windows().keys().cloned().collect::<Vec<_>>() {
+                        if let Some(window) = app_handle.get_webview_window(&window_label) {
+                            let _ = window.close();
+                        }
+                    }
+                }
             }
         }
     });

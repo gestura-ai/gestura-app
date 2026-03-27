@@ -67,6 +67,27 @@
   min-width: 0;
 }
 
+.tab-label-wrap {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  flex: 1;
+}
+
+.tab-view-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: rgba(var(--accent-primary-rgb, 37, 99, 235), 0.1);
+  color: var(--accent-primary);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  flex-shrink: 0;
+}
+
 /* ─── Dirty indicator ────────────────────────────────────────────────────────── */
 
 .tab-dirty-dot {
