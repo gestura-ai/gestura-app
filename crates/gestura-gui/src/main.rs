@@ -448,6 +448,7 @@ async fn main() {
             gestura_gui::api::open_system_preferences,
             gestura_gui::api::update_voice_provider,
             gestura_gui::api::update_whisper_model,
+            gestura_gui::api::update_local_whisper_model_path,
             gestura_gui::api::update_llm_provider,
             gestura_gui::api::update_audio_device,
             gestura_gui::api::update_ollama_config,
@@ -483,7 +484,10 @@ async fn main() {
             // Global permission settings
             gestura_gui::api::get_global_permission_settings,
             gestura_gui::api::set_global_permission_settings,
-            gestura_gui::api::set_default_permission_level
+            gestura_gui::api::set_default_permission_level,
+            gestura_gui::api::update_default_enabled_tools,
+            gestura_gui::api::update_theme_mode,
+            gestura_gui::api::update_prompt_enhancement_settings
         ])
         .setup(move |app| {
             // Extend the asset-protocol scope so the webview can load screenshots

@@ -3,9 +3,12 @@
 //! These tests verify that CLI commands work correctly end-to-end.
 
 use assert_cmd::Command;
+use gestura_core::agent_sessions::{
+    AgentSession, AgentSessionStore, FileAgentSessionStore, MessageSource, SessionFilter,
+};
 use predicates::prelude::*;
 use serde_json::Value;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -20,14 +23,19 @@ fn gestura() -> Command {
     // which can block/hang in non-interactive contexts.
     //
     // We disable keychain usage and isolate HOME so tests are deterministic.
+    let home = isolated_home_dir();
+    gestura_with_home(&home)
+}
+
+#[allow(deprecated)] // cargo_bin is deprecated but we need it for tests
+fn gestura_with_home(home: &Path) -> Command {
     let mut cmd = Command::cargo_bin("gestura").unwrap();
 
     cmd.env("GESTURA_DISABLE_KEYCHAIN", "1");
 
-    let home = isolated_home_dir();
     // `dirs::home_dir()` checks different env vars per platform.
-    cmd.env("HOME", &home);
-    cmd.env("USERPROFILE", &home);
+    cmd.env("HOME", home);
+    cmd.env("USERPROFILE", home);
     cmd.env("HOMEDRIVE", "C:");
     cmd.env("HOMEPATH", "\\");
 
@@ -48,6 +56,20 @@ fn isolated_home_dir() -> PathBuf {
     // Best-effort; tests should still fail loudly later if this can't be created.
     let _ = std::fs::create_dir_all(&dir);
     dir
+}
+
+fn write_saved_session(home: &Path) -> AgentSession {
+    let sessions_dir = home.join(".gestura").join("agent_sessions");
+    let workspace_dir = home.join("workspace");
+    std::fs::create_dir_all(&workspace_dir).unwrap();
+
+    let store = FileAgentSessionStore::new(sessions_dir);
+    let mut session = AgentSession::new_with_workspace(workspace_dir, Some("test-model".into()))
+        .expect("session should be created");
+    session.title = "CLI Session Test".to_string();
+    session.add_user_message("verify canonical session store", MessageSource::Text);
+    store.save(&session).expect("session should be saved");
+    session
 }
 
 #[test]
@@ -209,6 +231,69 @@ fn test_session_fork_help() {
         .assert()
         .success()
         .stdout(predicate::str::contains("Fork"));
+}
+
+#[test]
+fn test_session_list_reads_core_agent_session_store() {
+    let home = isolated_home_dir();
+    let session = write_saved_session(&home);
+
+    gestura_with_home(&home)
+        .args(["session", "list"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(&session.id));
+}
+
+#[test]
+fn test_session_fork_persists_new_core_session_identity() {
+    let home = isolated_home_dir();
+    let session = write_saved_session(&home);
+
+    gestura_with_home(&home)
+        .args(["session", "fork", &session.id])
+        .assert()
+        .success();
+
+    let store = FileAgentSessionStore::new(home.join(".gestura").join("agent_sessions"));
+    let sessions = store
+        .list(SessionFilter::All)
+        .expect("sessions should load from canonical store");
+
+    assert_eq!(sessions.len(), 2, "expected original and forked session");
+
+    let forked_id = sessions
+        .iter()
+        .map(|info| info.id.as_str())
+        .find(|id| *id != session.id)
+        .expect("forked session id should exist")
+        .to_string();
+    let forked = store.load(&forked_id).expect("forked session should load");
+
+    assert_eq!(forked.id, forked_id);
+    assert_eq!(forked.title, session.title);
+    assert_eq!(forked.message_count(), session.message_count());
+    assert_eq!(forked.workspace_dir(), session.workspace_dir());
+}
+
+#[test]
+fn test_session_delete_removes_from_core_session_store() {
+    let home = isolated_home_dir();
+    let session = write_saved_session(&home);
+
+    gestura_with_home(&home)
+        .args(["session", "delete", &session.id])
+        .assert()
+        .success();
+
+    let store = FileAgentSessionStore::new(home.join(".gestura").join("agent_sessions"));
+    let sessions = store
+        .list(SessionFilter::All)
+        .expect("sessions should load from canonical store");
+    assert!(
+        sessions.is_empty(),
+        "expected deleted session to be removed"
+    );
 }
 
 // ==================== Tools Command Tests ====================

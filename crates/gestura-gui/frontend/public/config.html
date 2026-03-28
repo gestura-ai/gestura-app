@@ -5307,14 +5307,9 @@
             if (!isTauriAvailable()) return;
 
             try {
-                const cfg = await window.__TAURI__.core.invoke('get_config');
-                if (!cfg.permissions) cfg.permissions = {};
-
-                const prev = cfg.permissions.default_enabled_tools || {};
-                const next = { ...prev, ...computeDefaultEnabledToolsFromUi() };
-                cfg.permissions.default_enabled_tools = next;
-
-                await window.__TAURI__.core.invoke('save_config', { cfg: cfg });
+                await window.__TAURI__.core.invoke('update_default_enabled_tools', {
+                    default_enabled_tools: computeDefaultEnabledToolsFromUi(),
+                });
                 showStatus('Tool permissions updated');
             } catch (e) {
                 console.error('[Permissions] Failed to save default enabled tools:', e);
@@ -7325,13 +7320,9 @@
 
                 console.log('✅ Custom model validation succeeded:', validation);
 
-                // Update the config to point to this path (always set as active)
-                const config = await window.__TAURI__.core.invoke('get_config');
-                config.voice = config.voice || {};
-                config.voice.local_model_path = modelPath;
-                config.voice.provider = 'local';
-
-                await window.__TAURI__.core.invoke('save_config', { cfg: config });
+                await window.__TAURI__.core.invoke('update_local_whisper_model_path', {
+                    model_path: modelPath,
+                });
                 console.log('💾 Custom model path saved to config:', modelPath);
 
                 // Reflect in UI
@@ -7381,7 +7372,16 @@
         async function updateNotificationSettingsPatch(patch) {
             if (!isTauriAvailable()) return;
             try {
-                await window.__TAURI__.core.invoke('update_notification_settings', patch);
+                const normalizedPatch = {};
+                if ('soundEnabled' in patch) normalizedPatch.sound_enabled = patch.soundEnabled;
+                if ('hapticEnabled' in patch) normalizedPatch.haptic_enabled = patch.hapticEnabled;
+                if ('soundVolume' in patch) normalizedPatch.sound_volume = patch.soundVolume;
+                if ('hapticIntensity' in patch) normalizedPatch.haptic_intensity = patch.hapticIntensity;
+                if ('notificationSound' in patch) normalizedPatch.notification_sound = patch.notificationSound;
+                if ('commandConfirmSound' in patch) normalizedPatch.command_confirm_sound = patch.commandConfirmSound;
+                if ('mcpFeedbackEnabled' in patch) normalizedPatch.mcp_feedback_enabled = patch.mcpFeedbackEnabled;
+                if ('autoListenOnFeedback' in patch) normalizedPatch.auto_listen_on_feedback = patch.autoListenOnFeedback;
+                await window.__TAURI__.core.invoke('update_notification_settings', normalizedPatch);
             } catch (e) {
                 console.warn('Failed to update notification settings:', e);
             }
@@ -7739,12 +7739,8 @@
                     // Apply theme immediately
                     applyTheme(newTheme);
 
-                    // Save to config
                     try {
-                        const config = await window.__TAURI__.core.invoke('get_config');
-                        if (!config.ui) config.ui = {};
-                        config.ui.theme_mode = newTheme;
-                        await window.__TAURI__.core.invoke('save_config', { cfg: config });
+                        await window.__TAURI__.core.invoke('update_theme_mode', { theme_mode: newTheme });
                         console.log('[Theme] Saved theme preference to config');
                     } catch (e) {
                         console.error('[Theme] Failed to save theme preference:', e);
@@ -7758,10 +7754,7 @@
                 defaultPermissionLevelEl.addEventListener('change', async (e) => {
                     const level = e.target.value;
                     try {
-                        const config = await window.__TAURI__.core.invoke('get_config');
-                        if (!config.permissions) config.permissions = {};
-                        config.permissions.default_level = level;
-                        await window.__TAURI__.core.invoke('save_config', { cfg: config });
+                        await window.__TAURI__.core.invoke('set_default_permission_level', { level });
                         console.log('[Permissions] Default permission level saved:', level);
                         showStatus('Default permission level updated to: ' + level);
                     } catch (e) {
@@ -7802,10 +7795,9 @@
                 maxLengthMultiplierEl.addEventListener('change', async (e) => {
                     const multiplierX10 = parseInt(e.target.value);
                     try {
-                        const config = await window.__TAURI__.core.invoke('get_config');
-                        if (!config.prompt_enhancement) config.prompt_enhancement = {};
-                        config.prompt_enhancement.max_length_multiplier_x10 = multiplierX10;
-                        await window.__TAURI__.core.invoke('save_config', { cfg: config });
+                        await window.__TAURI__.core.invoke('update_prompt_enhancement_settings', {
+                            max_length_multiplier_x10: multiplierX10,
+                        });
                         console.log('[Enhancement] Saved max length multiplier:', (multiplierX10 / 10).toFixed(1) + 'x');
                     } catch (e) {
                         console.error('[Enhancement] Failed to save max length multiplier:', e);
@@ -7818,10 +7810,9 @@
                 autoEnhanceEl.addEventListener('change', async (e) => {
                     const enabled = e.target.checked;
                     try {
-                        const config = await window.__TAURI__.core.invoke('get_config');
-                        if (!config.prompt_enhancement) config.prompt_enhancement = {};
-                        config.prompt_enhancement.auto_enhance = enabled;
-                        await window.__TAURI__.core.invoke('save_config', { cfg: config });
+                        await window.__TAURI__.core.invoke('update_prompt_enhancement_settings', {
+                            auto_enhance: enabled,
+                        });
                         console.log('[Enhancement] Auto-enhance:', enabled ? 'enabled' : 'disabled');
                     } catch (e) {
                         console.error('[Enhancement] Failed to save auto-enhance setting:', e);
@@ -7834,10 +7825,9 @@
                 enhancementStyleEl.addEventListener('change', async (e) => {
                     const style = e.target.value;
                     try {
-                        const config = await window.__TAURI__.core.invoke('get_config');
-                        if (!config.prompt_enhancement) config.prompt_enhancement = {};
-                        config.prompt_enhancement.style = style;
-                        await window.__TAURI__.core.invoke('save_config', { cfg: config });
+                        await window.__TAURI__.core.invoke('update_prompt_enhancement_settings', {
+                            style,
+                        });
                         console.log('[Enhancement] Enhancement style:', style);
                     } catch (e) {
                         console.error('[Enhancement] Failed to save enhancement style:', e);

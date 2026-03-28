@@ -94,6 +94,31 @@ pub enum GlobalPermissionLevel {
     Full,
 }
 
+impl std::fmt::Display for GlobalPermissionLevel {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Sandbox => write!(f, "sandbox"),
+            Self::Restricted => write!(f, "restricted"),
+            Self::Full => write!(f, "full"),
+        }
+    }
+}
+
+impl std::str::FromStr for GlobalPermissionLevel {
+    type Err = String;
+
+    fn from_str(value: &str) -> std::result::Result<Self, Self::Err> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "sandbox" => Ok(Self::Sandbox),
+            "restricted" => Ok(Self::Restricted),
+            "full" => Ok(Self::Full),
+            other => Err(format!(
+                "Invalid permission level: {other}. Use 'sandbox', 'restricted', or 'full'"
+            )),
+        }
+    }
+}
+
 /// Global permission settings for tool execution.
 ///
 /// These settings define the default permission behavior for new sessions.
@@ -401,6 +426,14 @@ impl PromptEnhancementSettings {
     }
 }
 
+/// Partial update payload for prompt-enhancement settings.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PromptEnhancementSettingsPatch {
+    pub auto_enhance: Option<bool>,
+    pub style: Option<String>,
+    pub max_length_multiplier_x10: Option<u8>,
+}
+
 // ---------------------------------------------------------------------------
 // AppConfig — main configuration struct
 // ---------------------------------------------------------------------------
@@ -499,6 +532,19 @@ impl Default for NotificationSettings {
             auto_listen_on_feedback: true,
         }
     }
+}
+
+/// Partial update payload for notification settings.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct NotificationSettingsPatch {
+    pub sound_enabled: Option<bool>,
+    pub haptic_enabled: Option<bool>,
+    pub sound_volume: Option<u8>,
+    pub haptic_intensity: Option<u8>,
+    pub notification_sound: Option<String>,
+    pub command_confirm_sound: Option<String>,
+    pub mcp_feedback_enabled: Option<bool>,
+    pub auto_listen_on_feedback: Option<bool>,
 }
 
 /// UI preferences including theme mode and accent color.
@@ -1159,6 +1205,397 @@ impl AppConfig {
         keys
     }
 
+    /// Set a config value by its dot-notation key.
+    pub fn set(&mut self, key: &str, value: &str) -> bool {
+        let applied = match key {
+            "llm.primary" => self.update_llm_provider(value).is_ok(),
+            "llm.openai.model" => self.update_provider_model("openai", value).is_ok(),
+            "llm.anthropic.model" => self.update_provider_model("anthropic", value).is_ok(),
+            "llm.grok.model" => self.update_provider_model("grok", value).is_ok(),
+            "llm.gemini.model" => self.update_provider_model("gemini", value).is_ok(),
+            "llm.ollama.model" => {
+                let base_url = self
+                    .llm
+                    .ollama
+                    .as_ref()
+                    .map(|cfg| cfg.base_url.clone())
+                    .unwrap_or_else(default_ollama_base_url);
+                self.update_ollama_config(&base_url, value).is_ok()
+            }
+            "llm.openai.base_url" => {
+                self.llm.openai.get_or_insert_with(OpenAiConfig::default).base_url =
+                    Some(value.to_string());
+                true
+            }
+            "llm.anthropic.base_url" => {
+                self.llm
+                    .anthropic
+                    .get_or_insert_with(AnthropicConfig::default)
+                    .base_url = Some(value.to_string());
+                true
+            }
+            "llm.grok.base_url" => {
+                self.llm.grok.get_or_insert_with(GrokConfig::default).base_url =
+                    Some(value.to_string());
+                true
+            }
+            "llm.gemini.base_url" => {
+                self.llm.gemini.get_or_insert_with(GeminiConfig::default).base_url =
+                    Some(value.to_string());
+                true
+            }
+            "llm.ollama.base_url" => {
+                let model = self
+                    .llm
+                    .ollama
+                    .as_ref()
+                    .map(|cfg| cfg.model.clone())
+                    .unwrap_or_else(default_ollama_model);
+                self.update_ollama_config(value, &model).is_ok()
+            }
+            "llm.openai.api_key" => {
+                self.llm.openai.get_or_insert_with(OpenAiConfig::default).api_key =
+                    value.to_string();
+                true
+            }
+            "llm.anthropic.api_key" => {
+                self.llm
+                    .anthropic
+                    .get_or_insert_with(AnthropicConfig::default)
+                    .api_key = value.to_string();
+                true
+            }
+            "llm.grok.api_key" => {
+                self.llm.grok.get_or_insert_with(GrokConfig::default).api_key =
+                    value.to_string();
+                true
+            }
+            "llm.gemini.api_key" => {
+                self.llm.gemini.get_or_insert_with(GeminiConfig::default).api_key =
+                    value.to_string();
+                true
+            }
+            "voice.provider" => {
+                self.update_voice_provider(value);
+                true
+            }
+            "voice.local_model_path" => {
+                self.update_local_whisper_model_path(value);
+                true
+            }
+            "voice.input_path" => {
+                self.voice.input_path = Some(value.to_string());
+                true
+            }
+            "voice.audio_device" => {
+                self.voice.audio_device = Some(value.to_string());
+                true
+            }
+            "voice.openai_api_key" => {
+                self.voice.openai_api_key = Some(value.to_string());
+                true
+            }
+            "ui.theme_mode" => {
+                self.set_theme_mode(value);
+                true
+            }
+            "ui.accent" => {
+                self.ui.accent = Some(value.to_string());
+                true
+            }
+            "hotkey_listen" => {
+                self.hotkey_listen = value.to_string();
+                true
+            }
+            "grace_period_secs" => value.parse::<u32>().map(|v| self.grace_period_secs = v).is_ok(),
+            "nats_url" => {
+                self.nats_url = value.to_string();
+                true
+            }
+            "pipeline.max_history_messages" => value
+                .parse::<usize>()
+                .map(|v| self.pipeline.max_history_messages = v)
+                .is_ok(),
+            "pipeline.iteration_budget_enabled" => value
+                .parse::<bool>()
+                .map(|v| self.pipeline.iteration_budget_enabled = v)
+                .is_ok(),
+            "pipeline.max_iterations" => value
+                .parse::<usize>()
+                .map(|v| self.pipeline.max_iterations = v)
+                .is_ok(),
+            "pipeline.tracked_task_max_iterations" => value
+                .parse::<usize>()
+                .map(|v| self.pipeline.tracked_task_max_iterations = v)
+                .is_ok(),
+            "pipeline.auto_compact_threshold_percent" => value.parse::<u8>().is_ok_and(|v| {
+                if v <= 100 {
+                    self.pipeline.auto_compact_threshold_percent = v;
+                    true
+                } else {
+                    false
+                }
+            }),
+            "pipeline.compaction_strategy" => {
+                self.pipeline.compaction_strategy = CompactionStrategy::parse(value);
+                true
+            }
+            "pipeline.max_context_tokens" => value
+                .parse::<usize>()
+                .map(|v| self.pipeline.max_context_tokens = v)
+                .is_ok(),
+            "pipeline.log_token_usage" => value
+                .parse::<bool>()
+                .map(|v| self.pipeline.log_token_usage = v)
+                .is_ok(),
+            "pipeline.agent_telemetry.enabled" => value
+                .parse::<bool>()
+                .map(|v| self.pipeline.agent_telemetry.enabled = v)
+                .is_ok(),
+            "pipeline.agent_telemetry.trace_export.enabled" => value
+                .parse::<bool>()
+                .map(|v| self.pipeline.agent_telemetry.trace_export.enabled = v)
+                .is_ok(),
+            "pipeline.agent_telemetry.trace_export.protocol" => {
+                if let Some(protocol) = AgentTelemetryTraceExportProtocol::parse(value) {
+                    self.pipeline.agent_telemetry.trace_export.protocol = protocol;
+                    true
+                } else {
+                    false
+                }
+            }
+            "pipeline.agent_telemetry.trace_export.endpoint" => {
+                self.pipeline.agent_telemetry.trace_export.endpoint = value.to_string();
+                true
+            }
+            "pipeline.reflection.enabled" => value
+                .parse::<bool>()
+                .map(|v| self.pipeline.reflection.enabled = v)
+                .is_ok(),
+            "pipeline.reflection.quality_threshold_percent" => value
+                .parse::<u8>()
+                .map(|v| self.pipeline.reflection.quality_threshold_percent = v.min(100))
+                .is_ok(),
+            "pipeline.reflection.max_injected" => value
+                .parse::<usize>()
+                .map(|v| self.pipeline.reflection.max_injected = v)
+                .is_ok(),
+            "pipeline.reflection.max_retry_attempts" => value
+                .parse::<usize>()
+                .map(|v| self.pipeline.reflection.max_retry_attempts = v)
+                .is_ok(),
+            "pipeline.reflection.promotion_confidence_percent" => value
+                .parse::<u8>()
+                .map(|v| self.pipeline.reflection.promotion_confidence_percent = v.min(100))
+                .is_ok(),
+            "developer.enable_simulators" => value
+                .parse::<bool>()
+                .map(|v| self.developer.enable_simulators = v)
+                .is_ok(),
+            "developer.verbose_ble_logging" => value
+                .parse::<bool>()
+                .map(|v| self.developer.verbose_ble_logging = v)
+                .is_ok(),
+            "web_search.serpapi_key" => {
+                self.web_search.serpapi_key = Some(value.to_string());
+                true
+            }
+            "web_search.brave_key" => {
+                self.web_search.brave_key = Some(value.to_string());
+                true
+            }
+            _ => false,
+        };
+
+        if applied {
+            self.normalize_derived_defaults();
+        }
+
+        applied
+    }
+
+    /// Update the selected voice provider.
+    pub fn update_voice_provider(&mut self, provider: &str) {
+        self.voice.provider = provider.to_string();
+    }
+
+    /// Update the configured Whisper model using a managed filename.
+    pub fn update_whisper_model_filename(&mut self, model_filename: &str) {
+        let model_path = Self::whisper_models_dir().join(model_filename);
+        self.voice.local_model_path = Some(model_path.to_string_lossy().to_string());
+    }
+
+    /// Point the local Whisper configuration at an explicit model path.
+    pub fn update_local_whisper_model_path(&mut self, model_path: impl Into<String>) {
+        self.voice.provider = "local".to_string();
+        self.voice.local_model_path = Some(model_path.into());
+    }
+
+    /// Update the selected audio input device (`None` = system default).
+    pub fn update_audio_device(&mut self, device_name: Option<String>) {
+        self.voice.audio_device = device_name;
+    }
+
+    /// Update the primary LLM provider and ensure its config block exists.
+    pub fn update_llm_provider(&mut self, provider: &str) -> Result<()> {
+        if !matches!(provider, "openai" | "anthropic" | "grok" | "gemini" | "ollama") {
+            return Err(AppError::Config(format!("Unknown provider: {provider}")));
+        }
+
+        self.llm.primary = provider.to_string();
+        self.llm.ensure_provider_config(provider);
+        Ok(())
+    }
+
+    /// Update the model for a specific LLM provider.
+    pub fn update_provider_model(&mut self, provider: &str, model: &str) -> Result<()> {
+        if model.trim().is_empty() {
+            return Err(AppError::InvalidInput("Model name cannot be empty".to_string()));
+        }
+
+        self.llm.ensure_provider_config(provider);
+        match provider {
+            "openai" => {
+                if let Some(config) = self.llm.openai.as_mut() {
+                    config.model = model.to_string();
+                }
+            }
+            "anthropic" => {
+                if let Some(config) = self.llm.anthropic.as_mut() {
+                    config.model = model.to_string();
+                }
+            }
+            "grok" => {
+                if let Some(config) = self.llm.grok.as_mut() {
+                    config.model = model.to_string();
+                }
+            }
+            "gemini" => {
+                if let Some(config) = self.llm.gemini.as_mut() {
+                    config.model = model.to_string();
+                }
+            }
+            "ollama" => {
+                if let Some(config) = self.llm.ollama.as_mut() {
+                    config.model = model.to_string();
+                }
+            }
+            other => return Err(AppError::Config(format!("Unknown provider: {other}"))),
+        }
+
+        Ok(())
+    }
+
+    /// Update Ollama's base URL and selected model.
+    pub fn update_ollama_config(&mut self, base_url: &str, model: &str) -> Result<()> {
+        if base_url.trim().is_empty() {
+            return Err(AppError::InvalidInput(
+                "Ollama base URL cannot be empty".to_string(),
+            ));
+        }
+        if model.trim().is_empty() {
+            return Err(AppError::InvalidInput(
+                "Ollama model cannot be empty".to_string(),
+            ));
+        }
+
+        self.llm.ollama = Some(OllamaConfig {
+            base_url: base_url.trim().to_string(),
+            model: model.trim().to_string(),
+        });
+        Ok(())
+    }
+
+    /// Apply a partial notification-settings update.
+    pub fn apply_notification_settings_patch(&mut self, patch: NotificationSettingsPatch) {
+        if let Some(value) = patch.sound_enabled {
+            self.notifications.sound_enabled = value;
+        }
+        if let Some(value) = patch.haptic_enabled {
+            self.notifications.haptic_enabled = value;
+        }
+        if let Some(value) = patch.sound_volume {
+            self.notifications.sound_volume = value.min(100);
+        }
+        if let Some(value) = patch.haptic_intensity {
+            self.notifications.haptic_intensity = value.min(100);
+        }
+        if let Some(value) = patch.notification_sound {
+            self.notifications.notification_sound = normalize_notification_sound_choice(&value);
+        }
+        if let Some(value) = patch.command_confirm_sound {
+            self.notifications.command_confirm_sound =
+                normalize_command_confirm_sound_choice(&value);
+        }
+        if let Some(value) = patch.mcp_feedback_enabled {
+            self.notifications.mcp_feedback_enabled = value;
+        }
+        if let Some(value) = patch.auto_listen_on_feedback {
+            self.notifications.auto_listen_on_feedback = value;
+        }
+    }
+
+    /// Merge default enabled-tool preferences into the global permission settings.
+    pub fn update_default_enabled_tools(&mut self, patch: HashMap<String, bool>) {
+        self.permissions.default_enabled_tools.extend(patch);
+    }
+
+    /// Update the default permission level for new sessions.
+    pub fn set_default_permission_level(&mut self, level: &str) -> Result<()> {
+        self.permissions.default_level = level.parse().map_err(AppError::Config)?;
+        Ok(())
+    }
+
+    /// Update the selected UI theme mode.
+    pub fn set_theme_mode(&mut self, theme_mode: &str) {
+        self.ui.theme_mode = theme_mode.to_string();
+    }
+
+    /// Apply a partial prompt-enhancement settings update.
+    pub fn apply_prompt_enhancement_settings_patch(
+        &mut self,
+        patch: PromptEnhancementSettingsPatch,
+    ) {
+        if let Some(value) = patch.auto_enhance {
+            self.prompt_enhancement.auto_enhance = value;
+        }
+        if let Some(value) = patch.style {
+            self.prompt_enhancement.style = value;
+        }
+        if let Some(value) = patch.max_length_multiplier_x10 {
+            self.prompt_enhancement.max_length_multiplier_x10 = value.clamp(10, 50);
+        }
+    }
+
+    /// Add an MCP server entry, rejecting duplicate names.
+    pub fn add_mcp_server_entry(&mut self, entry: McpServerEntry) -> Result<()> {
+        if self.find_mcp_server(&entry.name).is_some() {
+            return Err(AppError::Config(format!(
+                "MCP server '{}' already exists",
+                entry.name
+            )));
+        }
+        self.mcp_servers.push(entry);
+        Ok(())
+    }
+
+    /// Remove an MCP server entry by name.
+    pub fn remove_mcp_server(&mut self, name: &str) -> Result<McpServerEntry> {
+        let Some(index) = self.mcp_servers.iter().position(|server| server.name == name) else {
+            return Err(AppError::NotFound(format!("MCP server '{name}'")));
+        };
+        Ok(self.mcp_servers.remove(index))
+    }
+
+    /// Enable or disable an MCP server by name.
+    pub fn set_mcp_server_enabled(&mut self, name: &str, enabled: bool) -> Result<()> {
+        let server = self
+            .find_mcp_server_mut(name)
+            .ok_or_else(|| AppError::NotFound(format!("MCP server '{name}'")))?;
+        server.enabled = enabled;
+        Ok(())
+    }
+
     /// Apply environment variable overrides to the configuration
     pub fn apply_env_overrides(mut self) -> Self {
         // Core settings
@@ -1349,6 +1786,20 @@ impl AppConfig {
     }
 }
 
+fn normalize_notification_sound_choice(value: &str) -> String {
+    match value {
+        "default" | "chime" | "ping" | "pop" | "subtle" | "none" => value.to_string(),
+        _ => "default".to_string(),
+    }
+}
+
+fn normalize_command_confirm_sound_choice(value: &str) -> String {
+    match value {
+        "default" | "success" | "click" | "beep" | "none" => value.to_string(),
+        _ => "default".to_string(),
+    }
+}
+
 // ---------------------------------------------------------------------------
 // WhisperModelInfo
 // ---------------------------------------------------------------------------
@@ -1435,5 +1886,72 @@ impl WhisperModelInfo {
     /// Get the default/recommended model filename
     pub fn default_model_filename() -> &'static str {
         "ggml-base.en.bin"
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn set_llm_primary_ensures_provider_config() {
+        let mut config = AppConfig::default();
+        config.llm.openai = None;
+
+        assert!(config.set("llm.primary", "openai"));
+        assert_eq!(config.llm.primary, "openai");
+        assert_eq!(config.llm.openai.as_ref().map(|cfg| cfg.model.as_str()), Some(DEFAULT_OPENAI_MODEL));
+    }
+
+    #[test]
+    fn notification_patch_clamps_and_normalizes_values() {
+        let mut config = AppConfig::default();
+        config.apply_notification_settings_patch(NotificationSettingsPatch {
+            sound_volume: Some(250),
+            notification_sound: Some("bogus".to_string()),
+            command_confirm_sound: Some("click".to_string()),
+            ..NotificationSettingsPatch::default()
+        });
+
+        assert_eq!(config.notifications.sound_volume, 100);
+        assert_eq!(config.notifications.notification_sound, "default");
+        assert_eq!(config.notifications.command_confirm_sound, "click");
+    }
+
+    #[test]
+    fn prompt_enhancement_patch_clamps_multiplier() {
+        let mut config = AppConfig::default();
+        config.apply_prompt_enhancement_settings_patch(PromptEnhancementSettingsPatch {
+            max_length_multiplier_x10: Some(99),
+            auto_enhance: Some(true),
+            ..PromptEnhancementSettingsPatch::default()
+        });
+
+        assert!(config.prompt_enhancement.auto_enhance);
+        assert_eq!(config.prompt_enhancement.max_length_multiplier_x10, 50);
+    }
+
+    #[test]
+    fn mcp_server_helpers_handle_duplicate_add_remove_and_toggle() {
+        let mut config = AppConfig::default();
+        let entry = McpServerEntry {
+            name: "demo".to_string(),
+            enabled: true,
+            transport: McpTransportType::Stdio,
+            command: Some("demo-cmd".to_string()),
+            ..McpServerEntry::default()
+        };
+
+        config.add_mcp_server_entry(entry.clone()).expect("add server");
+        assert!(config.add_mcp_server_entry(entry).is_err());
+
+        config
+            .set_mcp_server_enabled("demo", false)
+            .expect("disable server");
+        assert_eq!(config.find_mcp_server("demo").map(|server| server.enabled), Some(false));
+
+        let removed = config.remove_mcp_server("demo").expect("remove server");
+        assert_eq!(removed.name, "demo");
+        assert!(config.find_mcp_server("demo").is_none());
     }
 }

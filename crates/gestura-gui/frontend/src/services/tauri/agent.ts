@@ -438,7 +438,7 @@ export const getApiKey = (provider: string): Promise<string | null> =>
 // ─── Prompt enhancement ───────────────────────────────────────────────────────
 
 export const enhancePrompt = (sessionId: string, text: string): Promise<string> =>
-  invokeTauri('enhance_prompt', { session_id: sessionId, text });
+  invokeTauri('enhance_prompt', { session_id: sessionId, prompt: text });
 
 // ─── Voice ───────────────────────────────────────────────────────────────────
 

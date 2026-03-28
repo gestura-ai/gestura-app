@@ -79,12 +79,6 @@ pub fn run(action: &McpAction) -> Result<()> {
         } => {
             let mut config = AppConfig::load();
 
-            if config.mcp_servers.iter().any(|t| t.name == *name) {
-                eprintln!("{}: MCP server '{}' already exists", "error".red(), name);
-                eprintln!("Use {} first.", "gestura mcp remove".cyan());
-                std::process::exit(2);
-            }
-
             let transport_type: McpTransportType = transport.parse().unwrap_or_else(|e: String| {
                 eprintln!("{}: {}", "error".red(), e);
                 std::process::exit(2);
@@ -134,7 +128,11 @@ pub fn run(action: &McpAction) -> Result<()> {
 
             // Clone entry before moving it into the config vec so we can provision below.
             let entry_for_provision = entry.clone();
-            config.mcp_servers.push(entry);
+            if let Err(error) = config.add_mcp_server_entry(entry) {
+                eprintln!("{}: {}", "error".red(), error);
+                eprintln!("Use {} first.", "gestura mcp remove".cyan());
+                std::process::exit(2);
+            }
 
             if let Err(e) = config.save() {
                 eprintln!("{}: Failed to save config: {}", "error".red(), e);
@@ -156,11 +154,6 @@ pub fn run(action: &McpAction) -> Result<()> {
         McpAction::AddJson { name, json } => {
             let mut config = AppConfig::load();
 
-            if config.mcp_servers.iter().any(|t| t.name == *name) {
-                eprintln!("{}: MCP server '{}' already exists", "error".red(), name);
-                std::process::exit(2);
-            }
-
             let mut entry: McpServerEntry = serde_json::from_str(json).unwrap_or_else(|e| {
                 eprintln!("{}: Invalid JSON: {}", "error".red(), e);
                 std::process::exit(2);
@@ -169,7 +162,10 @@ pub fn run(action: &McpAction) -> Result<()> {
 
             // Clone before move for provisioning below.
             let entry_for_provision = entry.clone();
-            config.mcp_servers.push(entry);
+            if let Err(error) = config.add_mcp_server_entry(entry) {
+                eprintln!("{}: {}", "error".red(), error);
+                std::process::exit(2);
+            }
 
             if let Err(e) = config.save() {
                 eprintln!("{}: Failed to save config: {}", "error".red(), e);
@@ -251,11 +247,8 @@ pub fn run(action: &McpAction) -> Result<()> {
         // ── remove ──────────────────────────────────────────────────────
         McpAction::Remove { name } => {
             let mut config = AppConfig::load();
-            let original_len = config.mcp_servers.len();
-            config.mcp_servers.retain(|t| t.name != *name);
-
-            if config.mcp_servers.len() == original_len {
-                eprintln!("{}: MCP server '{}' not found", "error".red(), name);
+            if let Err(error) = config.remove_mcp_server(name) {
+                eprintln!("{}: {}", "error".red(), error);
                 std::process::exit(2);
             }
 
@@ -270,39 +263,31 @@ pub fn run(action: &McpAction) -> Result<()> {
         // ── enable ──────────────────────────────────────────────────────
         McpAction::Enable { name } => {
             let mut config = AppConfig::load();
-            match config.mcp_servers.iter_mut().find(|t| t.name == *name) {
-                Some(srv) => {
-                    srv.enabled = true;
-                    if let Err(e) = config.save() {
-                        eprintln!("{}: Failed to save config: {}", "error".red(), e);
-                        std::process::exit(2);
-                    }
-                    println!("{} Enabled MCP server: {}", "✓".green(), name.cyan());
-                }
-                None => {
-                    eprintln!("{}: MCP server '{}' not found", "error".red(), name);
-                    std::process::exit(2);
-                }
+            if let Err(error) = config.set_mcp_server_enabled(name, true) {
+                eprintln!("{}: {}", "error".red(), error);
+                std::process::exit(2);
             }
+
+            if let Err(e) = config.save() {
+                eprintln!("{}: Failed to save config: {}", "error".red(), e);
+                std::process::exit(2);
+            }
+            println!("{} Enabled MCP server: {}", "✓".green(), name.cyan());
         }
 
         // ── disable ─────────────────────────────────────────────────────
         McpAction::Disable { name } => {
             let mut config = AppConfig::load();
-            match config.mcp_servers.iter_mut().find(|t| t.name == *name) {
-                Some(srv) => {
-                    srv.enabled = false;
-                    if let Err(e) = config.save() {
-                        eprintln!("{}: Failed to save config: {}", "error".red(), e);
-                        std::process::exit(2);
-                    }
-                    println!("{} Disabled MCP server: {}", "✓".green(), name.cyan());
-                }
-                None => {
-                    eprintln!("{}: MCP server '{}' not found", "error".red(), name);
-                    std::process::exit(2);
-                }
+            if let Err(error) = config.set_mcp_server_enabled(name, false) {
+                eprintln!("{}: {}", "error".red(), error);
+                std::process::exit(2);
             }
+
+            if let Err(e) = config.save() {
+                eprintln!("{}: Failed to save config: {}", "error".red(), e);
+                std::process::exit(2);
+            }
+            println!("{} Disabled MCP server: {}", "✓".green(), name.cyan());
         }
 
         McpAction::Status => {

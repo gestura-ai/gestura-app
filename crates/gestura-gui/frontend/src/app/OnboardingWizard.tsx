@@ -7,9 +7,8 @@ import {
 } from '../services/tauri/permissions';
 import { registerConsent } from '../services/tauri/consent';
 import { pairRing as pairRingIpc, scanForRings as scanForRingsIpc } from '../services/tauri/ring';
+import { completeOnboarding } from '../services/tauri/appLifecycle';
 import { testVoice } from '../services/tauri/voice';
-import { ONBOARDING_COMPLETED_KEY } from '../shared/constants/storageKeys';
-import { setLocalStorageFlag } from '../shared/storage/localStorageFlag';
 import { Button } from '../shared/components/Button';
 import { FormGroup } from '../shared/components/FormGroup';
 
@@ -492,7 +491,7 @@ const CompletionStep: React.FC<OnboardingStepProps> = ({ onComplete }) => {
   );
 };
 
-const OnboardingWizard: React.FC<{ onComplete: () => void }> = ({ onComplete }) => {
+const OnboardingWizard: React.FC<{ onComplete: () => void | Promise<void> }> = ({ onComplete }) => {
   const [currentStep, setCurrentStep] = useState(0);
   const [, setStepData] = useState<Record<string, unknown>>({});
   const [contentVisible, setContentVisible] = useState(true);
@@ -600,9 +599,14 @@ const OnboardingWizard: React.FC<{ onComplete: () => void }> = ({ onComplete }) 
     setStepData((prev) => ({ ...prev, [steps[currentStep].id]: data }));
 
     if (currentStep === steps.length - 1) {
-      // Final step completed
-      setLocalStorageFlag(ONBOARDING_COMPLETED_KEY, true);
-      onComplete();
+      void (async () => {
+        try {
+          await completeOnboarding();
+          await onComplete();
+        } catch (error) {
+          console.error('Failed to complete onboarding via backend:', error);
+        }
+      })();
     } else {
       handleNext();
     }

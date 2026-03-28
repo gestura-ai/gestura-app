@@ -9,7 +9,7 @@
 //! - Handles task completion/failure events
 //! - Emits Tauri events for real-time UI updates
 
-use gestura_core::{Task, TaskSource, TaskStatus};
+use gestura_core::{tasks::TrackedTaskFinalization as CoreTrackedTaskFinalization, Task, TaskSource, TaskStatus};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use tauri::{AppHandle, Emitter};
@@ -42,15 +42,6 @@ pub enum TaskEventType {
     Deleted,
 }
 
-/// Outcome of reconciling a tracked agent task after a run completes.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum TrackedTaskFinalization {
-    /// The tracked task tree is terminal, so the root task was completed.
-    Completed,
-    /// The run ended while planned subtasks still remained open.
-    StillInProgress { open_subtasks: Vec<String> },
-}
-
 fn merge_task_metadata(
     existing: Option<serde_json::Value>,
     patch: serde_json::Value,
@@ -68,6 +59,15 @@ fn merge_task_metadata(
     serde_json::Value::Object(merged)
 }
 
+/// Outcome of reconciling a tracked agent task after a run completes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TrackedTaskFinalization {
+    /// The tracked task tree is terminal, so the root task was completed.
+    Completed,
+    /// The run ended while planned subtasks still remained open.
+    StillInProgress { open_subtasks: Vec<String> },
+}
+
 fn finalize_tracked_task_after_agent_run_with_manager(
     manager: &gestura_core::TaskManager,
     session_id: &str,
@@ -78,17 +78,20 @@ fn finalize_tracked_task_after_agent_run_with_manager(
         .map_err(|e| e.to_string())?
         .ok_or_else(|| format!("Tracked task '{task_id}' was not found"))?;
 
-    let open_descendants = manager
-        .list_descendants(session_id, task_id)
-        .map_err(|e| e.to_string())?
-        .into_iter()
-        .filter(|task| !task.is_terminal())
-        .collect::<Vec<_>>();
+    let finalization = manager
+        .finalize_tracked_task_after_agent_run(session_id, task_id)
+        .map_err(|e| e.to_string())?;
 
-    if !open_descendants.is_empty() {
-        let open_subtasks = open_descendants
+    if let CoreTrackedTaskFinalization::StillInProgress { open_subtask_ids } = &finalization {
+        let open_subtasks = open_subtask_ids
             .iter()
-            .map(|task| task.name.clone())
+            .filter_map(|open_task_id| {
+                manager
+                    .get_task(session_id, open_task_id)
+                    .ok()
+                    .flatten()
+                    .map(|task| task.name)
+            })
             .collect::<Vec<_>>();
 
         let metadata = merge_task_metadata(
@@ -104,12 +107,6 @@ fn finalize_tracked_task_after_agent_run_with_manager(
         manager
             .update_task_metadata(session_id, task_id, metadata)
             .map_err(|e| e.to_string())?;
-
-        if tracked_task.status != TaskStatus::InProgress {
-            manager
-                .update_task_status(session_id, task_id, TaskStatus::InProgress)
-                .map_err(|e| e.to_string())?;
-        }
 
         return Ok(TrackedTaskFinalization::StillInProgress { open_subtasks });
     }
@@ -128,24 +125,10 @@ fn finalize_tracked_task_after_agent_run_with_manager(
         .update_task_metadata(session_id, task_id, metadata)
         .map_err(|e| e.to_string())?;
 
-    if tracked_task.status != TaskStatus::Completed {
-        manager
-            .update_task_status(session_id, task_id, TaskStatus::Completed)
-            .map_err(|e| e.to_string())?;
+    match finalization {
+        CoreTrackedTaskFinalization::Completed => Ok(TrackedTaskFinalization::Completed),
+        CoreTrackedTaskFinalization::StillInProgress { .. } => unreachable!(),
     }
-
-    if manager
-        .get_current_task_id(session_id)
-        .map_err(|e| e.to_string())?
-        .as_deref()
-        == Some(task_id)
-    {
-        manager
-            .set_current_task_id(session_id, None)
-            .map_err(|e| e.to_string())?;
-    }
-
-    Ok(TrackedTaskFinalization::Completed)
 }
 
 fn cancel_open_descendants_with_manager(
@@ -153,43 +136,22 @@ fn cancel_open_descendants_with_manager(
     session_id: &str,
     task_id: &str,
 ) -> Result<Vec<String>, String> {
-    let mut cancelled = Vec::new();
+    let descendants = manager
+        .list_descendants(session_id, task_id)
+        .map_err(|e| e.to_string())?;
+    let name_by_id = descendants
+        .into_iter()
+        .map(|task| (task.id, task.name))
+        .collect::<std::collections::HashMap<_, _>>();
 
-    loop {
-        let open_descendants = manager
-            .list_descendants(session_id, task_id)
-            .map_err(|e| e.to_string())?
-            .into_iter()
-            .filter(|task| !matches!(task.status, TaskStatus::Completed | TaskStatus::Cancelled))
-            .collect::<Vec<_>>();
+    let cancelled_ids = manager
+        .cancel_open_descendants(session_id, task_id)
+        .map_err(|e| e.to_string())?;
 
-        if open_descendants.is_empty() {
-            return Ok(cancelled);
-        }
-
-        let leaf_descendants = open_descendants
-            .iter()
-            .filter(|task| {
-                !open_descendants
-                    .iter()
-                    .any(|candidate| candidate.parent_id.as_deref() == Some(task.id.as_str()))
-            })
-            .map(|task| (task.id.clone(), task.name.clone()))
-            .collect::<Vec<_>>();
-
-        if leaf_descendants.is_empty() {
-            return Err(format!(
-                "Could not resolve open descendant leaves for tracked task '{task_id}'"
-            ));
-        }
-
-        for (descendant_id, descendant_name) in leaf_descendants {
-            manager
-                .update_task_status(session_id, &descendant_id, TaskStatus::Cancelled)
-                .map_err(|e| e.to_string())?;
-            cancelled.push(descendant_name);
-        }
-    }
+    Ok(cancelled_ids
+        .into_iter()
+        .filter_map(|task_id| name_by_id.get(&task_id).cloned())
+        .collect())
 }
 
 /// Create an agent task and emit events
@@ -427,21 +389,46 @@ fn update_task_with_result_with_manager(
     tool_calls: Option<serde_json::Value>,
     duration_ms: Option<u64>,
 ) -> Result<TaskStatus, String> {
+    let tool_call_count = tool_calls
+        .as_ref()
+        .and_then(|value| value.as_array())
+        .map(|calls| calls.len() as i32)
+        .unwrap_or_default();
+    let duration_ms_i32 = duration_ms
+        .map(|value| i32::try_from(value).unwrap_or(i32::MAX))
+        .unwrap_or_default();
+
+    manager
+        .record_task_result(
+            session_id,
+            task_id,
+            success,
+            output.to_string(),
+            tool_call_count,
+            duration_ms_i32,
+        )
+        .map_err(|e| e.to_string())?;
+
     let existing_task = manager
         .get_task(session_id, task_id)
         .map_err(|e| e.to_string())?
         .ok_or_else(|| format!("Task '{task_id}' not found"))?;
 
-    let metadata = merge_task_metadata(
-        existing_task.metadata,
-        serde_json::json!({
-            "success": success,
-            "output": output,
-            "tool_calls": tool_calls,
-            "duration_ms": duration_ms,
-            "completed_at": chrono::Utc::now().to_rfc3339()
-        }),
-    );
+    let metadata = match tool_calls {
+        Some(tool_calls) => merge_task_metadata(
+            existing_task.metadata,
+            serde_json::json!({
+                "tool_calls": tool_calls,
+                "completed_at": chrono::Utc::now().to_rfc3339()
+            }),
+        ),
+        None => merge_task_metadata(
+            existing_task.metadata,
+            serde_json::json!({
+                "completed_at": chrono::Utc::now().to_rfc3339()
+            }),
+        ),
+    };
 
     manager
         .update_task_metadata(session_id, task_id, metadata)

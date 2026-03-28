@@ -14,9 +14,8 @@ import McpPanel from './features/mcp/McpPanel';
 import MemoryConsolePanel from './features/memory/components/MemoryConsolePanel';
 import { AppConfig, UiSettings } from './types/config';
 import { getConfig, saveConfig, setUiPrefs } from './services/tauri/config';
+import { isFirstRun } from './services/tauri/appLifecycle';
 import { useKeyboardShortcuts } from './shared/hooks/useKeyboardShortcuts';
-import { useLocalStorageFlag } from './shared/hooks/useLocalStorageFlag';
-import { ONBOARDING_COMPLETED_KEY } from './shared/constants/storageKeys';
 
 
 
@@ -26,33 +25,22 @@ function App() {
   const [showOnboarding, setShowOnboarding] = useState(false);
   const [showHelp, setShowHelp] = useState(false);
   const [loading, setLoading] = useState(true);
-  const [onboardingCompleted] = useLocalStorageFlag(ONBOARDING_COMPLETED_KEY);
 
-  const loadConfig = useCallback(async () => {
+  const loadAppState = useCallback(async () => {
     try {
-      const cfg = await getConfig();
+      const [firstRun, cfg] = await Promise.all([isFirstRun(), getConfig()]);
+      setShowOnboarding(firstRun);
       setConfig(cfg);
     } catch (error) {
-      console.error('Failed to load config:', error);
+      console.error('Failed to load app state:', error);
     } finally {
       setLoading(false);
     }
   }, []);
 
   useEffect(() => {
-    console.log('🚀 Gestura App starting...');
-    console.log('📋 Onboarding completed flag:', onboardingCompleted);
-
-    if (!onboardingCompleted) {
-      console.log('✅ Showing onboarding wizard (first run or incomplete)');
-      setShowOnboarding(true);
-    } else {
-      console.log('⏭️ Skipping onboarding (already completed)');
-    }
-
-    // Load config after checking onboarding
-    loadConfig();
-  }, [loadConfig, onboardingCompleted]);
+    void loadAppState();
+  }, [loadAppState]);
 
   useKeyboardShortcuts((event) => {
     if (event.key === 'F1') {
@@ -232,7 +220,12 @@ function App() {
       {/* Onboarding Wizard */}
       {showOnboarding && (
         <div className="modal-overlay">
-          <OnboardingWizard onComplete={() => setShowOnboarding(false)} />
+          <OnboardingWizard
+            onComplete={async () => {
+              setShowOnboarding(false);
+              await loadAppState();
+            }}
+          />
         </div>
       )}
 

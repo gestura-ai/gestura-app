@@ -3,7 +3,6 @@
 
 use super::Result;
 use colored::Colorize;
-use gestura_core::config::AgentTelemetryTraceExportProtocol;
 use gestura_core::{
     AgentPipeline, AgentRequest, AppConfig, AppConfigSecurityExt, AudioCaptureConfig,
     CancellationToken, PermissionLevel, RequestSource, SessionToolSettings, SpeechProcessorCoreExt,
@@ -3674,122 +3673,7 @@ fn basic_mode_config_command(args: &[&str]) {
 
 /// Set a config value by key (mirrors `commands/config.rs` logic).
 fn basic_mode_set_config_value(config: &mut AppConfig, key: &str, value: &str) -> bool {
-    match key {
-        "llm.primary" => {
-            config.llm.primary = value.to_string();
-            true
-        }
-        "voice.provider" => {
-            config.voice.provider = value.to_string();
-            true
-        }
-        "voice.local_model_path" => {
-            config.voice.local_model_path = Some(value.to_string());
-            true
-        }
-        "voice.audio_device" => {
-            config.voice.audio_device = Some(value.to_string());
-            true
-        }
-        "ui.theme_mode" => {
-            config.ui.theme_mode = value.to_string();
-            true
-        }
-        "hotkey_listen" => {
-            config.hotkey_listen = value.to_string();
-            true
-        }
-        "nats_url" => {
-            config.nats_url = value.to_string();
-            true
-        }
-        "pipeline.max_history_messages" => {
-            if let Ok(val) = value.parse::<usize>() {
-                config.pipeline.max_history_messages = val;
-                true
-            } else {
-                false
-            }
-        }
-        "pipeline.auto_compact_threshold_percent" => {
-            if let Ok(val) = value.parse::<u8>() {
-                if val <= 100 {
-                    config.pipeline.auto_compact_threshold_percent = val;
-                    true
-                } else {
-                    false
-                }
-            } else {
-                false
-            }
-        }
-        "pipeline.compaction_strategy" => {
-            use gestura_core::pipeline::CompactionStrategy;
-            config.pipeline.compaction_strategy = CompactionStrategy::parse(value);
-            true
-        }
-        "pipeline.max_context_tokens" => {
-            if let Ok(val) = value.parse::<usize>() {
-                config.pipeline.max_context_tokens = val;
-                true
-            } else {
-                false
-            }
-        }
-        "pipeline.log_token_usage" => {
-            if let Ok(val) = value.parse::<bool>() {
-                config.pipeline.log_token_usage = val;
-                true
-            } else {
-                false
-            }
-        }
-        "pipeline.agent_telemetry.enabled" => {
-            if let Ok(val) = value.parse::<bool>() {
-                config.pipeline.agent_telemetry.enabled = val;
-                true
-            } else {
-                false
-            }
-        }
-        "pipeline.agent_telemetry.trace_export.enabled" => {
-            if let Ok(val) = value.parse::<bool>() {
-                config.pipeline.agent_telemetry.trace_export.enabled = val;
-                true
-            } else {
-                false
-            }
-        }
-        "pipeline.agent_telemetry.trace_export.protocol" => {
-            if let Some(protocol) = AgentTelemetryTraceExportProtocol::parse(value) {
-                config.pipeline.agent_telemetry.trace_export.protocol = protocol;
-                true
-            } else {
-                false
-            }
-        }
-        "pipeline.agent_telemetry.trace_export.endpoint" => {
-            config.pipeline.agent_telemetry.trace_export.endpoint = value.to_string();
-            true
-        }
-        "llm.openai.api_key" => {
-            config.llm.openai.get_or_insert(Default::default()).api_key = value.to_string();
-            true
-        }
-        "llm.anthropic.api_key" => {
-            config
-                .llm
-                .anthropic
-                .get_or_insert(Default::default())
-                .api_key = value.to_string();
-            true
-        }
-        "llm.grok.api_key" => {
-            config.llm.grok.get_or_insert(Default::default()).api_key = value.to_string();
-            true
-        }
-        _ => false,
-    }
+    config.set(key, value)
 }
 
 #[cfg(test)]

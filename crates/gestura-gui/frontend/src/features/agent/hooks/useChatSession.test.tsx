@@ -304,8 +304,8 @@ describe('useChatSession', () => {
     expect(screen.getByTestId('can-resume')).toHaveTextContent('false');
   });
 
-  it('treats resume-like follow-up prompts as a resume when paused output exists', async () => {
-    resumeStreamingMock.mockResolvedValue(undefined);
+  it('sends resume-like follow-up prompts as normal messages even when resume is available', async () => {
+    sendMessageStreamingMock.mockResolvedValue(undefined);
 
     render(<Harness />);
 
@@ -323,10 +323,14 @@ describe('useChatSession', () => {
     });
 
     await waitFor(() => {
-      expect(resumeStreamingMock).toHaveBeenCalledWith('session-123');
+      expect(sendMessageStreamingMock).toHaveBeenCalledWith({
+        session_id: 'session-123',
+        message: 'you timed out please pick up where you left off',
+        task_id: null,
+      });
     });
 
-    expect(sendMessageStreamingMock).not.toHaveBeenCalled();
+    expect(resumeStreamingMock).not.toHaveBeenCalled();
   });
 
   it('does not await the full streaming invoke before marking the send as active', async () => {

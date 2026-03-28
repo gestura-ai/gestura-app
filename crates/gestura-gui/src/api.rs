@@ -365,6 +365,7 @@ struct AutoPlanResult {
 struct AutoPlanGeneratedTasks {
     top_level_tasks: Vec<gestura_core::Task>,
     generated_task_count: usize,
+    created_task_ids: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1167,7 +1168,7 @@ fn build_auto_plan_execution_handoff_message(
 async fn generate_requirement_breakdown(
     session_id: &str,
     requirements: &str,
-) -> Result<Vec<serde_json::Value>, String> {
+) -> Result<Vec<gestura_core::tasks::RequirementBreakdownTaskSpec>, String> {
     let mut cfg = AppConfig::load_async().await;
     let _effective_llm = apply_session_llm_config_overrides(&mut cfg, Some(session_id)).await;
 
@@ -1200,98 +1201,52 @@ Respond ONLY with the JSON array, no additional text."#,
         .await
         .map_err(|e| format!("LLM error: {}", e))?;
 
-    let tasks_json: serde_json::Value = serde_json::from_str(&response).map_err(|e| {
+    serde_json::from_str(&response).map_err(|e| {
         format!(
             "Failed to parse LLM response: {}. Response was: {}",
             e, response
         )
-    })?;
+    })
+}
 
-    tasks_json
-        .as_array()
+fn materialize_requirement_breakdown_tasks(
+    app: Option<&tauri::AppHandle>,
+    session_id: &str,
+    specs: &[gestura_core::tasks::RequirementBreakdownTaskSpec],
+) -> Result<AutoPlanGeneratedTasks, String> {
+    let breakdown = get_task_manager()
+        .materialize_requirement_breakdown(session_id, specs)
+        .map_err(|e| e.to_string())?;
+
+    if let Some(app) = app {
+        for task in &breakdown.created_tasks {
+            let _ = app.emit(
+                "task-created",
+                serde_json::json!({
+                    "session_id": session_id,
+                    "task": task,
+                }),
+            );
+        }
+    }
+
+    let root_id_set = breakdown.root_task_ids.iter().cloned().collect::<std::collections::HashSet<_>>();
+    let created_task_ids = breakdown
+        .created_tasks
+        .iter()
+        .map(|task| task.id.clone())
+        .collect::<Vec<_>>();
+    let top_level_tasks = breakdown
+        .created_tasks
+        .iter()
+        .filter(|task| root_id_set.contains(&task.id))
         .cloned()
-        .ok_or_else(|| "LLM response is not a JSON array".to_string())
-}
-
-fn format_breakdown_task_description(task_json: &serde_json::Value) -> String {
-    let priority = task_json
-        .get("priority")
-        .and_then(|v| v.as_str())
-        .unwrap_or("medium");
-    let is_blocking = task_json
-        .get("is_blocking")
-        .and_then(|v| v.as_bool())
-        .unwrap_or(false);
-
-    format!(
-        "{}\n\n[Priority: {} | Blocking: {}]",
-        task_json
-            .get("description")
-            .and_then(|v| v.as_str())
-            .unwrap_or(""),
-        priority,
-        if is_blocking { "Yes" } else { "No" }
-    )
-}
-
-fn populate_auto_plan_generated_tasks<F>(
-    tasks_array: &[serde_json::Value],
-    mut create_task: F,
-) -> Result<AutoPlanGeneratedTasks, String>
-where
-    F: FnMut(&str, &str, Option<String>) -> Result<gestura_core::Task, String>,
-{
-    let mut generated_task_count = 0usize;
-    let mut top_level_tasks = Vec::new();
-    let mut name_to_id: std::collections::HashMap<String, String> =
-        std::collections::HashMap::new();
-
-    for task_json in tasks_array {
-        let parent_name = task_json.get("parent_name").and_then(|v| v.as_str());
-        if parent_name.is_some() && !parent_name.unwrap_or_default().is_empty() {
-            continue;
-        }
-
-        let name = task_json
-            .get("name")
-            .and_then(|v| v.as_str())
-            .unwrap_or("Untitled Task");
-        let task = create_task(name, &format_breakdown_task_description(task_json), None)?;
-        generated_task_count += 1;
-        name_to_id.insert(name.to_string(), task.id.clone());
-        top_level_tasks.push(task);
-    }
-
-    for task_json in tasks_array {
-        let Some(parent_name) = task_json.get("parent_name").and_then(|v| v.as_str()) else {
-            continue;
-        };
-        if parent_name.is_empty() {
-            continue;
-        }
-
-        let parent_id = name_to_id.get(parent_name).cloned().unwrap_or_default();
-        let name = task_json
-            .get("name")
-            .and_then(|v| v.as_str())
-            .unwrap_or("Untitled Subtask");
-        let parent_id = if parent_id.is_empty() {
-            None
-        } else {
-            Some(parent_id)
-        };
-        let task = create_task(
-            name,
-            &format_breakdown_task_description(task_json),
-            parent_id,
-        )?;
-        generated_task_count += 1;
-        name_to_id.insert(name.to_string(), task.id.clone());
-    }
+        .collect::<Vec<_>>();
 
     Ok(AutoPlanGeneratedTasks {
+        created_task_ids,
+        generated_task_count: breakdown.created_tasks.len(),
         top_level_tasks,
-        generated_task_count,
     })
 }
 
@@ -1350,21 +1305,11 @@ async fn auto_plan_agent_request(
     let _ = crate::task_integration::mark_task_in_progress(app, session_id, &planning_task.id);
 
     let generated_tasks = match generate_requirement_breakdown(session_id, message).await {
-        Ok(tasks_array) => {
-            populate_auto_plan_generated_tasks(&tasks_array, |name, description, parent_id| {
-                crate::task_integration::create_agent_task(
-                    app,
-                    session_id,
-                    name,
-                    description,
-                    None,
-                    parent_id,
-                )
-            })?
-        }
+        Ok(task_specs) => materialize_requirement_breakdown_tasks(Some(app), session_id, &task_specs)?,
         Err(error) => {
             tracing::warn!(session_id = %session_id, error = %error, "Failed to auto-plan agent request; no generated execution tasks were created");
             AutoPlanGeneratedTasks {
+                created_task_ids: Vec::new(),
                 top_level_tasks: Vec::new(),
                 generated_task_count: 0,
             }
@@ -1946,34 +1891,34 @@ mod tests {
             )
             .expect("planning task");
 
-        let generated = populate_auto_plan_generated_tasks(
-            &[
-                serde_json::json!({
-                    "name": "Implement UI",
-                    "description": "Create the hello world UI",
-                    "priority": "high",
-                    "is_blocking": true,
-                    "parent_name": null,
-                }),
-                serde_json::json!({
-                    "name": "Run build",
-                    "description": "Compile and verify the app",
-                    "priority": "high",
-                    "is_blocking": false,
-                    "parent_name": "Implement UI",
-                }),
-            ],
-            |name, description, parent_id| {
-                manager
-                    .create_agent_task(&session_id, name, description, None, parent_id)
-                    .map_err(|error| error.to_string())
+        let specs = vec![
+            gestura_core::tasks::RequirementBreakdownTaskSpec {
+                name: "Implement UI".to_string(),
+                description: "Create the hello world UI".to_string(),
+                priority: "high".to_string(),
+                is_blocking: true,
+                parent_name: None,
             },
-        )
-        .expect("populate generated tasks");
+            gestura_core::tasks::RequirementBreakdownTaskSpec {
+                name: "Run build".to_string(),
+                description: "Compile and verify the app".to_string(),
+                priority: "high".to_string(),
+                is_blocking: false,
+                parent_name: Some("Implement UI".to_string()),
+            },
+        ];
+        let generated = manager
+            .materialize_requirement_breakdown(&session_id, &specs)
+            .expect("populate generated tasks");
 
-        assert_eq!(generated.generated_task_count, 2);
-        assert_eq!(generated.top_level_tasks.len(), 1);
-        assert_eq!(generated.top_level_tasks[0].name, "Implement UI");
+        assert_eq!(generated.created_tasks.len(), 2);
+        assert_eq!(generated.root_task_ids.len(), 1);
+        let top_level_task = generated
+            .created_tasks
+            .iter()
+            .find(|task| generated.root_task_ids.contains(&task.id))
+            .expect("top-level task");
+        assert_eq!(top_level_task.name, "Implement UI");
 
         let tree = manager.get_task_tree(&session_id).expect("task tree");
         assert_eq!(tree.len(), 2);
@@ -8765,80 +8710,9 @@ pub async fn break_down_requirements(
     session_id: String,
     requirements: String,
 ) -> Result<Vec<String>, String> {
-    let tasks_array = generate_requirement_breakdown(&session_id, &requirements).await?;
-
-    let manager = get_task_manager();
-    let mut created_task_ids = Vec::new();
-    let mut name_to_id: std::collections::HashMap<String, String> =
-        std::collections::HashMap::new();
-
-    // First pass: create root tasks (no parent)
-    for task_json in &tasks_array {
-        let parent_name = task_json.get("parent_name").and_then(|v| v.as_str());
-        if parent_name.is_some() && !parent_name.unwrap().is_empty() {
-            continue; // Skip subtasks in first pass
-        }
-
-        let name = task_json
-            .get("name")
-            .and_then(|v| v.as_str())
-            .unwrap_or("Untitled Task")
-            .to_string();
-
-        let description = format_breakdown_task_description(task_json);
-
-        let task = manager
-            .create_task(&session_id, name.clone(), description, None)
-            .map_err(|e| e.to_string())?;
-
-        name_to_id.insert(name, task.id.clone());
-        created_task_ids.push(task.id.clone());
-
-        // Emit task-created event
-        let _ = app.emit(
-            "task-created",
-            serde_json::json!({
-                "session_id": &session_id,
-                "task": &task
-            }),
-        );
-    }
-
-    // Second pass: create subtasks
-    for task_json in &tasks_array {
-        let parent_name = match task_json.get("parent_name").and_then(|v| v.as_str()) {
-            Some(name) if !name.is_empty() => name,
-            _ => continue, // Skip root tasks
-        };
-
-        let parent_id = name_to_id.get(parent_name).cloned();
-
-        let name = task_json
-            .get("name")
-            .and_then(|v| v.as_str())
-            .unwrap_or("Untitled Subtask")
-            .to_string();
-
-        let description = format_breakdown_task_description(task_json);
-
-        let task = manager
-            .create_task(&session_id, name.clone(), description, parent_id)
-            .map_err(|e| e.to_string())?;
-
-        name_to_id.insert(name, task.id.clone());
-        created_task_ids.push(task.id.clone());
-
-        // Emit task-created event
-        let _ = app.emit(
-            "task-created",
-            serde_json::json!({
-                "session_id": &session_id,
-                "task": &task
-            }),
-        );
-    }
-
-    Ok(created_task_ids)
+    let task_specs = generate_requirement_breakdown(&session_id, &requirements).await?;
+    let generated = materialize_requirement_breakdown_tasks(Some(&app), &session_id, &task_specs)?;
+    Ok(generated.created_task_ids)
 }
 
 // ============================================================================
@@ -9350,7 +9224,7 @@ pub fn open_system_preferences(pane: String) -> Result<(), String> {
 #[tauri::command]
 pub async fn update_voice_provider(provider: String) -> Result<(), String> {
     let mut cfg = AppConfig::load_async().await;
-    cfg.voice.provider = provider.clone();
+    cfg.update_voice_provider(&provider);
     cfg.save_async().await.map_err(|e| e.to_string())?;
     tracing::info!("Voice provider updated to: {}", provider);
     Ok(())
@@ -9360,9 +9234,7 @@ pub async fn update_voice_provider(provider: String) -> Result<(), String> {
 #[tauri::command(rename_all = "snake_case")]
 pub async fn update_whisper_model(model_filename: String) -> Result<(), String> {
     let mut cfg = AppConfig::load_async().await;
-    let models_dir = AppConfig::whisper_models_dir();
-    let model_path = models_dir.join(&model_filename);
-    cfg.voice.local_model_path = Some(model_path.to_string_lossy().to_string());
+    cfg.update_whisper_model_filename(&model_filename);
     cfg.save_async().await.map_err(|e| e.to_string())?;
     tracing::info!("Whisper model updated to: {}", model_filename);
     Ok(())
@@ -9372,11 +9244,7 @@ pub async fn update_whisper_model(model_filename: String) -> Result<(), String> 
 #[tauri::command]
 pub async fn update_llm_provider(provider: String) -> Result<(), String> {
     let mut cfg = AppConfig::load_async().await;
-    cfg.llm.primary = provider.clone();
-    // Ensure the provider-specific config object exists with a valid default model.
-    // Without this, switching to a cloud provider would leave config.llm.<provider>
-    // as None, causing the session window to show an empty model dropdown.
-    cfg.llm.ensure_provider_config(&provider);
+    cfg.update_llm_provider(&provider).map_err(|e| e.to_string())?;
     cfg.save_async().await.map_err(|e| e.to_string())?;
     tracing::info!("LLM provider updated to: {}", provider);
     Ok(())
@@ -9386,7 +9254,7 @@ pub async fn update_llm_provider(provider: String) -> Result<(), String> {
 #[tauri::command]
 pub async fn update_audio_device(device_name: Option<String>) -> Result<(), String> {
     let mut cfg = AppConfig::load_async().await;
-    cfg.voice.audio_device = device_name.clone();
+    cfg.update_audio_device(device_name.clone());
     cfg.save_async().await.map_err(|e| e.to_string())?;
     tracing::info!("Audio device updated to: {:?}", device_name);
     Ok(())
@@ -9396,10 +9264,8 @@ pub async fn update_audio_device(device_name: Option<String>) -> Result<(), Stri
 #[tauri::command(rename_all = "snake_case")]
 pub async fn update_ollama_config(base_url: String, model: String) -> Result<(), String> {
     let mut cfg = AppConfig::load_async().await;
-    cfg.llm.ollama = Some(crate::config::OllamaConfig {
-        base_url: base_url.clone(),
-        model: model.clone(),
-    });
+    cfg.update_ollama_config(&base_url, &model)
+        .map_err(|e| e.to_string())?;
     cfg.save_async().await.map_err(|e| e.to_string())?;
     tracing::info!("Ollama config updated: url={}, model={}", base_url, model);
     Ok(())
@@ -9410,42 +9276,9 @@ pub async fn update_ollama_config(base_url: String, model: String) -> Result<(),
 /// This is used by onboarding so the user-selected model sticks permanently.
 #[tauri::command(rename_all = "snake_case")]
 pub async fn update_provider_model(provider: String, model: String) -> Result<(), String> {
-    if model.trim().is_empty() {
-        return Err("Model name cannot be empty".to_string());
-    }
     let mut cfg = AppConfig::load_async().await;
-    // Ensure the provider config block exists before mutating the model.
-    cfg.llm.ensure_provider_config(&provider);
-    match provider.as_str() {
-        "openai" => {
-            if let Some(c) = cfg.llm.openai.as_mut() {
-                c.model = model.clone();
-            }
-        }
-        "anthropic" => {
-            if let Some(c) = cfg.llm.anthropic.as_mut() {
-                c.model = model.clone();
-            }
-        }
-        "grok" => {
-            if let Some(c) = cfg.llm.grok.as_mut() {
-                c.model = model.clone();
-            }
-        }
-        "gemini" => {
-            if let Some(c) = cfg.llm.gemini.as_mut() {
-                c.model = model.clone();
-            }
-        }
-        "ollama" => {
-            if let Some(c) = cfg.llm.ollama.as_mut() {
-                c.model = model.clone();
-            }
-        }
-        other => {
-            return Err(format!("Unknown provider: {other}"));
-        }
-    }
+    cfg.update_provider_model(&provider, &model)
+        .map_err(|e| e.to_string())?;
     cfg.save_async().await.map_err(|e| e.to_string())?;
     tracing::info!(
         "Provider model updated: provider={}, model={}",
@@ -9477,31 +9310,16 @@ pub async fn update_notification_settings(
     auto_listen_on_feedback: Option<bool>,
 ) -> Result<(), String> {
     let mut cfg = AppConfig::load_async().await;
-
-    if let Some(v) = sound_enabled {
-        cfg.notifications.sound_enabled = v;
-    }
-    if let Some(v) = haptic_enabled {
-        cfg.notifications.haptic_enabled = v;
-    }
-    if let Some(v) = sound_volume {
-        cfg.notifications.sound_volume = v.min(100);
-    }
-    if let Some(v) = haptic_intensity {
-        cfg.notifications.haptic_intensity = v.min(100);
-    }
-    if let Some(v) = notification_sound {
-        cfg.notifications.notification_sound = normalize_notification_sound_choice(&v);
-    }
-    if let Some(v) = command_confirm_sound {
-        cfg.notifications.command_confirm_sound = normalize_command_confirm_sound_choice(&v);
-    }
-    if let Some(v) = mcp_feedback_enabled {
-        cfg.notifications.mcp_feedback_enabled = v;
-    }
-    if let Some(v) = auto_listen_on_feedback {
-        cfg.notifications.auto_listen_on_feedback = v;
-    }
+    cfg.apply_notification_settings_patch(gestura_core::config::NotificationSettingsPatch {
+        sound_enabled,
+        haptic_enabled,
+        sound_volume,
+        haptic_intensity,
+        notification_sound,
+        command_confirm_sound,
+        mcp_feedback_enabled,
+        auto_listen_on_feedback,
+    });
 
     cfg.save_async().await.map_err(|e| e.to_string())?;
     tracing::info!("Notification settings updated");
@@ -9519,20 +9337,6 @@ pub async fn preview_notification_sound(sound: String, volume: Option<u8>) -> Re
         .preview_sound(&sound, volume)
         .await;
     Ok(())
-}
-
-fn normalize_notification_sound_choice(value: &str) -> String {
-    match value {
-        "default" | "chime" | "ping" | "pop" | "subtle" | "none" => value.to_string(),
-        _ => "default".to_string(),
-    }
-}
-
-fn normalize_command_confirm_sound_choice(value: &str) -> String {
-    match value {
-        "default" | "success" | "click" | "beep" | "none" => value.to_string(),
-        _ => "default".to_string(),
-    }
 }
 
 /// Set the connected ring device for haptic notifications
@@ -10106,21 +9910,52 @@ pub async fn set_global_permission_settings(
 /// Note: This command uses `snake_case` argument names for JS↔Rust interop.
 #[tauri::command(rename_all = "snake_case")]
 pub async fn set_default_permission_level(level: String) -> Result<(), String> {
-    use gestura_core::config::GlobalPermissionLevel;
-
-    let permission_level = match level.to_lowercase().as_str() {
-        "sandbox" => GlobalPermissionLevel::Sandbox,
-        "restricted" => GlobalPermissionLevel::Restricted,
-        "full" => GlobalPermissionLevel::Full,
-        _ => {
-            return Err(format!(
-                "Invalid permission level: {}. Use 'sandbox', 'restricted', or 'full'",
-                level
-            ));
-        }
-    };
-
     let mut cfg = AppConfig::load_async().await;
-    cfg.permissions.default_level = permission_level;
+    cfg.set_default_permission_level(&level)
+        .map_err(|e| e.to_string())?;
+    cfg.save_async().await.map_err(|e| e.to_string())
+}
+
+/// Update the default enabled tool map for newly created sessions.
+#[tauri::command(rename_all = "snake_case")]
+pub async fn update_default_enabled_tools(
+    default_enabled_tools: std::collections::HashMap<String, bool>,
+) -> Result<(), String> {
+    let mut cfg = AppConfig::load_async().await;
+    cfg.update_default_enabled_tools(default_enabled_tools);
+    cfg.save_async().await.map_err(|e| e.to_string())
+}
+
+/// Update the UI theme mode.
+#[tauri::command(rename_all = "snake_case")]
+pub async fn update_theme_mode(theme_mode: String) -> Result<(), String> {
+    let mut cfg = AppConfig::load_async().await;
+    cfg.set_theme_mode(&theme_mode);
+    cfg.save_async().await.map_err(|e| e.to_string())
+}
+
+/// Update prompt-enhancement settings without requiring a full config save.
+#[tauri::command(rename_all = "snake_case")]
+pub async fn update_prompt_enhancement_settings(
+    auto_enhance: Option<bool>,
+    style: Option<String>,
+    max_length_multiplier_x10: Option<u8>,
+) -> Result<(), String> {
+    let mut cfg = AppConfig::load_async().await;
+    cfg.apply_prompt_enhancement_settings_patch(
+        gestura_core::config::PromptEnhancementSettingsPatch {
+            auto_enhance,
+            style,
+            max_length_multiplier_x10,
+        },
+    );
+    cfg.save_async().await.map_err(|e| e.to_string())
+}
+
+/// Point local Whisper configuration at a user-selected model file.
+#[tauri::command(rename_all = "snake_case")]
+pub async fn update_local_whisper_model_path(model_path: String) -> Result<(), String> {
+    let mut cfg = AppConfig::load_async().await;
+    cfg.update_local_whisper_model_path(model_path);
     cfg.save_async().await.map_err(|e| e.to_string())
 }

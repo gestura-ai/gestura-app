@@ -36,7 +36,7 @@ pub fn run() -> Result<()> {
         .interact()?;
 
     let provider = providers[provider_idx];
-    config.llm.primary = provider.to_string();
+    config.update_llm_provider(provider)?;
     println!();
 
     // API Key (if not Ollama)
@@ -84,7 +84,7 @@ pub fn run() -> Result<()> {
         .interact()?;
 
     if enable_voice {
-        config.voice.provider = "local".to_string();
+        config.update_voice_provider("local");
 
         let whisper_models = ["tiny", "base", "small", "medium", "large"];
         let whisper_labels = [
@@ -109,7 +109,7 @@ pub fn run() -> Result<()> {
                 .join("gestura")
                 .join("models")
                 .join(format!("ggml-{}.bin", selected_model));
-            config.voice.local_model_path = Some(model_path.to_string_lossy().to_string());
+            config.update_local_whisper_model_path(model_path.to_string_lossy().to_string());
         }
 
         println!();
@@ -121,7 +121,7 @@ pub fn run() -> Result<()> {
             format!("gestura model whisper download {}", selected_model).cyan()
         );
     } else {
-        config.voice.provider = "none".to_string();
+        config.update_voice_provider("none");
     }
     println!();
 

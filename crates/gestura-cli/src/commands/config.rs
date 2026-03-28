@@ -5,7 +5,7 @@ use crate::ConfigAction;
 use colored::Colorize;
 use gestura_core::AppConfigSecurityExt;
 use gestura_core::config_env::{is_secret_key, redact_secret};
-use gestura_core::{AppConfig, config::AgentTelemetryTraceExportProtocol};
+use gestura_core::AppConfig;
 use std::path::PathBuf;
 
 /// Get the config file path
@@ -220,51 +220,7 @@ fn print_config_section(name: &str, items: &[(&str, &str)]) {
 }
 
 fn get_config_value(config: &AppConfig, key: &str) -> Option<String> {
-    match key {
-        "llm.primary" => Some(config.llm.primary.clone()),
-        "voice.provider" => Some(config.voice.provider.clone()),
-        "voice.local_model_path" => Some(config.voice.local_model_path.clone().unwrap_or_default()),
-        "voice.audio_device" => Some(config.voice.audio_device.clone().unwrap_or_default()),
-        "ui.theme_mode" => Some(config.ui.theme_mode.clone()),
-        "hotkey_listen" => Some(config.hotkey_listen.clone()),
-        "nats_url" => Some(config.nats_url.clone()),
-        "pipeline.max_history_messages" => Some(config.pipeline.max_history_messages.to_string()),
-        "pipeline.auto_compact_threshold_percent" => {
-            Some(config.pipeline.auto_compact_threshold_percent.to_string())
-        }
-        "pipeline.compaction_strategy" => {
-            Some(format!("{:?}", config.pipeline.compaction_strategy))
-        }
-        "pipeline.max_context_tokens" => Some(config.pipeline.max_context_tokens.to_string()),
-        "pipeline.log_token_usage" => Some(config.pipeline.log_token_usage.to_string()),
-        "pipeline.agent_telemetry.enabled" => {
-            Some(config.pipeline.agent_telemetry.enabled.to_string())
-        }
-        "pipeline.agent_telemetry.trace_export.enabled" => Some(
-            config
-                .pipeline
-                .agent_telemetry
-                .trace_export
-                .enabled
-                .to_string(),
-        ),
-        "pipeline.agent_telemetry.trace_export.protocol" => Some(
-            config
-                .pipeline
-                .agent_telemetry
-                .trace_export
-                .protocol
-                .as_str()
-                .to_string(),
-        ),
-        "pipeline.agent_telemetry.trace_export.endpoint" => Some(
-            config
-                .pipeline
-                .agent_telemetry
-                .trace_export
-                .endpoint
-                .clone(),
-        ),
+    config.get(key).or_else(|| match key {
         "llm.openai.api_key" => config
             .llm
             .openai
@@ -292,136 +248,9 @@ fn get_config_value(config: &AppConfig, key: &str) -> Option<String> {
             .as_ref()
             .map(|k| redact_secret(k)),
         _ => None,
-    }
+    })
 }
 
 fn set_config_value(config: &mut AppConfig, key: &str, value: &str) -> bool {
-    match key {
-        "llm.primary" => {
-            config.llm.primary = value.to_string();
-            true
-        }
-        "voice.provider" => {
-            config.voice.provider = value.to_string();
-            true
-        }
-        "voice.local_model_path" => {
-            config.voice.local_model_path = Some(value.to_string());
-            true
-        }
-        "voice.audio_device" => {
-            config.voice.audio_device = Some(value.to_string());
-            true
-        }
-        "ui.theme_mode" => {
-            config.ui.theme_mode = value.to_string();
-            true
-        }
-        "hotkey_listen" => {
-            config.hotkey_listen = value.to_string();
-            true
-        }
-        "nats_url" => {
-            config.nats_url = value.to_string();
-            true
-        }
-        "pipeline.max_history_messages" => {
-            if let Ok(val) = value.parse::<usize>() {
-                config.pipeline.max_history_messages = val;
-                true
-            } else {
-                false
-            }
-        }
-        "pipeline.auto_compact_threshold_percent" => {
-            if let Ok(val) = value.parse::<u8>() {
-                if val <= 100 {
-                    config.pipeline.auto_compact_threshold_percent = val;
-                    true
-                } else {
-                    false
-                }
-            } else {
-                false
-            }
-        }
-        "pipeline.compaction_strategy" => {
-            use gestura_core::pipeline::CompactionStrategy;
-            config.pipeline.compaction_strategy = CompactionStrategy::parse(value);
-            true
-        }
-        "pipeline.max_context_tokens" => {
-            if let Ok(val) = value.parse::<usize>() {
-                config.pipeline.max_context_tokens = val;
-                true
-            } else {
-                false
-            }
-        }
-        "pipeline.log_token_usage" => {
-            if let Ok(val) = value.parse::<bool>() {
-                config.pipeline.log_token_usage = val;
-                true
-            } else {
-                false
-            }
-        }
-        "pipeline.agent_telemetry.enabled" => {
-            if let Ok(val) = value.parse::<bool>() {
-                config.pipeline.agent_telemetry.enabled = val;
-                true
-            } else {
-                false
-            }
-        }
-        "pipeline.agent_telemetry.trace_export.enabled" => {
-            if let Ok(val) = value.parse::<bool>() {
-                config.pipeline.agent_telemetry.trace_export.enabled = val;
-                true
-            } else {
-                false
-            }
-        }
-        "pipeline.agent_telemetry.trace_export.protocol" => {
-            if let Some(protocol) = AgentTelemetryTraceExportProtocol::parse(value) {
-                config.pipeline.agent_telemetry.trace_export.protocol = protocol;
-                true
-            } else {
-                false
-            }
-        }
-        "pipeline.agent_telemetry.trace_export.endpoint" => {
-            config.pipeline.agent_telemetry.trace_export.endpoint = value.to_string();
-            true
-        }
-        "llm.openai.api_key" => {
-            config.llm.openai.get_or_insert(Default::default()).api_key = value.to_string();
-            true
-        }
-        "llm.anthropic.api_key" => {
-            config
-                .llm
-                .anthropic
-                .get_or_insert(Default::default())
-                .api_key = value.to_string();
-            true
-        }
-        "llm.grok.api_key" => {
-            config.llm.grok.get_or_insert(Default::default()).api_key = value.to_string();
-            true
-        }
-        "voice.openai_api_key" => {
-            config.voice.openai_api_key = Some(value.to_string());
-            true
-        }
-        "web_search.serpapi_key" => {
-            config.web_search.serpapi_key = Some(value.to_string());
-            true
-        }
-        "web_search.brave_key" => {
-            config.web_search.brave_key = Some(value.to_string());
-            true
-        }
-        _ => false,
-    }
+    config.set(key, value)
 }

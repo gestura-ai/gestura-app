@@ -322,7 +322,7 @@ fn run_whisper(action: &WhisperAction) -> Result<()> {
 
             // Update config
             let mut config = AppConfig::load();
-            config.voice.local_model_path = Some(model_path.to_string_lossy().to_string());
+            config.update_local_whisper_model_path(model_path.to_string_lossy().to_string());
 
             if let Err(e) = config.save() {
                 eprintln!("{}: Failed to save config: {}", "error".red(), e);

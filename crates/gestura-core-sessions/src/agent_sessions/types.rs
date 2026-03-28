@@ -1938,6 +1938,19 @@ impl AgentSession {
         })
     }
 
+    /// Clone this session into a new persisted session with a fresh identity.
+    ///
+    /// The fork preserves conversation history, model hints, and workspace
+    /// association while assigning a new session id and fresh timestamps.
+    pub fn fork(&self) -> Self {
+        let mut forked = self.clone();
+        let now = Utc::now();
+        forked.id = uuid::Uuid::new_v4().to_string();
+        forked.created_at = now;
+        forked.last_active = now;
+        forked
+    }
+
     /// Append a user message.
     pub fn add_user_message(&mut self, content: &str, source: MessageSource) {
         self.state.add_user_message(content, source);
@@ -1997,6 +2010,7 @@ impl AgentSession {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::Duration;
 
     #[test]
     fn session_mutations_update_working_memory() {
@@ -2067,6 +2081,28 @@ mod tests {
             state.working_memory.open_questions,
             vec!["Should working-memory extraction also parse tool-blocked events?"]
         );
+    }
+
+    #[test]
+    fn session_fork_assigns_new_identity_and_preserves_history() {
+        let workspace_dir =
+            std::env::temp_dir().join(format!("gestura-session-fork-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&workspace_dir).unwrap();
+
+        let mut session = AgentSession::new_with_workspace(workspace_dir.clone(), None).unwrap();
+        session.title = "Investigate core boundary drift".to_string();
+        session.add_user_message("audit CLI session behavior", MessageSource::Text);
+
+        std::thread::sleep(Duration::from_millis(5));
+        let forked = session.fork();
+
+        assert_ne!(forked.id, session.id);
+        assert_eq!(forked.title, session.title);
+        assert_eq!(forked.model, session.model);
+        assert_eq!(forked.message_count(), session.message_count());
+        assert_eq!(forked.workspace_dir(), session.workspace_dir());
+        assert!(forked.created_at >= session.created_at);
+        assert!(forked.last_active >= session.last_active);
     }
 
     #[test]

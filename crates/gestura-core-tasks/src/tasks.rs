@@ -463,6 +463,46 @@ pub struct Task {
     pub metadata: Option<serde_json::Value>,
 }
 
+/// Result of reconciling a tracked task after an agent turn.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TrackedTaskFinalization {
+    /// The tracked task and its subtree are complete.
+    Completed,
+    /// The tracked task still has open subtasks and should remain in progress.
+    StillInProgress { open_subtask_ids: Vec<String> },
+}
+
+/// LLM-produced task specification used to materialize an auto-plan breakdown.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RequirementBreakdownTaskSpec {
+    pub name: String,
+    pub description: String,
+    pub priority: String,
+    pub is_blocking: bool,
+    #[serde(default)]
+    pub parent_name: Option<String>,
+}
+
+impl RequirementBreakdownTaskSpec {
+    fn render_description(&self) -> String {
+        let mut description = self.description.trim().to_string();
+        if !self.priority.trim().is_empty() {
+            description.push_str(&format!("\n\nPriority: {}", self.priority.trim()));
+        }
+        if self.is_blocking {
+            description.push_str("\nBlocking: yes");
+        }
+        description
+    }
+}
+
+/// Result of materializing requirement-breakdown tasks.
+#[derive(Debug, Clone, Default)]
+pub struct MaterializedTaskBreakdown {
+    pub created_tasks: Vec<Task>,
+    pub root_task_ids: Vec<String>,
+}
+
 impl Task {
     /// Create a new task (defaults to User source)
     pub fn new(
@@ -1287,6 +1327,130 @@ impl TaskManager {
         Ok(())
     }
 
+    /// Materialize a requirement breakdown into persisted agent-created tasks.
+    pub fn materialize_requirement_breakdown(
+        &self,
+        session_id: &str,
+        specs: &[RequirementBreakdownTaskSpec],
+    ) -> Result<MaterializedTaskBreakdown, TaskError> {
+        let mut created_tasks = Vec::new();
+        let mut root_task_ids = Vec::new();
+        let mut name_to_id = HashMap::new();
+
+        for spec in specs {
+            let parent_id = spec
+                .parent_name
+                .as_ref()
+                .and_then(|parent_name| name_to_id.get(parent_name).cloned());
+
+            let task = self.create_agent_task(
+                session_id,
+                spec.name.clone(),
+                spec.render_description(),
+                None,
+                parent_id.clone(),
+            )?;
+
+            if parent_id.is_none() {
+                root_task_ids.push(task.id.clone());
+            }
+
+            name_to_id.insert(spec.name.clone(), task.id.clone());
+            created_tasks.push(task);
+        }
+
+        Ok(MaterializedTaskBreakdown {
+            created_tasks,
+            root_task_ids,
+        })
+    }
+
+    /// Cancel any descendant tasks that are still open.
+    pub fn cancel_open_descendants(
+        &self,
+        session_id: &str,
+        task_id: &str,
+    ) -> Result<Vec<String>, TaskError> {
+        let descendants = self.list_descendants(session_id, task_id)?;
+        let mut cancelled = Vec::new();
+
+        for descendant in descendants {
+            if matches!(descendant.status, TaskStatus::Completed | TaskStatus::Cancelled) {
+                continue;
+            }
+
+            self.update_task_status(session_id, &descendant.id, TaskStatus::Cancelled)?;
+            cancelled.push(descendant.id);
+        }
+
+        Ok(cancelled)
+    }
+
+    /// Record the result metadata for a task and update its status.
+    pub fn record_task_result(
+        &self,
+        session_id: &str,
+        task_id: &str,
+        success: bool,
+        output: String,
+        tool_calls: i32,
+        duration_ms: i32,
+    ) -> Result<TaskStatus, TaskError> {
+        let task = self
+            .get_task(session_id, task_id)?
+            .ok_or_else(|| TaskError::NotFound(task_id.to_string()))?;
+
+        let mut metadata_map = match task.metadata {
+            Some(serde_json::Value::Object(map)) => map,
+            _ => serde_json::Map::new(),
+        };
+        metadata_map.insert("success".to_string(), serde_json::Value::Bool(success));
+        metadata_map.insert("output".to_string(), serde_json::Value::String(output));
+        metadata_map.insert(
+            "tool_calls".to_string(),
+            serde_json::Value::Number(serde_json::Number::from(tool_calls)),
+        );
+        metadata_map.insert(
+            "duration_ms".to_string(),
+            serde_json::Value::Number(serde_json::Number::from(duration_ms)),
+        );
+
+        let target_status = if success {
+            TaskStatus::Completed
+        } else {
+            TaskStatus::Cancelled
+        };
+
+        self.update_task_metadata(session_id, task_id, serde_json::Value::Object(metadata_map))?;
+        self.update_task_status(session_id, task_id, target_status)?;
+        Ok(target_status)
+    }
+
+    /// Reconcile a tracked task after an agent run by examining descendant state.
+    pub fn finalize_tracked_task_after_agent_run(
+        &self,
+        session_id: &str,
+        task_id: &str,
+    ) -> Result<TrackedTaskFinalization, TaskError> {
+        let descendants = self.list_descendants(session_id, task_id)?;
+        let open_subtask_ids = descendants
+            .into_iter()
+            .filter(|task| !matches!(task.status, TaskStatus::Completed | TaskStatus::Cancelled))
+            .map(|task| task.id)
+            .collect::<Vec<_>>();
+
+        if open_subtask_ids.is_empty() {
+            self.update_task_status(session_id, task_id, TaskStatus::Completed)?;
+            if self.get_current_task_id(session_id)?.as_deref() == Some(task_id) {
+                self.set_current_task_id(session_id, None)?;
+            }
+            Ok(TrackedTaskFinalization::Completed)
+        } else {
+            self.update_task_status(session_id, task_id, TaskStatus::InProgress)?;
+            Ok(TrackedTaskFinalization::StillInProgress { open_subtask_ids })
+        }
+    }
+
     /// Record a structured memory lifecycle event in task metadata.
     pub fn record_memory_event(
         &self,
@@ -2065,5 +2229,122 @@ mod tests {
             None,
         ));
         assert!(state.satisfies_profile());
+    }
+
+    #[test]
+    fn materialize_requirement_breakdown_creates_parent_child_tasks() {
+        let temp_dir = TempDir::new().unwrap();
+        let manager = TaskManager::new(temp_dir.path());
+
+        let breakdown = manager
+            .materialize_requirement_breakdown(
+                "session-123",
+                &[
+                    RequirementBreakdownTaskSpec {
+                        name: "Root".to_string(),
+                        description: "Top-level work".to_string(),
+                        priority: "high".to_string(),
+                        is_blocking: true,
+                        parent_name: None,
+                    },
+                    RequirementBreakdownTaskSpec {
+                        name: "Child".to_string(),
+                        description: "Nested work".to_string(),
+                        priority: "medium".to_string(),
+                        is_blocking: false,
+                        parent_name: Some("Root".to_string()),
+                    },
+                ],
+            )
+            .unwrap();
+
+        assert_eq!(breakdown.created_tasks.len(), 2);
+        assert_eq!(breakdown.root_task_ids.len(), 1);
+        assert_eq!(breakdown.created_tasks[0].name, "Root");
+        assert!(breakdown.created_tasks[0].description.contains("Priority: high"));
+        assert!(breakdown.created_tasks[0].description.contains("Blocking: yes"));
+        assert_eq!(
+            breakdown.created_tasks[1].parent_id.as_deref(),
+            Some(breakdown.created_tasks[0].id.as_str())
+        );
+    }
+
+    #[test]
+    fn finalize_tracked_task_marks_parent_complete_only_after_descendants_close() {
+        let temp_dir = TempDir::new().unwrap();
+        let manager = TaskManager::new(temp_dir.path());
+        let root = manager
+            .create_task("session-123", "Root", "Tracked root", None)
+            .unwrap();
+        let child = manager
+            .create_task(
+                "session-123",
+                "Child",
+                "Outstanding child",
+                Some(root.id.clone()),
+            )
+            .unwrap();
+
+        let first = manager
+            .finalize_tracked_task_after_agent_run("session-123", &root.id)
+            .unwrap();
+        assert_eq!(
+            first,
+            TrackedTaskFinalization::StillInProgress {
+                open_subtask_ids: vec![child.id.clone()],
+            }
+        );
+        assert_eq!(
+            manager.get_task("session-123", &root.id).unwrap().unwrap().status,
+            TaskStatus::InProgress
+        );
+
+        manager
+            .update_task_status("session-123", &child.id, TaskStatus::Completed)
+            .unwrap();
+        let second = manager
+            .finalize_tracked_task_after_agent_run("session-123", &root.id)
+            .unwrap();
+        assert_eq!(second, TrackedTaskFinalization::Completed);
+        assert_eq!(
+            manager.get_task("session-123", &root.id).unwrap().unwrap().status,
+            TaskStatus::Completed
+        );
+    }
+
+    #[test]
+    fn record_task_result_merges_metadata_and_status() {
+        let temp_dir = TempDir::new().unwrap();
+        let manager = TaskManager::new(temp_dir.path());
+        let task = manager
+            .create_task("session-123", "Root", "Tracked root", None)
+            .unwrap();
+        manager
+            .update_task_metadata(
+                "session-123",
+                &task.id,
+                serde_json::json!({ "existing": true }),
+            )
+            .unwrap();
+
+        let status = manager
+            .record_task_result(
+                "session-123",
+                &task.id,
+                true,
+                "done".to_string(),
+                3,
+                42,
+            )
+            .unwrap();
+
+        assert_eq!(status, TaskStatus::Completed);
+        let task = manager.get_task("session-123", &task.id).unwrap().unwrap();
+        let metadata = task.metadata.unwrap();
+        assert_eq!(metadata.get("existing").and_then(|v| v.as_bool()), Some(true));
+        assert_eq!(metadata.get("success").and_then(|v| v.as_bool()), Some(true));
+        assert_eq!(metadata.get("tool_calls").and_then(|v| v.as_i64()), Some(3));
+        assert_eq!(metadata.get("duration_ms").and_then(|v| v.as_i64()), Some(42));
+        assert_eq!(task.status, TaskStatus::Completed);
     }
 }

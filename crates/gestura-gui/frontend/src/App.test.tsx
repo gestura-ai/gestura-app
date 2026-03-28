@@ -4,6 +4,7 @@ import { describe, expect, it, vi } from 'vitest';
 import type { AppConfig } from './types/config';
 
 const getConfigMock = vi.fn<[], Promise<AppConfig>>();
+const isFirstRunMock = vi.fn<[], Promise<boolean>>();
 
 vi.mock('./app/ThemeController', () => ({
   default: () => null,
@@ -25,8 +26,9 @@ vi.mock('./shared/hooks/useKeyboardShortcuts', () => ({
   useKeyboardShortcuts: () => undefined,
 }));
 
-vi.mock('./shared/hooks/useLocalStorageFlag', () => ({
-  useLocalStorageFlag: () => [true],
+vi.mock('./services/tauri/appLifecycle', () => ({
+  isFirstRun: () => isFirstRunMock(),
+  completeOnboarding: vi.fn().mockResolvedValue(undefined),
 }));
 
 vi.mock('./services/tauri/config', () => ({
@@ -122,6 +124,7 @@ function makeConfig(): AppConfig {
 
 describe('App', () => {
   it('boots to the generic voice panel and does not expose hello-world UI', async () => {
+    isFirstRunMock.mockResolvedValue(false);
     getConfigMock.mockResolvedValue(makeConfig());
 
     render(<App />);
@@ -129,5 +132,14 @@ describe('App', () => {
     expect(await screen.findByRole('heading', { name: 'Voice Processing' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /voice/i })).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /hello/i })).not.toBeInTheDocument();
+  });
+
+  it('shows onboarding when the backend reports first-run state', async () => {
+    isFirstRunMock.mockResolvedValue(true);
+    getConfigMock.mockResolvedValue(makeConfig());
+
+    render(<App />);
+
+    expect(await screen.findByTestId('onboarding')).toBeInTheDocument();
   });
 });

@@ -4,51 +4,81 @@
 
 use super::Result;
 use crate::SessionAction;
+use chrono::Utc;
 use colored::Colorize;
-use std::path::PathBuf;
+use gestura_core::agent_sessions::{
+    AgentSession, AgentSessionStore, FileAgentSessionStore, SessionFilter, SessionInfo,
+};
 
-/// Get the sessions directory
-fn get_sessions_dir() -> PathBuf {
-    dirs::data_dir()
-        .map(|p| p.join("gestura").join("sessions"))
-        .unwrap_or_else(|| PathBuf::from("sessions"))
+/// Return the canonical core-backed agent session store.
+fn session_store() -> FileAgentSessionStore {
+    FileAgentSessionStore::new_default()
 }
 
-/// List session files in the sessions directory
-fn list_session_files() -> Vec<(String, std::time::SystemTime)> {
-    let sessions_dir = get_sessions_dir();
-    if !sessions_dir.exists() {
-        return Vec::new();
-    }
-
-    let mut sessions = Vec::new();
-    if let Ok(entries) = std::fs::read_dir(&sessions_dir) {
-        for entry in entries.flatten() {
-            if let Ok(metadata) = entry.metadata()
-                && metadata.is_file()
-                && let Some(name) = entry.file_name().to_str()
-                && name.ends_with(".json")
-            {
-                let session_id = name.trim_end_matches(".json").to_string();
-                if let Ok(modified) = metadata.modified() {
-                    sessions.push((session_id, modified));
-                }
-            }
+fn list_sessions_or_exit(store: &FileAgentSessionStore) -> Vec<SessionInfo> {
+    match store.list(SessionFilter::All) {
+        Ok(sessions) => sessions,
+        Err(error) => {
+            eprintln!("{}: Failed to list sessions: {error}", "error".red());
+            std::process::exit(2);
         }
     }
+}
 
-    // Sort by modification time (newest first)
-    sessions.sort_by(|a, b| b.1.cmp(&a.1));
-    sessions
+fn load_session_or_exit(store: &FileAgentSessionStore, session_id: &str) -> AgentSession {
+    match store.load(session_id) {
+        Ok(session) => session,
+        Err(_) => {
+            eprintln!("{}: Session '{}' not found", "error".red(), session_id);
+            std::process::exit(2);
+        }
+    }
+}
+
+fn resolve_resume_session_id(store: &FileAgentSessionStore, requested: &str) -> String {
+    if requested == "last" {
+        match store.load_last() {
+            Ok(Some(session)) => session.id,
+            Ok(None) => {
+                eprintln!("{}: No sessions found", "error".red());
+                std::process::exit(2);
+            }
+            Err(error) => {
+                eprintln!("{}: Failed to load last session: {error}", "error".red());
+                std::process::exit(2);
+            }
+        }
+    } else {
+        requested.to_string()
+    }
+}
+
+fn humanize_last_active(last_active: chrono::DateTime<chrono::Utc>) -> String {
+    let secs = Utc::now()
+        .signed_duration_since(last_active)
+        .num_seconds()
+        .max(0);
+
+    if secs < 60 {
+        "just now".to_string()
+    } else if secs < 3_600 {
+        format!("{} min ago", secs / 60)
+    } else if secs < 86_400 {
+        format!("{} hours ago", secs / 3_600)
+    } else {
+        format!("{} days ago", secs / 86_400)
+    }
 }
 
 pub fn run(action: &SessionAction) -> Result<()> {
+    let store = session_store();
+
     match action {
         SessionAction::List { limit } => {
             println!("{}", "Agent Sessions".bold());
             println!();
 
-            let sessions = list_session_files();
+            let sessions = list_sessions_or_exit(&store);
 
             if sessions.is_empty() {
                 println!("  {}", "(no sessions found)".dimmed());
@@ -62,23 +92,9 @@ pub fn run(action: &SessionAction) -> Result<()> {
                     "LAST MODIFIED".underline()
                 );
 
-                for (session_id, modified) in sessions.iter().take(display_count) {
-                    let time_str = if let Ok(duration) = modified.elapsed() {
-                        let secs = duration.as_secs();
-                        if secs < 60 {
-                            "just now".to_string()
-                        } else if secs < 3600 {
-                            format!("{} min ago", secs / 60)
-                        } else if secs < 86400 {
-                            format!("{} hours ago", secs / 3600)
-                        } else {
-                            format!("{} days ago", secs / 86400)
-                        }
-                    } else {
-                        "unknown".to_string()
-                    };
-
-                    println!("{:20} {}", session_id.cyan(), time_str.dimmed());
+                for session in sessions.iter().take(display_count) {
+                    let time_str = humanize_last_active(session.last_active);
+                    println!("{:20} {}", session.id.cyan(), time_str.dimmed());
                 }
 
                 println!();
@@ -90,24 +106,8 @@ pub fn run(action: &SessionAction) -> Result<()> {
             }
         }
         SessionAction::Resume { session } => {
-            let sessions = list_session_files();
-
-            let session_id = if session == "last" {
-                if let Some((id, _)) = sessions.first() {
-                    id.clone()
-                } else {
-                    eprintln!("{}: No sessions found", "error".red());
-                    std::process::exit(2);
-                }
-            } else {
-                session.clone()
-            };
-
-            let session_file = get_sessions_dir().join(format!("{}.json", session_id));
-            if !session_file.exists() {
-                eprintln!("{}: Session '{}' not found", "error".red(), session_id);
-                std::process::exit(2);
-            }
+            let session_id = resolve_resume_session_id(&store, session);
+            load_session_or_exit(&store, &session_id);
 
             println!("Resuming session: {}", session_id.cyan());
             println!();
@@ -118,43 +118,30 @@ pub fn run(action: &SessionAction) -> Result<()> {
             );
         }
         SessionAction::Fork { session } => {
-            let session_file = get_sessions_dir().join(format!("{}.json", session));
-            if !session_file.exists() {
+            let session = load_session_or_exit(&store, session);
+            let forked = session.fork();
+
+            if let Err(error) = store.save(&forked) {
+                eprintln!("{}: Failed to fork session: {error}", "error".red());
+                std::process::exit(2);
+            }
+
+            println!("{} Forked session: {}", "✓".green(), session.id.cyan());
+            println!("New session ID: {}", forked.id.cyan());
+        }
+        SessionAction::Delete { session } => match store.delete(session) {
+            Ok(true) => {
+                println!("{} Deleted session: {}", "✓".green(), session.cyan());
+            }
+            Ok(false) => {
                 eprintln!("{}: Session '{}' not found", "error".red(), session);
                 std::process::exit(2);
             }
-
-            // Generate new session ID
-            let new_id = format!(
-                "{}-fork-{}",
-                session,
-                chrono::Utc::now().format("%Y%m%d%H%M%S")
-            );
-            let new_file = get_sessions_dir().join(format!("{}.json", new_id));
-
-            // Copy session file
-            if let Err(e) = std::fs::copy(&session_file, &new_file) {
-                eprintln!("{}: Failed to fork session: {}", "error".red(), e);
+            Err(error) => {
+                eprintln!("{}: Failed to delete session: {error}", "error".red());
                 std::process::exit(2);
             }
-
-            println!("{} Forked session: {}", "✓".green(), session.cyan());
-            println!("New session ID: {}", new_id.cyan());
-        }
-        SessionAction::Delete { session } => {
-            let session_file = get_sessions_dir().join(format!("{}.json", session));
-            if !session_file.exists() {
-                eprintln!("{}: Session '{}' not found", "error".red(), session);
-                std::process::exit(2);
-            }
-
-            if let Err(e) = std::fs::remove_file(&session_file) {
-                eprintln!("{}: Failed to delete session: {}", "error".red(), e);
-                std::process::exit(2);
-            }
-
-            println!("{} Deleted session: {}", "✓".green(), session.cyan());
-        }
+        },
     }
     Ok(())
 }

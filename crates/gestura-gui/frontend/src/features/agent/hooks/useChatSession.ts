@@ -51,27 +51,6 @@ interface QueuedMessage {
   taskId: string | null;
 }
 
-function looksLikeResumeRequest(text: string): boolean {
-  const normalized = text.trim().toLowerCase();
-  if (!normalized || normalized.startsWith('/')) return false;
-
-  return [
-    'continue',
-    'please complete',
-    'complete',
-    'finish',
-    'keep going',
-    'go on',
-    'resume',
-    'proceed',
-    'carry on',
-    'keep working',
-    'pick up where you left off',
-    'where you left off',
-    'timed out',
-  ].some((signal) => normalized.includes(signal));
-}
-
 function normalizeShellState(raw: unknown): ShellBlock['state'] {
   switch (String(raw ?? '').toLowerCase()) {
     case 'started': return 'Started';
@@ -1562,13 +1541,8 @@ export function useChatSession(sessionId: string): ChatSessionState {
       return;
     }
 
-    if (!taskId && canResume && looksLikeResumeRequest(text)) {
-      await resumeStream();
-      return;
-    }
-
     await triggerSend(text, taskId ?? null);
-  }, [canResume, resumeStream, triggerSend]);
+  }, [triggerSend]);
 
   // ── Tool confirmation ────────────────────────────────────────────────────────
   const resolveConfirmation = useCallback(async (decision: ToolConfirmationDecision) => {
