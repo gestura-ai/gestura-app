@@ -9,7 +9,9 @@
 //! - Handles task completion/failure events
 //! - Emits Tauri events for real-time UI updates
 
-use gestura_core::{tasks::TrackedTaskFinalization as CoreTrackedTaskFinalization, Task, TaskSource, TaskStatus};
+use gestura_core::{
+    Task, TaskSource, TaskStatus, tasks::TrackedTaskFinalization as CoreTrackedTaskFinalization,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use tauri::{AppHandle, Emitter};

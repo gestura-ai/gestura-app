@@ -78,6 +78,13 @@ function makeConfig(): AppConfig {
     voice: { provider: 'local' },
     llm: { primary: 'openai' },
     ui: { theme_mode: 'dark', accent: 'blue' },
+    privacy: {
+      data_collection: false,
+      crash_reports: true,
+      voice_data_local: true,
+      require_auth: false,
+      auth_timeout: 15,
+    },
     mcp_servers: [],
     mdh_pointers: {},
     nats_url: 'nats://127.0.0.1:4222',

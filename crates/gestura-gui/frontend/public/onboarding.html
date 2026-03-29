@@ -483,6 +483,7 @@
 
         /* Shared input styling for onboarding provider fields */
         input[type="text"].onb-input,
+        input[type="number"].onb-input,
         input[type="password"].onb-input,
         select.onb-input {
             width: 100%;
@@ -496,6 +497,7 @@
         }
 
         input[type="text"].onb-input:focus,
+        input[type="number"].onb-input:focus,
         input[type="password"].onb-input:focus,
         select.onb-input:focus {
             outline: none;
@@ -638,6 +640,610 @@
             margin: 0.25rem 0 0;
             font-size: 0.85rem;
             color: var(--text-secondary);
+        }
+
+        .info-note {
+            display: flex;
+            gap: 0.75rem;
+            align-items: flex-start;
+            padding: 0.85rem 0.95rem;
+            border-radius: 8px;
+            background: rgba(var(--accent-primary-rgb), 0.08);
+            border: 1px solid rgba(var(--accent-primary-rgb), 0.18);
+            margin-top: 1rem;
+        }
+
+        .info-note strong {
+            display: block;
+            font-size: 0.86rem;
+            margin-bottom: 0.2rem;
+        }
+
+        .info-note p {
+            margin: 0;
+            font-size: 0.82rem;
+            color: var(--text-secondary);
+        }
+
+        .selection-list {
+            display: flex;
+            flex-direction: column;
+            gap: 0.75rem;
+            margin-top: 1rem;
+        }
+
+        .selection-card {
+            background: var(--background-color);
+            border: 1px solid var(--border-color);
+            border-radius: 8px;
+            padding: 0.85rem 0.95rem;
+        }
+
+        .selection-card.disabled {
+            opacity: 0.72;
+        }
+
+        .selection-card-header {
+            display: flex;
+            gap: 0.75rem;
+            justify-content: space-between;
+            align-items: flex-start;
+        }
+
+        .selection-card-title {
+            display: flex;
+            flex-wrap: wrap;
+            align-items: center;
+            gap: 0.4rem;
+            font-size: 0.92rem;
+            font-weight: 600;
+            line-height: 1.25;
+        }
+
+        .selection-card-meta {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 0.35rem;
+            margin-top: 0.35rem;
+        }
+
+        .selection-badge {
+            display: inline-flex;
+            align-items: center;
+            padding: 0.14rem 0.42rem;
+            border-radius: 999px;
+            font-size: 0.68rem;
+            font-weight: 600;
+            background: var(--surface-color);
+            color: var(--text-secondary);
+            border: 1px solid var(--border-color);
+        }
+
+        .selection-card-description {
+            margin-top: 0.65rem;
+            font-size: 0.82rem;
+            color: var(--text-secondary);
+            line-height: 1.45;
+        }
+
+        .selection-card-source {
+            margin-top: 0.55rem;
+            font-size: 0.78rem;
+            color: var(--text-secondary);
+            word-break: break-word;
+        }
+
+        .selection-toggle {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.5rem;
+            cursor: pointer;
+            white-space: nowrap;
+            font-size: 0.82rem;
+            color: var(--text-secondary);
+        }
+
+        .selection-toggle input[type="checkbox"] {
+            margin: 0;
+        }
+
+        .selection-empty-state {
+            padding: 1rem;
+            border: 1px dashed var(--border-color);
+            border-radius: 8px;
+            color: var(--text-secondary);
+            font-size: 0.84rem;
+            background: var(--background-color);
+            text-align: center;
+        }
+
+        .selection-grid {
+            display: grid;
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+            gap: 0.75rem;
+        }
+
+        .tool-toggle-grid {
+            display: grid;
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+            gap: 0.6rem 0.75rem;
+            margin-top: 1rem;
+        }
+
+        .tool-toggle-item {
+            display: grid;
+            grid-template-columns: minmax(0, 1fr) auto;
+            align-items: center;
+            gap: 0.75rem;
+            min-height: 46px;
+            padding: 0.72rem 0.85rem;
+            border-radius: 8px;
+            border: 1px solid var(--border-color);
+            background: var(--background-color);
+            transition: border-color 0.18s ease, background 0.18s ease, opacity 0.18s ease;
+        }
+
+        .tool-toggle-item:hover,
+        .tool-toggle-item:focus-within {
+            border-color: rgba(var(--accent-primary-rgb), 0.45);
+            background: rgba(var(--accent-primary-rgb), 0.05);
+        }
+
+        .tool-toggle-item.is-disabled {
+            opacity: 0.72;
+        }
+
+        .tool-toggle-main {
+            display: flex;
+            align-items: center;
+            gap: 0.55rem;
+            min-width: 0;
+        }
+
+        .tool-toggle-name {
+            min-width: 0;
+            font-size: 0.86rem;
+            font-weight: 600;
+            color: var(--text-primary);
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
+        .tool-toggle-info {
+            flex: 0 0 auto;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            width: 1.1rem;
+            height: 1.1rem;
+            border-radius: 999px;
+            border: 1px solid var(--border-color);
+            color: var(--text-secondary);
+            font-size: 0.72rem;
+            line-height: 1;
+            cursor: help;
+            background: var(--surface-color);
+        }
+
+        .tool-toggle-switch {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.5rem;
+            cursor: pointer;
+            white-space: nowrap;
+            color: var(--text-secondary);
+            font-size: 0.78rem;
+        }
+
+        .tool-toggle-switch input[type="checkbox"] {
+            margin: 0;
+        }
+
+        .knowledge-group-list {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+            gap: 0.14rem 0.35rem;
+            margin-top: 1rem;
+        }
+
+        .knowledge-toolbar {
+            display: flex;
+            flex-wrap: wrap;
+            align-items: center;
+            gap: 0.7rem;
+            margin-top: 0.95rem;
+        }
+
+        .knowledge-search {
+            flex: 1 1 260px;
+            min-width: 220px;
+        }
+
+        .knowledge-search-summary {
+            font-size: 0.78rem;
+            color: var(--text-secondary);
+            white-space: normal;
+        }
+
+        .knowledge-chip {
+            position: relative;
+            display: flex;
+            width: 100%;
+            min-height: 24px;
+            padding: 0;
+            border-radius: 8px;
+            border: 1px solid var(--border-color);
+            background: var(--background-color);
+            transition: border-color 0.18s ease, background 0.18s ease, opacity 0.18s ease;
+            overflow: hidden;
+        }
+
+        .knowledge-chip:hover,
+        .knowledge-chip:focus-within,
+        .knowledge-chip.is-active {
+            border-color: rgba(var(--accent-primary-rgb), 0.45);
+            background: rgba(var(--accent-primary-rgb), 0.05);
+        }
+
+        .knowledge-chip.is-enabled {
+            border-color: rgba(var(--accent-primary-rgb), 0.35);
+            background: rgba(var(--accent-primary-rgb), 0.08);
+        }
+
+        .knowledge-chip.is-disabled {
+            opacity: 0.72;
+        }
+
+        .knowledge-chip-button {
+            display: flex;
+            flex: 1;
+            flex-direction: row;
+            align-items: center;
+            justify-content: flex-start;
+            gap: 0.18rem;
+            min-width: 0;
+            min-height: 24px;
+            border: none;
+            padding: 0.04rem 1.45rem 0.04rem 0.42rem;
+            background: transparent;
+            color: inherit;
+            cursor: pointer;
+            font: inherit;
+            text-align: left;
+        }
+
+        .knowledge-chip-button:focus-visible {
+            outline: 2px solid rgba(var(--accent-primary-rgb), 0.45);
+            outline-offset: 2px;
+            border-radius: 10px;
+        }
+
+        .knowledge-chip-label {
+            min-width: 0;
+            font-size: 0.74rem;
+            font-weight: 600;
+            color: var(--text-primary);
+            line-height: 1;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+            flex: 1 1 auto;
+        }
+
+        .knowledge-chip-category {
+            display: inline-flex;
+            flex: 0 0 auto;
+            align-items: center;
+            padding: 0 0.17rem;
+            border-radius: 999px;
+            background: rgba(var(--accent-primary-rgb), 0.045);
+            color: var(--text-secondary);
+            font-size: 0.5rem;
+            font-weight: 600;
+            letter-spacing: 0.01em;
+            text-transform: uppercase;
+            white-space: nowrap;
+        }
+
+        .knowledge-chip-toggle {
+            position: absolute;
+            top: 50%;
+            right: 0.28rem;
+            transform: translateY(-50%);
+            display: inline-flex;
+            align-items: center;
+            cursor: pointer;
+            padding: 0;
+            border-radius: 999px;
+            background: transparent;
+        }
+
+        .knowledge-chip-toggle input[type="checkbox"] {
+            margin: 0;
+            width: 0.78rem;
+            height: 0.78rem;
+        }
+
+        .knowledge-chip .selection-badge {
+            flex: 0 0 auto;
+            margin-left: auto;
+            align-self: center;
+            padding: 0.01rem 0.18rem;
+            font-size: 0.56rem;
+            line-height: 1;
+        }
+
+        .knowledge-detail-panel {
+            margin-top: 0.45rem;
+            padding: 0.4rem 0.5rem;
+            border-radius: 7px;
+            border: 1px solid var(--border-color);
+            background: var(--background-color);
+        }
+
+        .knowledge-detail-header {
+            display: flex;
+            gap: 0.45rem;
+            justify-content: space-between;
+            align-items: flex-start;
+        }
+
+        .knowledge-detail-title {
+            font-size: 0.76rem;
+            font-weight: 600;
+            line-height: 1.05;
+        }
+
+        .knowledge-detail-subtitle {
+            margin-top: 0.08rem;
+            font-size: 0.65rem;
+            line-height: 1.1;
+            color: var(--text-secondary);
+        }
+
+        .knowledge-panel-action-btn {
+            padding: 0.18rem 0.46rem;
+            font-size: 0.68rem;
+            line-height: 1.05;
+        }
+
+        .knowledge-detail-list {
+            display: flex;
+            flex-direction: column;
+            gap: 0.18rem;
+            margin-top: 0.38rem;
+            max-height: 88px;
+            overflow-y: auto;
+            padding-right: 0.1rem;
+        }
+
+        .knowledge-detail-item {
+            display: grid;
+            grid-template-columns: minmax(0, 1fr) auto;
+            gap: 0.35rem;
+            align-items: center;
+            padding: 0.18rem 0.34rem;
+            border-radius: 6px;
+            border: 1px solid var(--border-color);
+            background: var(--surface-color);
+        }
+
+        .knowledge-detail-item.is-disabled {
+            opacity: 0.74;
+        }
+
+        .knowledge-detail-name {
+            font-size: 0.72rem;
+            font-weight: 600;
+            line-height: 1;
+            color: var(--text-primary);
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
+        .knowledge-detail-meta {
+            margin-top: 0.03rem;
+            font-size: 0.6rem;
+            line-height: 1;
+            color: var(--text-secondary);
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
+        .knowledge-detail-item .selection-toggle {
+            gap: 0;
+            font-size: 0;
+            line-height: 1;
+        }
+
+        .knowledge-detail-item .selection-toggle input[type="checkbox"] {
+            width: 0.78rem;
+            height: 0.78rem;
+            margin: 0;
+        }
+
+        .knowledge-link-toggle-row {
+            display: flex;
+            justify-content: flex-end;
+            margin-top: 0.45rem;
+        }
+
+        .knowledge-link-header {
+            display: flex;
+            align-items: flex-start;
+            justify-content: space-between;
+            gap: 0.45rem;
+        }
+
+        .knowledge-link-header h3 {
+            margin: 0;
+        }
+
+        .knowledge-link-form {
+            margin-top: 0.45rem;
+            padding: 0.28rem 0.38rem;
+            border-radius: 7px;
+            background: var(--background-color);
+            border: 1px solid var(--border-color);
+        }
+
+        .knowledge-link-form h3 {
+            font-size: 0.7rem;
+            line-height: 1.05;
+            margin-bottom: 0.04rem;
+        }
+
+        .knowledge-link-form p {
+            margin-bottom: 0.24rem;
+            font-size: 0.61rem;
+            line-height: 1.05;
+        }
+
+        .knowledge-link-form .selection-grid {
+            gap: 0.28rem 0.36rem;
+        }
+
+        .knowledge-link-form .config-section {
+            margin-bottom: 0.22rem;
+        }
+
+        .knowledge-link-form label {
+            margin-bottom: 0.1rem;
+            font-size: 0.66rem;
+            line-height: 1;
+        }
+
+        .knowledge-link-form input[type="text"].onb-input {
+            padding: 0.08rem 0;
+            font-size: 0.72rem;
+            border: none;
+            border-color: transparent;
+            border-radius: 0;
+            background: transparent;
+            box-shadow: none;
+            appearance: none;
+            -webkit-appearance: none;
+        }
+
+        .knowledge-link-form input[type="text"].onb-input::placeholder {
+            color: var(--text-secondary);
+            opacity: 0.82;
+        }
+
+        .knowledge-link-form input[type="text"].onb-input:focus {
+            outline: none;
+            border: none;
+            border-color: transparent;
+            box-shadow: none;
+            background: transparent;
+        }
+
+        .knowledge-link-form .button-row {
+            gap: 0.4rem;
+            margin-top: 0.18rem;
+            padding-top: 0;
+        }
+
+        .knowledge-link-form .btn-small {
+            padding: 0.18rem 0.45rem;
+            font-size: 0.68rem;
+        }
+
+        .knowledge-link-grid {
+            grid-template-columns: minmax(0, 0.8fr) minmax(0, 1.25fr) minmax(0, 1fr);
+            align-items: end;
+        }
+
+        .knowledge-link-notes-row {
+            display: grid;
+            grid-template-columns: minmax(0, 1fr) auto;
+            gap: 0.36rem;
+            align-items: end;
+        }
+
+        .knowledge-link-notes-row .config-section {
+            margin-bottom: 0;
+        }
+
+        .knowledge-link-notes-row .btn {
+            min-width: auto;
+        }
+
+        .knowledge-link-actions {
+            display: flex;
+            align-items: center;
+            justify-content: flex-start;
+            gap: 0.35rem;
+        }
+
+        .knowledge-link-actions .inline-status {
+            margin-top: 0;
+            flex: 1 1 auto;
+        }
+
+        .inline-status {
+            margin-top: 0.35rem;
+            font-size: 0.68rem;
+            color: var(--text-secondary);
+        }
+
+        .inline-status.is-success {
+            color: var(--success-color);
+        }
+
+        .inline-status.is-error {
+            color: var(--error-color);
+        }
+
+        @media (max-width: 680px) {
+
+            .selection-grid,
+            .tool-toggle-grid,
+            .features-grid {
+                grid-template-columns: 1fr;
+            }
+
+            .knowledge-group-list {
+                grid-template-columns: repeat(2, minmax(0, 1fr));
+            }
+
+            .knowledge-detail-item {
+                grid-template-columns: 1fr;
+            }
+
+            .knowledge-toolbar {
+                align-items: flex-start;
+                flex-direction: column;
+            }
+
+            .knowledge-detail-header {
+                flex-direction: column;
+            }
+
+            .knowledge-link-grid {
+                grid-template-columns: repeat(2, minmax(0, 1fr));
+            }
+
+            .knowledge-link-notes-row {
+                grid-template-columns: 1fr;
+            }
+
+            .selection-card-header {
+                flex-direction: column;
+            }
+        }
+
+        @media (max-width: 520px) {
+            .knowledge-group-list {
+                grid-template-columns: 1fr;
+            }
+
+            .knowledge-link-grid {
+                grid-template-columns: 1fr;
+            }
         }
     </style>
 </head>
@@ -1056,6 +1662,13 @@
                             <p>Process everything locally and keep your data on your device</p>
                         </div>
                     </div>
+	                    <div class="info-note">
+	                        <div><span class="icon-settings"></span></div>
+	                        <div>
+	                            <strong>Global defaults</strong>
+	                            <p>These settings define the default global configuration. Each individual session can be uniquely configured to override these defaults for specific use cases.</p>
+	                        </div>
+	                    </div>
                 `
             },
             {
@@ -1068,58 +1681,41 @@
                 `
             },
             {
-                id: 'voice',
-                title: 'Voice Setup',
+                id: 'stt',
+                title: 'Speech-to-Text',
                 content: `
-                    <h2>Voice Processing Setup</h2>
-                    <p>Choose how you want to process voice commands:</p>
-                    <div style="margin: 1rem 0;">
-	                        <div class="option-card" style="padding: 0.75rem; background: var(--background-color); border-radius: 6px; margin-bottom: 0.5rem; border: 2px solid var(--accent-primary);">
-                            <label>
-                                <input type="radio" name="voiceMode" value="local" checked>
-                                <div>
-                                    <strong>Local Processing (Recommended)</strong>
-                                    <p style="margin: 0.25rem 0 0; font-size: 0.85rem; color: var(--text-secondary);">Uses Whisper AI on your device. Private and works offline.</p>
-                                </div>
-                            </label>
-                        </div>
-                        <div class="option-card" style="padding: 0.75rem; background: var(--background-color); border-radius: 6px; border: 1px solid var(--border-color);">
-                            <label>
-                                <input type="radio" name="voiceMode" value="openai">
-                                <div>
-                                    <strong>OpenAI Whisper API</strong>
-                                    <p style="margin: 0.25rem 0 0; font-size: 0.85rem; color: var(--text-secondary);">Uses cloud API. Faster but requires internet and an API key.</p>
-                                    <p class="help-text" style="margin: 0.2rem 0 0;">Get your API key from <a href="https://platform.openai.com/api-keys" target="_blank">OpenAI Platform</a>. Set it in the AI Provider step below.</p>
-                                </div>
-                            </label>
+                    <h2>Speech-to-Text Provider</h2>
+                    <p>Select the default Speech-to-Text provider for voice input. This mirrors the broader configurable speech provider surface and saves your default provider choice and credentials.</p>
+                    <div class="config-section">
+                        <label for="sttProvider">STT Provider</label>
+                        <select id="sttProvider">
+                            <option value="local-whisper">Local Whisper</option>
+                            <option value="openai-whisper">OpenAI Whisper</option>
+                            <option value="google-speech">Google Speech-to-Text</option>
+                            <option value="azure-speech">Azure Speech</option>
+                        </select>
+                    </div>
+                    <div id="sttConfig"></div>
+                    <div class="info-note" style="margin-top: 0.8rem;">
+                        <div><span class="icon-settings"></span></div>
+                        <div>
+                            <strong>Provider defaults</strong>
+                            <p>Your selected provider and any configured credentials become the default global STT setup for future sessions.</p>
                         </div>
                     </div>
+                `
+            },
+            {
+                id: 'microphone',
+                title: 'Microphone',
+                content: `
+                    <h2>Default Microphone</h2>
+                    <p>Choose the default microphone device Gestura should use for new sessions. You can override this later on a per-session basis.</p>
                     <div class="config-section" style="margin-top: 1rem;">
                         <label for="microphoneSelect"><span class="icon-microphone"></span> Microphone</label>
                         <select id="microphoneSelect">
                             <option value="">Loading devices...</option>
                         </select>
-                    </div>
-                `
-            },
-            {
-                id: 'voice-model',
-                title: 'Voice Model',
-                content: `
-                    <h2>Voice Model Selection</h2>
-                    <p>Select the Whisper model for speech-to-text processing:</p>
-                    <div class="config-section">
-                        <label for="whisperModel">Whisper Model</label>
-                        <select id="whisperModel">
-                            <option value="ggml-tiny.en.bin">Tiny English (75MB) - Fastest</option>
-                            <option value="ggml-base.en.bin" selected>Base English (142MB) - Balanced</option>
-                            <option value="ggml-small.en.bin">Small English (466MB) - Better accuracy</option>
-                            <option value="ggml-medium.en.bin">Medium English (1.5GB) - High accuracy</option>
-                            <option value="ggml-large-v3.bin">Large v3 (3GB) - Best accuracy</option>
-                        </select>
-                    </div>
-                    <div id="modelStatus" style="padding: 0.75rem; background: var(--background-color); border-radius: 6px; border: 1px solid var(--border-color); margin-top: 0.5rem;">
-                        <p style="margin: 0; font-size: 0.85rem;">Model will be downloaded when you first use voice commands.</p>
                     </div>
                 `
             },
@@ -1143,6 +1739,66 @@
                 `
             },
             {
+                id: 'default-tools',
+                title: 'Built-in Tools',
+                content: `
+                    <h2>Default Built-in Tools</h2>
+                    <p>Choose which built-in tools should be globally enabled for new agent sessions by default.</p>
+                    <div class="info-note" style="margin-top: 0.75rem;">
+                        <div><span class="icon-lock"></span></div>
+                        <div>
+                            <strong>Applies to new sessions</strong>
+                            <p>These selections become the default tool groups for new sessions. You can still enable or disable individual tools per session later.</p>
+                        </div>
+                    </div>
+                    <div id="defaultToolsList" class="tool-toggle-grid"></div>
+                `
+            },
+            {
+                id: 'default-knowledge',
+                title: 'Knowledge',
+                content: `
+                    <h2>Default Knowledge</h2>
+                    <p>Choose specialty knowledge sets by category. Click a set name to refine it, or use the checkbox to include that specialty by default.</p>
+                    <div class="knowledge-toolbar">
+                        <input type="text" id="knowledgeGroupSearch" class="onb-input knowledge-search" placeholder="Search specialties, topics, or knowledge options">
+                        <div id="knowledgeSearchSummary" class="knowledge-search-summary"></div>
+                    </div>
+                    <div id="defaultKnowledgeList" class="knowledge-group-list"></div>
+                    <div id="defaultKnowledgeDetail"></div>
+                    <div class="knowledge-link-toggle-row">
+                        <button type="button" class="btn btn-secondary" id="toggleKnowledgeLinkFormBtn">Link a knowledge source</button>
+                    </div>
+                    <div class="knowledge-link-form" id="knowledgeLinkForm" style="display:none;">
+                        <div class="knowledge-link-header">
+                            <h3>Linked source</h3>
+                            <button type="button" class="btn btn-secondary knowledge-panel-action-btn" id="hideKnowledgeLinkFormBtn">Hide</button>
+                        </div>
+                        <p>Add a URL or path for future sessions.</p>
+                        <div class="selection-grid knowledge-link-grid">
+                            <div class="config-section">
+                                <label for="knowledgeLinkName">Display name</label>
+                                <input type="text" id="knowledgeLinkName" class="onb-input" placeholder="Team handbook">
+                            </div>
+                            <div class="config-section">
+                                <label for="knowledgeLinkSource">URL or local path</label>
+                                <input type="text" id="knowledgeLinkSource" class="onb-input" placeholder="https://example.com/handbook or /path/to/docs">
+                            </div>
+                        </div>
+                        <div class="knowledge-link-notes-row">
+                            <div class="config-section">
+                                <label for="knowledgeLinkNotes">Notes for the agent (optional)</label>
+                                <input type="text" id="knowledgeLinkNotes" class="onb-input" placeholder="When relevant, use this as the canonical internal reference.">
+                            </div>
+                            <button type="button" class="btn btn-primary" id="addKnowledgeLinkBtn">Add</button>
+                        </div>
+                        <div class="knowledge-link-actions">
+                            <div id="knowledgeLinkStatus" class="inline-status"></div>
+                        </div>
+                    </div>
+                `
+            },
+            {
                 id: 'ring',
                 title: 'Tactile Hardware',
                 content: `
@@ -1161,28 +1817,55 @@
                 title: 'Privacy',
                 content: `
                     <h2>Privacy & Data Settings</h2>
-                    <p>We believe in privacy-first design. Here's how your data is handled:</p>
-                    <div style="margin: 1rem 0; padding: 0.75rem; background: var(--background-color); border-radius: 6px; border-left: 4px solid var(--success-color);">
-                        <strong><span class="icon-check-circle" style="color: var(--success-color);"></span> Voice Processing</strong>
-                        <p style="margin: 0.25rem 0 0; font-size: 0.85rem;">With local mode, audio is processed entirely on your device and never sent to any server.</p>
-                    </div>
+                    <p>Match the privacy defaults from the main configuration window so every new session starts with the same data-handling posture.</p>
                     <div style="margin: 1rem 0;">
-	                        <label class="consent-row">
-	                            <input type="checkbox" id="analyticsConsent">
+                        <label class="consent-row">
+                            <input type="checkbox" id="privacyDataCollection">
                             <div>
-                                <strong>Anonymous Usage Analytics (Optional)</strong>
-	                                <p>Help improve Gestura by sharing anonymous usage statistics.</p>
+                                <strong>Allow Usage Analytics</strong>
+                                <p>Help improve Gestura by sharing anonymous usage and reliability signals.</p>
                             </div>
                         </label>
                     </div>
                     <div style="margin: 1rem 0;">
-	                        <label class="consent-row">
-	                            <input type="checkbox" id="crashReports" checked>
+                        <label class="consent-row">
+                            <input type="checkbox" id="privacyCrashReports" checked>
                             <div>
-                                <strong>Crash Reports (Recommended)</strong>
-	                                <p>Send crash reports to help us fix bugs quickly.</p>
+                                <strong>Send Crash Reports</strong>
+                                <p>Automatically share crash diagnostics so failures can be investigated faster.</p>
                             </div>
                         </label>
+                    </div>
+                    <div style="margin: 1rem 0;">
+                        <label class="consent-row">
+                            <input type="checkbox" id="privacyVoiceDataLocal" checked>
+                            <div>
+                                <strong>Keep Voice Data Local</strong>
+                                <p>Prefer local speech processing and keep audio on-device whenever the selected provider allows it.</p>
+                            </div>
+                        </label>
+                    </div>
+                    <div style="margin: 1rem 0;">
+                        <label class="consent-row">
+                            <input type="checkbox" id="privacyRequireAuth">
+                            <div>
+                                <strong>Require Authentication for Sensitive Commands</strong>
+                                <p>Ask for confirmation before actions that could impact the system or local machine state.</p>
+                            </div>
+                        </label>
+                    </div>
+                    <div class="config-section">
+                        <label for="privacyAuthRememberMode">Remember authentication</label>
+                        <select id="privacyAuthRememberMode" class="onb-input">
+                            <option value="timeout">Ask again after a time</option>
+                            <option value="always">Always remember</option>
+                        </select>
+                        <div class="help-text">Choose whether Gestura should re-prompt after a delay or keep the approval remembered.</div>
+                    </div>
+                    <div class="config-section" id="privacyAuthTimeoutSection" style="margin-bottom: 0;">
+                        <label for="privacyAuthTimeout">Ask again after (minutes)</label>
+                        <input type="number" id="privacyAuthTimeout" class="onb-input" value="15" min="1" max="120">
+                        <div class="help-text">How long Gestura should remember a recent authentication before asking again.</div>
                     </div>
                 `
             },
@@ -1258,6 +1941,229 @@
             bluetooth: '<span class="icon-bluetooth"></span>',
             screen_recording: '<span class="icon-monitor"></span>'
         };
+
+        const DEFAULT_LOCAL_WHISPER_MODEL = 'ggml-base.en.bin';
+        const DEFAULT_OPENAI_STT_MODEL = 'gpt-4o-transcribe';
+        const DEFAULT_OLLAMA_BASE_URL = 'http://localhost:11434';
+        const STT_PROVIDER_UI_TO_CONFIG = {
+            'local-whisper': 'local',
+            'openai-whisper': 'openai',
+            'google-speech': 'google-speech',
+            'azure-speech': 'azure-speech',
+        };
+        const TOOL_GROUP_DEFINITIONS = [
+            {
+                id: 'file',
+                label: 'File',
+                summary: 'Read, write, search, and navigate local project files.',
+                matcher: name => name === 'file',
+            },
+            {
+                id: 'shell',
+                label: 'Shell',
+                summary: 'Run commands and scripts in the local workspace.',
+                matcher: name => name === 'shell',
+            },
+            {
+                id: 'git',
+                label: 'Git',
+                summary: 'Inspect and modify repository history and working tree state.',
+                matcher: name => name === 'git',
+            },
+            {
+                id: 'code',
+                label: 'Code',
+                summary: 'Read, search, edit, lint, and test source code.',
+                matcher: name => name === 'code' || name.startsWith('code_'),
+            },
+            {
+                id: 'web',
+                label: 'Web',
+                summary: 'Fetch web pages and run web searches.',
+                matcher: name => name === 'web' || name === 'web_search',
+            },
+            {
+                id: 'task',
+                label: 'Task',
+                summary: 'Create and manage structured work items.',
+                matcher: name => name === 'task',
+            },
+            {
+                id: 'screen',
+                label: 'Screen',
+                summary: 'Capture screenshots and record on-screen activity.',
+                matcher: name => name === 'screenshot' || name === 'screen_record' || name === 'screen',
+            },
+            {
+                id: 'remote',
+                label: 'Remote',
+                summary: 'Connect to remote agents and MCP-based integrations.',
+                matcher: name => name === 'a2a' || name === 'mcp',
+            },
+            {
+                id: 'system',
+                label: 'System',
+                summary: 'Handle permissions and in-app GUI control helpers.',
+                matcher: name => name === 'permissions' || name === 'gui_control',
+            },
+        ];
+        const SOFTWARE_SPECIALTY_ITEM_IDS = new Set([
+            'software-architecture-interfaces',
+            'software-reliability-delivery',
+            'rust-expert',
+            'typescript-expert',
+            'javascript-expert',
+            'python-expert',
+            'java-expert',
+            'ruby-expert',
+            'php-expert',
+            'tauri-expert',
+            'cli-expert',
+            'mcp-expert',
+            'a2a-expert',
+            'voice-expert',
+            'anthropic-mcp-builder',
+            'anthropic-frontend-design',
+        ]);
+        const KNOWLEDGE_CATEGORY_DEFINITIONS = [
+            { id: 'business', label: 'Business' },
+            { id: 'science-math', label: 'Science & Math' },
+            { id: 'software-robotics', label: 'Software & Robotics' },
+            { id: 'engineering', label: 'Engineering' },
+            { id: 'custom', label: 'Custom Sources' },
+        ];
+        const SPECIALTY_KNOWLEDGE_GROUP_DEFINITIONS = [
+            {
+                id: 'analytics',
+                categoryId: 'business',
+                label: 'Analytics',
+                summary: 'Analytics-owned modules for metrics, instrumentation, experimentation, and insight generation.',
+                searchTerms: ['metrics', 'dashboard', 'cohort', 'ab testing', 'experiments'],
+                matcher: item => String(item?.id || '').startsWith('analytics-'),
+            },
+            {
+                id: 'science',
+                categoryId: 'science-math',
+                label: 'Science',
+                summary: 'Science-owned modules for hypotheses, study design, evidence review, and interpretation.',
+                searchTerms: ['scientific method', 'research', 'evidence', 'experiment'],
+                matcher: item => String(item?.id || '').startsWith('science-'),
+            },
+            {
+                id: 'math',
+                categoryId: 'science-math',
+                label: 'Math',
+                summary: 'Math-owned modules for modeling, optimization, derivation, and estimation.',
+                searchTerms: ['equation', 'proof', 'calculus', 'linear algebra', 'optimization'],
+                matcher: item => String(item?.id || '').startsWith('math-'),
+            },
+            {
+                id: 'marketing',
+                categoryId: 'business',
+                label: 'Marketing',
+                summary: 'Marketing-owned modules for positioning, messaging, campaigns, and growth execution.',
+                searchTerms: ['gtm', 'campaign', 'positioning', 'messaging', 'brand'],
+                matcher: item => String(item?.id || '').startsWith('marketing-'),
+            },
+            {
+                id: 'sales',
+                categoryId: 'business',
+                label: 'Sales',
+                summary: 'Discovery, pipeline reviews, forecasting, follow-up, and deal support.',
+                searchTerms: ['pipeline', 'forecast', 'quota', 'discovery', 'follow-up'],
+                matcher: item => String(item?.id || '').startsWith('sales-'),
+            },
+            {
+                id: 'software',
+                categoryId: 'software-robotics',
+                label: 'Software',
+                summary: 'Software-owned modules for architecture and reliability, plus language/framework experts.',
+                searchTerms: ['system design', 'api', 'rust', 'python', 'javascript', 'tauri', 'mcp'],
+                matcher: item => SOFTWARE_SPECIALTY_ITEM_IDS.has(item?.id),
+            },
+            {
+                id: 'robotics',
+                categoryId: 'software-robotics',
+                label: 'Robotics',
+                summary: 'Robotics-owned modules for perception, integration, controls, planning, and safety.',
+                searchTerms: ['ros', 'controls', 'path planning', 'sensor fusion', 'hardware in the loop'],
+                matcher: item => String(item?.id || '').startsWith('robotics-'),
+            },
+            {
+                id: 'mechanical-engineering',
+                categoryId: 'engineering',
+                label: 'Mechanical Engineering',
+                summary: 'Mechanical-owned modules for design, materials, manufacturing, and reliability.',
+                searchTerms: ['mechanical design', 'stress', 'fatigue', 'tolerance', 'materials'],
+                matcher: item => String(item?.id || '').startsWith('mechanical-'),
+            },
+            {
+                id: 'electrical-engineering',
+                categoryId: 'engineering',
+                label: 'Electrical Engineering',
+                summary: 'Electrical-owned modules for power, interfaces, signal integrity, and validation.',
+                searchTerms: ['pcb', 'power electronics', 'analog', 'digital design', 'signal integrity'],
+                matcher: item => String(item?.id || '').startsWith('electrical-'),
+            },
+            {
+                id: 'civil-engineering',
+                categoryId: 'engineering',
+                label: 'Civil Engineering',
+                summary: 'Civil-owned modules for site, drainage, structures, and constructability.',
+                searchTerms: ['site design', 'drainage', 'geotechnical', 'constructability', 'building code'],
+                matcher: item => String(item?.id || '').startsWith('civil-'),
+            },
+            {
+                id: 'chemical-engineering',
+                categoryId: 'engineering',
+                label: 'Chemical Engineering',
+                summary: 'Chemical-owned modules for balances, thermodynamics, kinetics, and process safety.',
+                searchTerms: ['mass balance', 'energy balance', 'thermodynamics', 'separation', 'process safety'],
+                matcher: item => String(item?.id || '').startsWith('chemical-'),
+            },
+            {
+                id: 'aerospace',
+                categoryId: 'engineering',
+                label: 'Aerospace',
+                summary: 'Aerospace-owned modules for mission architecture, guidance, and verification.',
+                searchTerms: ['gnc', 'mass budget', 'flight systems', 'propulsion', 'aerodynamics'],
+                matcher: item => String(item?.id || '').startsWith('aerospace-'),
+            },
+            {
+                id: 'source',
+                categoryId: 'custom',
+                label: 'Linked Sources',
+                summary: 'Your URLs and local references attached for future sessions.',
+                searchTerms: ['source', 'link', 'url', 'path', 'reference'],
+                matcher: item => {
+                    const category = String(item?.category || '').trim().toLowerCase();
+                    return category === 'source' || getKnowledgeOrigin(item) !== 'builtin';
+                },
+            },
+        ];
+        let onboardingOllamaEndpoint = DEFAULT_OLLAMA_BASE_URL;
+        const TOOL_UI_ORDER = [
+            'file',
+            'shell',
+            'git',
+            'code',
+            'web',
+            'web_search',
+            'task',
+            'screenshot',
+            'screen_record',
+            'a2a',
+            'permissions',
+            'mcp',
+        ];
+        let onboardingBuiltinTools = [];
+        let onboardingDefaultEnabledTools = {};
+        let onboardingKnowledgeItems = [];
+        let onboardingDefaultKnowledgeSessionId = null;
+        let onboardingEnabledKnowledgeIds = new Set();
+        let onboardingActiveKnowledgeGroupId = null;
+        let onboardingKnowledgeLinkFormExpanded = false;
+        let onboardingKnowledgeSearchQuery = '';
 
         const systemPreferencesPaneByPermissionId = {
             microphone: 'microphone',
@@ -1336,20 +2242,38 @@
         /// (onchange, onclick, oninput) silently fail.  We use addEventListener
         /// instead so that all user interactions work regardless of CSP policy.
         function hydrateStepListeners(stepId) {
-            if (stepId === 'voice') {
-                document.querySelectorAll('input[name="voiceMode"]').forEach(el => {
-                    el.addEventListener('change', () => updateVoiceMode(el.value));
+            if (stepId === 'stt') {
+                document.getElementById('sttProvider')?.addEventListener('change', function () {
+                    void updateSttProvider(this.value);
                 });
+            } else if (stepId === 'microphone') {
                 document.getElementById('microphoneSelect')?.addEventListener('change', function () {
                     updateMicrophone(this.value);
-                });
-            } else if (stepId === 'voice-model') {
-                document.getElementById('whisperModel')?.addEventListener('change', function () {
-                    updateWhisperModel(this.value);
                 });
             } else if (stepId === 'llm') {
                 document.getElementById('llmProvider')?.addEventListener('change', function () {
                     updateLLMProvider(this.value);
+                });
+            } else if (stepId === 'default-knowledge') {
+                document.getElementById('toggleKnowledgeLinkFormBtn')?.addEventListener('click', () => {
+                    toggleKnowledgeLinkForm();
+                });
+                document.getElementById('hideKnowledgeLinkFormBtn')?.addEventListener('click', () => {
+                    toggleKnowledgeLinkForm(false);
+                });
+                document.getElementById('addKnowledgeLinkBtn')?.addEventListener('click', () => {
+                    void addLinkedKnowledgeSource();
+                });
+                document.getElementById('knowledgeGroupSearch')?.addEventListener('input', event => {
+                    onboardingKnowledgeSearchQuery = event.target?.value || '';
+                    renderDefaultKnowledgeList();
+                });
+            } else if (stepId === 'privacy') {
+                document.getElementById('privacyRequireAuth')?.addEventListener('change', () => {
+                    updatePrivacyAuthTimeoutState();
+                });
+                document.getElementById('privacyAuthRememberMode')?.addEventListener('change', () => {
+                    updatePrivacyAuthTimeoutState();
                 });
             } else if (stepId === 'ring') {
                 document.getElementById('scanBtn')?.addEventListener('click', () => scanForRings());
@@ -1378,7 +2302,6 @@
 
             // Sync selection visuals immediately based on template defaults (checked attrs)
             // so the UI never flashes an “unselected” state while async config loads.
-            syncOptionCardBordersForRadioGroup('voiceMode');
             syncOptionCardBordersForRadioGroup('agentPermLevel');
 
             // Step-specific initialization (async where needed)
@@ -1386,16 +2309,23 @@
             if (step.id === 'permissions') {
                 try { await renderPermissions(); } catch (e) { console.error('[Onboarding] renderPermissions failed:', e); }
             }
-            if (step.id === 'voice') {
-                // Hydrate the checked state from config (and enforce sane defaults)
-                try { await loadVoiceMode(); } catch (e) { console.error('[Onboarding] loadVoiceMode failed:', e); }
-                try { await loadMicrophoneDevices(); } catch (e) { console.error('[Onboarding] loadMicrophoneDevices failed:', e); }
+            if (step.id === 'stt') {
+                try { await loadSttConfig(); } catch (e) { console.error('[Onboarding] loadSttConfig failed:', e); }
             }
-            if (step.id === 'voice-model') {
-                try { await loadVoiceModelConfig(); } catch (e) { console.error('[Onboarding] loadVoiceModelConfig failed:', e); }
+            if (step.id === 'microphone') {
+                try { await loadMicrophoneDevices(); } catch (e) { console.error('[Onboarding] loadMicrophoneDevices failed:', e); }
             }
             if (step.id === 'llm') {
                 try { await loadLLMConfig(); } catch (e) { console.error('[Onboarding] loadLLMConfig failed:', e); }
+            }
+            if (step.id === 'default-tools') {
+                try { await loadDefaultToolsStep(); } catch (e) { console.error('[Onboarding] loadDefaultToolsStep failed:', e); }
+            }
+            if (step.id === 'default-knowledge') {
+                try { await loadDefaultKnowledgeStep(); } catch (e) { console.error('[Onboarding] loadDefaultKnowledgeStep failed:', e); }
+            }
+            if (step.id === 'privacy') {
+                try { await loadPrivacySettings(); } catch (e) { console.error('[Onboarding] loadPrivacySettings failed:', e); }
             }
             if (step.id === 'agent-permissions') {
                 try { await loadAgentPermissionLevel(); } catch (e) { console.error('[Onboarding] loadAgentPermissionLevel failed:', e); }
@@ -1473,8 +2403,11 @@
             isTransitioning = true;
             setNavDisabled(true);
             try {
+                await saveSTTConfigIfNeeded();
+                await saveMicrophoneIfNeeded();
                 // Save LLM config when leaving the LLM step
                 await saveLLMConfigIfNeeded();
+                await savePrivacySettingsIfNeeded();
 
                 if (currentStep === steps.length - 1) {
                     await completeOnboarding();
@@ -1500,8 +2433,11 @@
             isTransitioning = true;
             setNavDisabled(true);
             try {
+                await saveSTTConfigIfNeeded();
+                await saveMicrophoneIfNeeded();
                 // Save LLM config when leaving the LLM step
                 await saveLLMConfigIfNeeded();
+                await savePrivacySettingsIfNeeded();
 
                 if (currentStep > 0) {
                     currentStep--;
@@ -1533,7 +2469,7 @@
             }
 
             if (provider === 'ollama') {
-                const url = (document.getElementById('ollamaUrl')?.value || '').trim() || 'http://localhost:11434';
+                const url = onboardingOllamaEndpoint || DEFAULT_OLLAMA_BASE_URL;
 
                 // Avoid hard-coded model fallbacks. Prefer (1) explicit user selection,
                 // (2) existing persisted config/defaults (which `update_llm_provider`
@@ -1744,18 +2680,16 @@
             }
         }
 
-        async function updateVoiceMode(mode) {
-            try {
-                await invoke('update_voice_provider', { provider: mode });
-                syncOptionCardBordersForRadioGroup('voiceMode');
-            } catch (error) {
-                console.error('Error updating voice mode:', error);
-            }
+        function normalizePersistedSttProvider(raw) {
+            const value = String(raw || '').trim().toLowerCase();
+            if (value === 'openai' || value === 'openai-whisper') return 'openai-whisper';
+            if (value === 'google' || value === 'google-speech') return 'google-speech';
+            if (value === 'azure' || value === 'azure-speech') return 'azure-speech';
+            return 'local-whisper';
         }
 
-        function normalizeVoiceProvider(raw) {
-            const v = String(raw || '').toLowerCase();
-            return v === 'openai' ? 'openai' : 'local';
+        function mapSttUiProviderToConfig(provider) {
+            return STT_PROVIDER_UI_TO_CONFIG[provider] || 'local';
         }
 
         function syncOptionCardBordersForRadioGroup(groupName) {
@@ -1769,31 +2703,1248 @@
             });
         }
 
-        async function loadVoiceMode() {
-            // Ensure a default is always selected even if config load fails.
-            let provider = 'local';
-            try {
-                const config = await invoke('get_config');
-                provider = normalizeVoiceProvider(config?.voice?.provider ?? config?.voice?.voice_provider);
-            } catch (error) {
-                console.warn('[Onboarding] get_config failed; defaulting voiceMode to local:', error);
-            }
-            const radio = document.querySelector(`input[name="voiceMode"][value="${provider}"]`);
-            if (radio) radio.checked = true;
-            // If nothing matched, force local.
-            const anyChecked = !!document.querySelector('input[name="voiceMode"]:checked');
-            if (!anyChecked) {
-                const local = document.querySelector('input[name="voiceMode"][value="local"]');
-                if (local) local.checked = true;
-            }
-            syncOptionCardBordersForRadioGroup('voiceMode');
-        }
-
         async function updateWhisperModel(model) {
             try {
                 await invoke('update_whisper_model', { model_filename: model });
             } catch (error) {
                 console.error('Error updating whisper model:', error);
+            }
+        }
+
+        function getLocalWhisperModelOptionsHtml() {
+            return `
+                <option value="ggml-tiny.en.bin">Tiny English (75MB) - Fastest</option>
+                <option value="ggml-base.en.bin">Base English (142MB) - Balanced</option>
+                <option value="ggml-small.en.bin">Small English (466MB) - Better accuracy</option>
+                <option value="ggml-medium.en.bin">Medium English (1.5GB) - High accuracy</option>
+                <option value="ggml-large-v3.bin">Large v3 (3GB) - Best accuracy</option>
+            `;
+        }
+
+        function extractFileName(pathValue) {
+            const normalized = String(pathValue || '').trim();
+            if (!normalized) return '';
+            const parts = normalized.split(/[\\/]/);
+            return parts[parts.length - 1] || normalized;
+        }
+
+        function setSttSelectedModel(value) {
+            const select = document.getElementById('sttOpenAiModel');
+            if (!select) return;
+            const normalized = (value || '').trim();
+            if (normalized) {
+                select.dataset.selectedModel = normalized;
+            } else {
+                delete select.dataset.selectedModel;
+            }
+        }
+
+        async function hydrateSttApiKeyPlaceholder() {
+            try {
+                const input = document.getElementById('sttApiKey');
+                const deleteBtn = document.getElementById('deleteSttApiKeyBtn');
+                if (!input) return;
+
+                input.value = '';
+                input.placeholder = 'sk-...';
+
+                const [hasVoiceKey, hasGeneralKey] = await Promise.all([
+                    invoke('has_api_key', { provider: 'voice_openai' }).catch(() => false),
+                    invoke('has_api_key', { provider: 'openai' }).catch(() => false),
+                ]);
+
+                if (hasVoiceKey || hasGeneralKey) {
+                    input.placeholder = hasVoiceKey ? '••••••••••••••••' : 'Using your existing OpenAI key';
+                }
+
+                if (!deleteBtn) return;
+                if (hasVoiceKey) {
+                    deleteBtn.style.display = '';
+                    deleteBtn.onclick = async () => {
+                        try {
+                            await invoke('delete_api_key', { provider: 'voice_openai' });
+                            input.value = '';
+                            input.placeholder = 'sk-...';
+                            deleteBtn.style.display = 'none';
+                            await fetchOpenAiSttModels();
+                        } catch (err) {
+                            console.error('Failed to delete STT API key:', err);
+                        }
+                    };
+                } else {
+                    deleteBtn.style.display = 'none';
+                    deleteBtn.onclick = null;
+                }
+            } catch (error) {
+                console.warn('[Onboarding] Failed to hydrate STT API key placeholder:', error);
+            }
+        }
+
+        async function hydrateProviderApiKeyPlaceholder({
+            inputId,
+            deleteBtnId,
+            provider,
+            placeholder = 'Paste API key',
+            maskedPlaceholder = '••••••••••••••••',
+            helpText = '',
+        }) {
+            try {
+                const input = document.getElementById(inputId);
+                const deleteBtn = document.getElementById(deleteBtnId);
+                if (!input) return;
+
+                input.value = '';
+                input.placeholder = placeholder;
+
+                const hasProviderKey = await invoke('has_api_key', { provider }).catch(() => false);
+                if (hasProviderKey) {
+                    input.placeholder = maskedPlaceholder;
+                }
+
+                if (deleteBtn) {
+                    if (hasProviderKey) {
+                        deleteBtn.style.display = '';
+                        deleteBtn.onclick = async () => {
+                            try {
+                                await invoke('delete_api_key', { provider });
+                                input.value = '';
+                                input.placeholder = placeholder;
+                                deleteBtn.style.display = 'none';
+                            } catch (error) {
+                                console.error(`Failed to delete ${provider} API key:`, error);
+                            }
+                        };
+                    } else {
+                        deleteBtn.style.display = 'none';
+                        deleteBtn.onclick = null;
+                    }
+                }
+
+                const helpEl = helpText ? document.getElementById(helpText) : null;
+                if (helpEl) {
+                    helpEl.textContent = hasProviderKey
+                        ? 'A key is already stored securely in your OS keychain.'
+                        : helpEl.textContent;
+                }
+            } catch (error) {
+                console.warn(`[Onboarding] Failed to hydrate API key placeholder for ${provider}:`, error);
+            }
+        }
+
+        async function fetchOpenAiSttModels() {
+            const section = document.getElementById('sttOpenAiModelSection');
+            const select = document.getElementById('sttOpenAiModel');
+            const status = document.getElementById('sttOpenAiModelStatus');
+            if (!select) return;
+
+            const apiKey = (document.getElementById('sttApiKey')?.value || '').trim();
+            const [hasVoiceKey, hasGeneralKey] = await Promise.all([
+                invoke('has_api_key', { provider: 'voice_openai' }).catch(() => false),
+                invoke('has_api_key', { provider: 'openai' }).catch(() => false),
+            ]);
+
+            if (!apiKey && !hasVoiceKey && !hasGeneralKey) {
+                if (section) section.style.display = '';
+                select.innerHTML = '<option value="">Enter an OpenAI API key to load models</option>';
+                select.disabled = true;
+                if (status) {
+                    status.style.color = 'var(--text-secondary)';
+                    status.textContent = 'Add an API key or use your existing OpenAI keychain entry to fetch transcription models.';
+                }
+                return;
+            }
+
+            if (section) section.style.display = '';
+            select.innerHTML = '<option value="">Loading models…</option>';
+            select.disabled = true;
+            if (status) {
+                status.style.color = 'var(--text-secondary)';
+                status.textContent = 'Fetching OpenAI transcription models…';
+            }
+
+            const currentVal = select.dataset.selectedModel || DEFAULT_OPENAI_STT_MODEL;
+
+            try {
+                if (apiKey) {
+                    try {
+                        await invoke('store_api_key', { provider: 'voice_openai', api_key: apiKey });
+                    } catch (_) {
+                        // Non-fatal: backend can still fall back to keychain/general OpenAI key.
+                    }
+                }
+
+                const models = await invoke('list_openai_stt_models', { api_key: apiKey });
+                select.innerHTML = '<option value="">Select a model…</option>';
+
+                (models || []).forEach(model => {
+                    const id = model.id || model.name || '';
+                    if (!id) return;
+                    const option = document.createElement('option');
+                    option.value = id;
+                    option.textContent = id;
+                    select.appendChild(option);
+                });
+
+                const preferred = currentVal || DEFAULT_OPENAI_STT_MODEL;
+                let matchingOption = [...select.options].find(option => option.value === preferred);
+                if (!matchingOption && preferred) {
+                    matchingOption = document.createElement('option');
+                    matchingOption.value = preferred;
+                    matchingOption.textContent = preferred;
+                    select.insertBefore(matchingOption, select.options[1] ?? null);
+                }
+
+                select.value = preferred;
+                select.disabled = false;
+                setSttSelectedModel(select.value || preferred);
+
+                if (status) {
+                    status.style.color = 'var(--success-color, #22c55e)';
+                    status.textContent = `✓ ${(models || []).length} model${(models || []).length !== 1 ? 's' : ''} available`;
+                }
+            } catch (error) {
+                console.error('Failed to fetch OpenAI STT models:', error);
+                select.innerHTML = `<option value="${currentVal}">${currentVal}</option>`;
+                select.value = currentVal;
+                select.disabled = false;
+                if (status) {
+                    status.style.color = 'var(--error-color, #ef4444)';
+                    status.textContent = `Error: ${error}`;
+                }
+            }
+        }
+
+        function renderSttConfig({ fetchModels = true, preferredModel = '' } = {}) {
+            const container = document.getElementById('sttConfig');
+            if (!container) return;
+
+            const provider = document.getElementById('sttProvider')?.value || 'local-whisper';
+            if (provider === 'openai-whisper') {
+                container.innerHTML = `
+                    <div class="config-section">
+                        <label for="sttApiKey">OpenAI API Token</label>
+                        <div class="api-key-row">
+                            <input type="password" id="sttApiKey" class="onb-input" placeholder="sk-...">
+                            <button id="deleteSttApiKeyBtn" class="btn btn-small btn-delete-api-key" style="display:none;" title="Delete stored STT API key">Delete Key</button>
+                        </div>
+                        <div class="help-text">Get your API key from <a href="https://platform.openai.com/api-keys" target="_blank">OpenAI Platform</a>. Keys are stored securely in your OS keychain.</div>
+                    </div>
+                    <div id="sttOpenAiModelSection" class="config-section">
+                        <label for="sttOpenAiModel">Transcription model</label>
+                        <select id="sttOpenAiModel" class="onb-input">
+                            <option value="">Enter an OpenAI API key to load models</option>
+                        </select>
+                        <div id="sttOpenAiModelStatus" style="font-size:0.75rem;margin-top:0.25rem;color:var(--text-secondary);"></div>
+                    </div>
+                `;
+
+                setSttSelectedModel(preferredModel || DEFAULT_OPENAI_STT_MODEL);
+                void hydrateSttApiKeyPlaceholder();
+
+                const apiKeyInput = document.getElementById('sttApiKey');
+                if (apiKeyInput) {
+                    let modelTimer = null;
+                    apiKeyInput.addEventListener('input', () => {
+                        clearTimeout(modelTimer);
+                        modelTimer = setTimeout(() => void fetchOpenAiSttModels(), 800);
+                    });
+                }
+
+                document.getElementById('sttOpenAiModel')?.addEventListener('change', function () {
+                    setSttSelectedModel(this.value);
+                });
+
+                if (fetchModels) {
+                    setTimeout(() => void fetchOpenAiSttModels(), 0);
+                }
+                return;
+            }
+
+            if (provider === 'google-speech') {
+                container.innerHTML = `
+                    <div class="config-section">
+                        <label for="sttGoogleApiKey">Google Cloud API Token</label>
+                        <div class="api-key-row">
+                            <input type="password" id="sttGoogleApiKey" class="onb-input" placeholder="AIza...">
+                            <button id="deleteSttGoogleApiKeyBtn" class="btn btn-small btn-delete-api-key" style="display:none;" title="Delete stored Google STT API key">Delete Key</button>
+                        </div>
+                        <div id="sttGoogleApiKeyHelp" class="help-text">Use a Google Cloud Speech-to-Text credential if you want this provider configured as a default option.</div>
+                    </div>
+                `;
+                void hydrateProviderApiKeyPlaceholder({
+                    inputId: 'sttGoogleApiKey',
+                    deleteBtnId: 'deleteSttGoogleApiKeyBtn',
+                    provider: 'voice_google',
+                    placeholder: 'AIza...',
+                    helpText: 'sttGoogleApiKeyHelp',
+                });
+                return;
+            }
+
+            if (provider === 'azure-speech') {
+                container.innerHTML = `
+                    <div class="config-section">
+                        <label for="sttAzureApiKey">Azure Speech API Token</label>
+                        <div class="api-key-row">
+                            <input type="password" id="sttAzureApiKey" class="onb-input" placeholder="Azure Speech key">
+                            <button id="deleteSttAzureApiKeyBtn" class="btn btn-small btn-delete-api-key" style="display:none;" title="Delete stored Azure STT API key">Delete Key</button>
+                        </div>
+                        <div id="sttAzureApiKeyHelp" class="help-text">Use an Azure Speech service key if you want this provider configured as a default option.</div>
+                    </div>
+                `;
+                void hydrateProviderApiKeyPlaceholder({
+                    inputId: 'sttAzureApiKey',
+                    deleteBtnId: 'deleteSttAzureApiKeyBtn',
+                    provider: 'voice_azure',
+                    placeholder: 'Azure Speech key',
+                    helpText: 'sttAzureApiKeyHelp',
+                });
+                return;
+            }
+
+            container.innerHTML = `
+                <div class="config-section">
+                    <label for="whisperModel">Local Whisper model</label>
+                    <select id="whisperModel" class="onb-input">
+                        ${getLocalWhisperModelOptionsHtml()}
+                    </select>
+                </div>
+                <div class="info-note" style="margin-top: 0.4rem;">
+                    <div><span class="icon-microphone"></span></div>
+                    <div>
+                        <strong>Private by default</strong>
+                        <p>Local Whisper runs on your device and the selected model will be downloaded the first time you use voice commands if it is not already available.</p>
+                    </div>
+                </div>
+            `;
+
+            const whisperSelect = document.getElementById('whisperModel');
+            if (whisperSelect) {
+                whisperSelect.value = preferredModel || DEFAULT_LOCAL_WHISPER_MODEL;
+                whisperSelect.addEventListener('change', function () {
+                    void updateWhisperModel(this.value);
+                });
+            }
+        }
+
+        async function updateSttProvider(provider) {
+            renderSttConfig({ fetchModels: false });
+            let persisted = false;
+            try {
+                await invoke('update_voice_provider', { provider: mapSttUiProviderToConfig(provider) });
+                persisted = true;
+            } catch (error) {
+                console.error('Error updating STT provider:', error);
+            }
+
+            if (persisted) {
+                try {
+                    await loadSttConfig();
+                } catch (error) {
+                    console.warn('[Onboarding] loadSttConfig after provider change failed:', error);
+                }
+            }
+        }
+
+        async function saveSTTConfigIfNeeded() {
+            const currentStepId = steps[currentStep]?.id;
+            if (currentStepId !== 'stt') return;
+
+            const provider = document.getElementById('sttProvider')?.value || 'local-whisper';
+            try {
+                await invoke('update_voice_provider', { provider: mapSttUiProviderToConfig(provider) });
+            } catch (error) {
+                console.error('Failed to save STT provider:', error);
+            }
+
+            if (provider === 'local-whisper') {
+                const localModel = document.getElementById('whisperModel')?.value || DEFAULT_LOCAL_WHISPER_MODEL;
+                await updateWhisperModel(localModel);
+                return;
+            }
+
+            if (provider === 'google-speech') {
+                const apiKey = (document.getElementById('sttGoogleApiKey')?.value || '').trim();
+                if (apiKey) {
+                    try {
+                        await invoke('store_api_key', { provider: 'voice_google', api_key: apiKey });
+                    } catch (error) {
+                        console.error('Failed to save Google Speech API key:', error);
+                    }
+                }
+                return;
+            }
+
+            if (provider === 'azure-speech') {
+                const apiKey = (document.getElementById('sttAzureApiKey')?.value || '').trim();
+                if (apiKey) {
+                    try {
+                        await invoke('store_api_key', { provider: 'voice_azure', api_key: apiKey });
+                    } catch (error) {
+                        console.error('Failed to save Azure Speech API key:', error);
+                    }
+                }
+                return;
+            }
+
+            try {
+                const config = await invoke('get_config');
+                config.voice = config.voice || {};
+                config.voice.provider = 'openai';
+                config.voice.openai_model = (document.getElementById('sttOpenAiModel')?.value || '').trim() || DEFAULT_OPENAI_STT_MODEL;
+                await invoke('save_config', { cfg: config });
+
+                const apiKey = (document.getElementById('sttApiKey')?.value || '').trim();
+                if (apiKey) {
+                    await invoke('store_api_key', { provider: 'voice_openai', api_key: apiKey });
+                }
+            } catch (error) {
+                console.error('Failed to save STT configuration:', error);
+            }
+        }
+
+        async function saveMicrophoneIfNeeded() {
+            const currentStepId = steps[currentStep]?.id;
+            if (currentStepId !== 'microphone') return;
+
+            const microphoneValue = document.getElementById('microphoneSelect')?.value || '';
+            await updateMicrophone(microphoneValue);
+        }
+
+        const DEFAULT_PRIVACY_SETTINGS = {
+            data_collection: false,
+            crash_reports: true,
+            voice_data_local: true,
+            require_auth: false,
+            auth_timeout: 15,
+        };
+
+        function normalizePrivacyAuthTimeout(value, fallback = DEFAULT_PRIVACY_SETTINGS.auth_timeout) {
+            const parsed = Number.parseInt(String(value ?? ''), 10);
+            if (!Number.isFinite(parsed)) return fallback;
+            if (parsed === 0) return 0;
+            return Math.min(120, Math.max(1, parsed));
+        }
+
+        function getPrivacySettingsFromDom() {
+            const rememberMode = document.getElementById('privacyAuthRememberMode')?.value === 'always' ? 'always' : 'timeout';
+            const authTimeoutRaw = normalizePrivacyAuthTimeout(
+                document.getElementById('privacyAuthTimeout')?.value,
+                DEFAULT_PRIVACY_SETTINGS.auth_timeout,
+            );
+            return {
+                data_collection: document.getElementById('privacyDataCollection')?.checked === true,
+                crash_reports: document.getElementById('privacyCrashReports')?.checked !== false,
+                voice_data_local: document.getElementById('privacyVoiceDataLocal')?.checked !== false,
+                require_auth: document.getElementById('privacyRequireAuth')?.checked === true,
+                auth_timeout: rememberMode === 'always' ? 0 : authTimeoutRaw,
+            };
+        }
+
+        function applyPrivacySettings(settings) {
+            const merged = { ...DEFAULT_PRIVACY_SETTINGS, ...(settings || {}) };
+            const dataCollection = document.getElementById('privacyDataCollection');
+            const crashReports = document.getElementById('privacyCrashReports');
+            const voiceDataLocal = document.getElementById('privacyVoiceDataLocal');
+            const requireAuth = document.getElementById('privacyRequireAuth');
+            const authRememberMode = document.getElementById('privacyAuthRememberMode');
+            const authTimeout = document.getElementById('privacyAuthTimeout');
+
+            if (dataCollection) dataCollection.checked = merged.data_collection === true;
+            if (crashReports) crashReports.checked = merged.crash_reports !== false;
+            if (voiceDataLocal) voiceDataLocal.checked = merged.voice_data_local !== false;
+            if (requireAuth) requireAuth.checked = merged.require_auth === true;
+            if (authRememberMode) authRememberMode.value = merged.auth_timeout === 0 ? 'always' : 'timeout';
+            if (authTimeout) {
+                authTimeout.value = String(
+                    merged.auth_timeout === 0
+                        ? DEFAULT_PRIVACY_SETTINGS.auth_timeout
+                        : normalizePrivacyAuthTimeout(merged.auth_timeout, DEFAULT_PRIVACY_SETTINGS.auth_timeout),
+                );
+            }
+
+            updatePrivacyAuthTimeoutState();
+        }
+
+        function updatePrivacyAuthTimeoutState() {
+            const rememberMode = document.getElementById('privacyAuthRememberMode')?.value === 'always' ? 'always' : 'timeout';
+            const authTimeout = document.getElementById('privacyAuthTimeout');
+            const authTimeoutSection = document.getElementById('privacyAuthTimeoutSection');
+            const shouldHideTimeout = rememberMode === 'always';
+            if (authTimeoutSection) authTimeoutSection.style.display = shouldHideTimeout ? 'none' : '';
+            if (authTimeout) authTimeout.disabled = shouldHideTimeout;
+        }
+
+        async function loadPrivacySettings() {
+            try {
+                const config = await invoke('get_config');
+                applyPrivacySettings(config?.privacy);
+            } catch (error) {
+                console.error('Failed to load privacy settings:', error);
+                applyPrivacySettings(DEFAULT_PRIVACY_SETTINGS);
+            }
+        }
+
+        async function savePrivacySettingsIfNeeded() {
+            const currentStepId = steps[currentStep]?.id;
+            if (currentStepId !== 'privacy') return;
+
+            try {
+                const config = await invoke('get_config');
+                config.privacy = {
+                    ...(config?.privacy || {}),
+                    ...getPrivacySettingsFromDom(),
+                };
+                await invoke('save_config', { cfg: config });
+            } catch (error) {
+                console.error('Failed to save privacy settings:', error);
+            }
+        }
+
+        async function loadSttConfig() {
+            try {
+                const config = await invoke('get_config');
+                const voiceConfig = config?.voice || {};
+                const provider = normalizePersistedSttProvider(voiceConfig.provider ?? voiceConfig.voice_provider);
+                const providerSelect = document.getElementById('sttProvider');
+                if (providerSelect) providerSelect.value = provider;
+
+                const localModel = extractFileName(voiceConfig.local_model_path) || DEFAULT_LOCAL_WHISPER_MODEL;
+                const openAiModel = (voiceConfig.openai_model || '').trim() || DEFAULT_OPENAI_STT_MODEL;
+
+                renderSttConfig({
+                    fetchModels: false,
+                    preferredModel: provider === 'openai-whisper' ? openAiModel : localModel,
+                });
+
+                if (provider === 'openai-whisper') {
+                    setSttSelectedModel(openAiModel);
+                    await fetchOpenAiSttModels();
+                }
+            } catch (error) {
+                console.error('Error loading STT config:', error);
+                const providerSelect = document.getElementById('sttProvider');
+                if (providerSelect) providerSelect.value = 'local-whisper';
+                renderSttConfig({ preferredModel: DEFAULT_LOCAL_WHISPER_MODEL });
+            }
+        }
+
+        function formatToolLabel(toolName) {
+            const labels = {
+                file: 'File Access',
+                shell: 'Shell Commands',
+                git: 'Git Operations',
+                code: 'Code Analysis',
+                web: 'Web Fetch',
+                web_search: 'Web Search',
+                task: 'Task Management',
+                screenshot: 'Screenshots',
+                screen_record: 'Screen Recording',
+                a2a: 'Agent-to-Agent',
+                permissions: 'Permissions',
+                mcp: 'MCP Tools',
+            };
+            return labels[toolName] || toolName.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+        }
+
+        function getOrderedBuiltinTools() {
+            const weight = new Map(TOOL_UI_ORDER.map((name, index) => [name, index]));
+            return (onboardingBuiltinTools || [])
+                .filter(tool => tool?.name && tool.name !== 'screen')
+                .sort((a, b) => {
+                    const aWeight = weight.has(a.name) ? weight.get(a.name) : Number.MAX_SAFE_INTEGER;
+                    const bWeight = weight.has(b.name) ? weight.get(b.name) : Number.MAX_SAFE_INTEGER;
+                    if (aWeight !== bWeight) return aWeight - bWeight;
+                    return formatToolLabel(a.name).localeCompare(formatToolLabel(b.name));
+                });
+        }
+
+        function getBuiltinToolGroups() {
+            const groups = TOOL_GROUP_DEFINITIONS.map(def => ({ ...def, tools: [] }));
+            const fallbackGroup = {
+                id: 'other',
+                label: 'Other',
+                summary: 'Other built-in capabilities available to the agent.',
+                tools: [],
+            };
+
+            getOrderedBuiltinTools().forEach(tool => {
+                const match = groups.find(group => group.matcher(tool.name));
+                if (match) match.tools.push(tool);
+                else fallbackGroup.tools.push(tool);
+            });
+
+            return [...groups.filter(group => group.tools.length > 0), ...(fallbackGroup.tools.length ? [fallbackGroup] : [])];
+        }
+
+        function getToolGroupState(group) {
+            const memberNames = (group?.tools || [])
+                .map(tool => tool?.name)
+                .filter(name => !!name && name !== 'screen');
+            const enabledCount = memberNames.filter(name => onboardingDefaultEnabledTools?.[name] === true).length;
+            return {
+                memberNames,
+                enabledCount,
+                totalCount: memberNames.length,
+                checked: memberNames.length > 0 && enabledCount === memberNames.length,
+                partial: enabledCount > 0 && enabledCount < memberNames.length,
+            };
+        }
+
+        function buildDefaultEnabledToolsPayload() {
+            const payload = { ...onboardingDefaultEnabledTools };
+            payload.screen = !!(payload.screen || payload.screenshot || payload.screen_record);
+            return payload;
+        }
+
+        function buildAllEnabledBuiltinToolsMap(tools) {
+            const enabledTools = {};
+            (Array.isArray(tools) ? tools : []).forEach(tool => {
+                if (!tool?.name || tool.name === 'screen') return;
+                enabledTools[tool.name] = true;
+            });
+            enabledTools.screen = !!(enabledTools.screenshot || enabledTools.screen_record);
+            return enabledTools;
+        }
+
+        function isLegacyOnboardingToolDefaultSet(enabledTools) {
+            const current = enabledTools || {};
+            const expected = {
+                file: true,
+                shell: true,
+                git: true,
+                code: true,
+                web: true,
+                web_search: true,
+                task: true,
+                screenshot: false,
+                screen_record: false,
+                a2a: false,
+                permissions: false,
+                mcp: false,
+            };
+
+            const keys = Object.keys(expected);
+            return keys.every(key => current[key] === expected[key]);
+        }
+
+        function renderDefaultToolsList() {
+            const container = document.getElementById('defaultToolsList');
+            if (!container) return;
+            container.innerHTML = '';
+
+            const groups = getBuiltinToolGroups();
+            if (!groups.length) {
+                container.innerHTML = '<div class="selection-empty-state">No built-in tools are available.</div>';
+                return;
+            }
+
+            groups.forEach(group => {
+                const state = getToolGroupState(group);
+                const card = document.createElement('div');
+                const membersPreview = group.tools.map(tool => formatToolLabel(tool.name)).join(', ');
+                const tooltip = `${group.label} — ${group.summary} Includes: ${membersPreview}`;
+                card.className = `tool-toggle-item${state.enabledCount ? '' : ' is-disabled'}`;
+                card.title = tooltip;
+
+                const info = document.createElement('div');
+                info.className = 'tool-toggle-main';
+
+                const title = document.createElement('span');
+                title.className = 'tool-toggle-name';
+                title.textContent = group.label;
+
+                const countBadge = document.createElement('span');
+                countBadge.className = 'selection-badge';
+                countBadge.textContent = `${state.enabledCount}/${state.totalCount}`;
+
+                const infoBadge = document.createElement('span');
+                infoBadge.className = 'tool-toggle-info';
+                infoBadge.textContent = 'i';
+                infoBadge.title = tooltip;
+                infoBadge.setAttribute('aria-label', tooltip);
+
+                info.appendChild(title);
+                info.appendChild(countBadge);
+                info.appendChild(infoBadge);
+
+                const toggleLabel = document.createElement('label');
+                toggleLabel.className = 'tool-toggle-switch';
+                toggleLabel.title = state.checked ? 'Disable as always available' : 'Enable as always available';
+                const checkbox = document.createElement('input');
+                checkbox.type = 'checkbox';
+                checkbox.checked = state.checked;
+                checkbox.indeterminate = state.partial;
+                checkbox.addEventListener('change', () => {
+                    void updateDefaultToolGroupEnabled(group.id, checkbox.checked);
+                });
+                toggleLabel.appendChild(checkbox);
+                toggleLabel.appendChild(document.createTextNode('Always available'));
+
+                card.appendChild(info);
+                card.appendChild(toggleLabel);
+                container.appendChild(card);
+            });
+
+            scheduleResizeToFit();
+        }
+
+        async function updateDefaultToolGroupEnabled(groupId, enabled) {
+            const group = getBuiltinToolGroups().find(entry => entry.id === groupId);
+            if (!group) return;
+
+            const previous = { ...onboardingDefaultEnabledTools };
+            (group.tools || []).forEach(tool => {
+                if (tool?.name && tool.name !== 'screen') {
+                    onboardingDefaultEnabledTools[tool.name] = enabled;
+                }
+            });
+            onboardingDefaultEnabledTools.screen = !!(onboardingDefaultEnabledTools.screenshot || onboardingDefaultEnabledTools.screen_record);
+            renderDefaultToolsList();
+
+            try {
+                await invoke('update_default_enabled_tools', {
+                    default_enabled_tools: buildDefaultEnabledToolsPayload(),
+                });
+            } catch (error) {
+                console.error('Failed to update default enabled tools:', error);
+                onboardingDefaultEnabledTools = previous;
+                renderDefaultToolsList();
+            }
+        }
+
+        async function loadDefaultToolsStep() {
+            const [tools, config] = await Promise.all([
+                invoke('list_builtin_tools'),
+                invoke('get_config'),
+            ]);
+            onboardingBuiltinTools = Array.isArray(tools) ? tools : [];
+            const persistedTools = { ...(config?.permissions?.default_enabled_tools || {}) };
+            const allEnabledTools = buildAllEnabledBuiltinToolsMap(onboardingBuiltinTools);
+            const useAllEnabledDefault = !Object.keys(persistedTools).length || isLegacyOnboardingToolDefaultSet(persistedTools);
+
+            onboardingDefaultEnabledTools = useAllEnabledDefault
+                ? allEnabledTools
+                : { ...allEnabledTools, ...persistedTools };
+
+            if (useAllEnabledDefault) {
+                try {
+                    await invoke('update_default_enabled_tools', {
+                        default_enabled_tools: buildDefaultEnabledToolsPayload(),
+                    });
+                } catch (error) {
+                    console.error('Failed to persist onboarding built-in tool defaults:', error);
+                }
+            }
+
+            renderDefaultToolsList();
+        }
+
+        function generateClientId(prefix) {
+            try {
+                if (window.crypto && window.crypto.randomUUID) {
+                    return `${prefix}_${window.crypto.randomUUID()}`;
+                }
+            } catch (_) {
+                // ignore
+            }
+            return `${prefix}_${Date.now()}_${Math.random().toString(16).slice(2)}`;
+        }
+
+        function getKnowledgeOrigin(item) {
+            return item?.metadata?.origin || 'user';
+        }
+
+        function deriveKnowledgeDisplayName(source) {
+            const value = String(source || '').trim();
+            if (!value) return 'Linked source';
+            try {
+                const url = new URL(value);
+                return url.hostname || value;
+            } catch (_) {
+                const parts = value.split(/[\\/]/).filter(Boolean);
+                return parts[parts.length - 1] || value;
+            }
+        }
+
+        function buildKnowledgeTriggers(name, notes, source) {
+            const parts = `${name || ''} ${notes || ''} ${source || ''}`
+                .toLowerCase()
+                .split(/[^a-z0-9._/-]+/)
+                .map(part => part.trim())
+                .filter(part => part.length >= 4 && !part.startsWith('http'));
+            return [...new Set(parts)].slice(0, 8);
+        }
+
+        async function ensureDefaultKnowledgeSessionId() {
+            if (!onboardingDefaultKnowledgeSessionId) {
+                onboardingDefaultKnowledgeSessionId = await invoke('knowledge_default_session_id');
+            }
+            return onboardingDefaultKnowledgeSessionId;
+        }
+
+        function setKnowledgeLinkStatus(message, kind = '') {
+            const statusEl = document.getElementById('knowledgeLinkStatus');
+            if (!statusEl) return;
+            statusEl.textContent = message || '';
+            statusEl.className = `inline-status${kind ? ` is-${kind}` : ''}`;
+        }
+
+        function normalizeKnowledgeSearchQuery(value) {
+            return String(value || '').trim().toLowerCase();
+        }
+
+        function getOrderedKnowledgeGroups() {
+            return SPECIALTY_KNOWLEDGE_GROUP_DEFINITIONS
+                .map(definition => {
+                    const items = [...new Map(
+                        (onboardingKnowledgeItems || [])
+                            .filter(item => definition.matcher(item))
+                            .sort((a, b) => (a.name || a.id || '').localeCompare(b.name || b.id || ''))
+                            .map(item => [item.id, item])
+                    ).values()];
+
+                    return {
+                        ...definition,
+                        items,
+                        enabledCount: items.filter(item => onboardingEnabledKnowledgeIds.has(item.id)).length,
+                    };
+                })
+                .filter(group => group.items.length > 0 || group.id === 'source');
+        }
+
+        function filterKnowledgeGroups(groups) {
+            const query = normalizeKnowledgeSearchQuery(onboardingKnowledgeSearchQuery);
+            if (!query) return groups;
+
+            const terms = query.split(/\s+/).filter(Boolean);
+            return groups.filter(group => {
+                const searchText = [
+                    group.label,
+                    group.summary,
+                    ...(group.searchTerms || []),
+                    ...group.items.flatMap(item => [
+                        item.id,
+                        item.name,
+                        item.description,
+                        item.category,
+                        ...(Array.isArray(item.triggers) ? item.triggers : []),
+                    ]),
+                ]
+                    .filter(Boolean)
+                    .join(' ')
+                    .toLowerCase();
+
+                return terms.every(term => searchText.includes(term));
+            });
+        }
+
+        function getKnowledgeCategoryLabel(categoryId) {
+            return KNOWLEDGE_CATEGORY_DEFINITIONS.find(category => category.id === categoryId)?.label || 'Other';
+        }
+
+        function warnIfKnowledgeSpecialtiesOverlap(groups) {
+            const ownership = new Map();
+            const overlaps = [];
+
+            groups.forEach(group => {
+                group.items.forEach(item => {
+                    if (!item?.id) return;
+                    const previousOwner = ownership.get(item.id);
+                    if (previousOwner && previousOwner !== group.id) {
+                        overlaps.push(`${item.id}: ${previousOwner} + ${group.id}`);
+                        return;
+                    }
+                    ownership.set(item.id, group.id);
+                });
+            });
+
+            if (overlaps.length) {
+                console.warn('[Onboarding] overlapping specialty knowledge modules detected:', overlaps);
+            }
+        }
+
+        function countSelectedKnowledgeOptions(groups) {
+            const selectedIds = new Set();
+            groups.forEach(group => {
+                group.items.forEach(item => {
+                    if (onboardingEnabledKnowledgeIds.has(item.id)) {
+                        selectedIds.add(item.id);
+                    }
+                });
+            });
+            return selectedIds.size;
+        }
+
+        function renderKnowledgeSearchSummary(allGroups, visibleGroups) {
+            const searchInput = document.getElementById('knowledgeGroupSearch');
+            if (searchInput && searchInput.value !== onboardingKnowledgeSearchQuery) {
+                searchInput.value = onboardingKnowledgeSearchQuery;
+            }
+
+            const summaryEl = document.getElementById('knowledgeSearchSummary');
+            if (!summaryEl) return;
+
+            const query = normalizeKnowledgeSearchQuery(onboardingKnowledgeSearchQuery);
+            const groupsForSummary = visibleGroups.length || !query ? visibleGroups : [];
+            const selectedCount = countSelectedKnowledgeOptions(groupsForSummary.length ? groupsForSummary : allGroups);
+            const selectedGroupCount = (groupsForSummary.length ? groupsForSummary : allGroups)
+                .filter(group => group.enabledCount > 0)
+                .length;
+
+            if (query) {
+                summaryEl.textContent = visibleGroups.length
+                    ? `Search: “${query}” • ${selectedCount} selected option${selectedCount === 1 ? '' : 's'} across ${selectedGroupCount} set${selectedGroupCount === 1 ? '' : 's'}.`
+                    : `Search: “${query}” • 0 matching specialty sets.`;
+                return;
+            }
+
+            summaryEl.textContent = `${selectedCount} selected option${selectedCount === 1 ? '' : 's'} across ${selectedGroupCount} specialty set${selectedGroupCount === 1 ? '' : 's'}.`;
+        }
+
+        function toggleKnowledgeLinkForm(forceExpanded = null) {
+            const form = document.getElementById('knowledgeLinkForm');
+            const button = document.getElementById('toggleKnowledgeLinkFormBtn');
+            const buttonRow = button?.closest('.knowledge-link-toggle-row');
+            onboardingKnowledgeLinkFormExpanded = typeof forceExpanded === 'boolean'
+                ? forceExpanded
+                : !onboardingKnowledgeLinkFormExpanded;
+
+            const shouldClearKnowledgeDetail = onboardingKnowledgeLinkFormExpanded && onboardingActiveKnowledgeGroupId;
+            if (shouldClearKnowledgeDetail) {
+                onboardingActiveKnowledgeGroupId = null;
+            }
+
+            if (form) form.style.display = onboardingKnowledgeLinkFormExpanded ? '' : 'none';
+            if (buttonRow) buttonRow.style.display = onboardingKnowledgeLinkFormExpanded ? 'none' : '';
+
+            if (shouldClearKnowledgeDetail) {
+                renderDefaultKnowledgeList();
+                return;
+            }
+
+            scheduleResizeToFit();
+        }
+
+        function renderKnowledgeDetailPanel(group) {
+            const panel = document.getElementById('defaultKnowledgeDetail');
+            if (!panel) return;
+
+            if (!group) {
+                panel.innerHTML = '';
+                panel.style.display = 'none';
+                scheduleResizeToFit();
+                return;
+            }
+
+            panel.style.display = '';
+            panel.className = 'knowledge-detail-panel';
+            panel.innerHTML = '';
+
+            const header = document.createElement('div');
+            header.className = 'knowledge-detail-header';
+
+            const headerInfo = document.createElement('div');
+            const title = document.createElement('div');
+            title.className = 'knowledge-detail-title';
+            title.textContent = group.label;
+
+            const subtitle = document.createElement('div');
+            subtitle.className = 'knowledge-detail-subtitle';
+            subtitle.textContent = `${group.enabledCount}/${group.items.length} enabled by default.`;
+
+            headerInfo.appendChild(title);
+            headerInfo.appendChild(subtitle);
+
+            const closeBtn = document.createElement('button');
+            closeBtn.type = 'button';
+            closeBtn.className = 'btn btn-secondary knowledge-panel-action-btn';
+            closeBtn.textContent = 'Hide details';
+            closeBtn.addEventListener('click', () => {
+                onboardingActiveKnowledgeGroupId = null;
+                renderDefaultKnowledgeList();
+            });
+
+            header.appendChild(headerInfo);
+            header.appendChild(closeBtn);
+            panel.appendChild(header);
+
+            const list = document.createElement('div');
+            list.className = 'knowledge-detail-list';
+
+            if (!group.items.length) {
+                list.innerHTML = '<div class="selection-empty-state">No knowledge options are available in this set yet. Use the linked-source form below to add your own reference.</div>';
+                panel.appendChild(list);
+                scheduleResizeToFit();
+                return;
+            }
+
+            [...group.items]
+                .sort((a, b) => {
+                    const aEnabled = onboardingEnabledKnowledgeIds.has(a.id) ? 0 : 1;
+                    const bEnabled = onboardingEnabledKnowledgeIds.has(b.id) ? 0 : 1;
+                    if (aEnabled !== bEnabled) return aEnabled - bEnabled;
+                    return (a.name || a.id || '').localeCompare(b.name || b.id || '');
+                })
+                .forEach(item => {
+                    const enabled = onboardingEnabledKnowledgeIds.has(item.id);
+                    const origin = getKnowledgeOrigin(item);
+                    const sourceLink = item?.metadata?.source_link || '';
+                    const tooltip = [item.name || item.id, item.description || 'No description available.', sourceLink ? `Source: ${sourceLink}` : '']
+                        .filter(Boolean)
+                        .join(' — ');
+
+                    const row = document.createElement('div');
+                    row.className = `knowledge-detail-item${enabled ? '' : ' is-disabled'}`;
+                    row.title = tooltip;
+
+                    const info = document.createElement('div');
+                    const name = document.createElement('div');
+                    name.className = 'knowledge-detail-name';
+                    name.textContent = item.name || item.id;
+
+                    const meta = document.createElement('div');
+                    meta.className = 'knowledge-detail-meta';
+                    meta.textContent = [origin, sourceLink ? 'linked source' : (item.category || 'knowledge')]
+                        .filter(Boolean)
+                        .join(' • ');
+
+                    info.appendChild(name);
+                    info.appendChild(meta);
+
+                    const toggleLabel = document.createElement('label');
+                    toggleLabel.className = 'selection-toggle';
+                    toggleLabel.title = enabled ? `Disable ${item.name || item.id} by default` : `Enable ${item.name || item.id} by default`;
+                    toggleLabel.setAttribute('aria-label', `Toggle ${item.name || item.id} default knowledge`);
+                    const checkbox = document.createElement('input');
+                    checkbox.type = 'checkbox';
+                    checkbox.checked = enabled;
+                    checkbox.addEventListener('change', () => {
+                        void updateKnowledgeEnabled(item.id, checkbox.checked);
+                    });
+                    toggleLabel.appendChild(checkbox);
+
+                    row.appendChild(info);
+                    row.appendChild(toggleLabel);
+                    list.appendChild(row);
+                });
+
+            panel.appendChild(list);
+            scheduleResizeToFit();
+        }
+
+        function renderDefaultKnowledgeList() {
+            const container = document.getElementById('defaultKnowledgeList');
+            if (!container) return;
+            container.innerHTML = '';
+
+            const groups = getOrderedKnowledgeGroups();
+            warnIfKnowledgeSpecialtiesOverlap(groups);
+            const visibleGroups = filterKnowledgeGroups(groups);
+            renderKnowledgeSearchSummary(groups, visibleGroups);
+
+            if (!groups.length) {
+                container.innerHTML = '<div class="selection-empty-state">No knowledge sources are available yet.</div>';
+                renderKnowledgeDetailPanel(null);
+                return;
+            }
+
+            if (!visibleGroups.length) {
+                container.innerHTML = '<div class="selection-empty-state">No specialty groups match your search yet. Try a broader term or add a linked source.</div>';
+                renderKnowledgeDetailPanel(null);
+                scheduleResizeToFit();
+                return;
+            }
+
+            [...visibleGroups]
+                .sort((a, b) => {
+                    const categoryOrder = KNOWLEDGE_CATEGORY_DEFINITIONS.findIndex(category => category.id === a.categoryId)
+                        - KNOWLEDGE_CATEGORY_DEFINITIONS.findIndex(category => category.id === b.categoryId);
+                    if (categoryOrder !== 0) return categoryOrder;
+                    return a.label.localeCompare(b.label);
+                })
+                .forEach(group => {
+                    const allEnabled = group.items.length > 0 && group.enabledCount === group.items.length;
+                    const partial = group.enabledCount > 0 && group.enabledCount < group.items.length;
+                    const categoryLabel = getKnowledgeCategoryLabel(group.categoryId);
+                    const tooltip = `${categoryLabel} · ${group.label} — ${group.summary} ${group.enabledCount} of ${group.items.length} enabled by default. Click the name to refine this set.`;
+
+                    const chip = document.createElement('div');
+                    chip.className = `knowledge-chip${group.enabledCount ? ' is-enabled' : ' is-disabled'}${group.id === onboardingActiveKnowledgeGroupId ? ' is-active' : ''}`;
+                    chip.title = tooltip;
+
+                    const chipButton = document.createElement('button');
+                    chipButton.type = 'button';
+                    chipButton.className = 'knowledge-chip-button';
+                    chipButton.title = tooltip;
+                    chipButton.setAttribute('aria-label', tooltip);
+                    chipButton.addEventListener('click', () => {
+                        const nextActiveGroupId = group.id === onboardingActiveKnowledgeGroupId ? null : group.id;
+                        if (nextActiveGroupId) {
+                            toggleKnowledgeLinkForm(false);
+                        }
+                        onboardingActiveKnowledgeGroupId = nextActiveGroupId;
+                        renderDefaultKnowledgeList();
+                    });
+
+                    const categoryBadge = document.createElement('span');
+                    categoryBadge.className = 'knowledge-chip-category';
+                    categoryBadge.textContent = categoryLabel;
+
+                    const chipLabel = document.createElement('span');
+                    chipLabel.className = 'knowledge-chip-label';
+                    chipLabel.textContent = group.label;
+
+                    const badge = document.createElement('span');
+                    badge.className = 'selection-badge';
+                    badge.textContent = `${group.enabledCount}/${group.items.length}`;
+
+                    chipButton.appendChild(categoryBadge);
+                    chipButton.appendChild(chipLabel);
+                    chipButton.appendChild(badge);
+
+                    const toggleLabel = document.createElement('label');
+                    toggleLabel.className = 'knowledge-chip-toggle';
+                    toggleLabel.title = allEnabled ? `Exclude ${group.label} from defaults` : `Include ${group.label} in defaults`;
+
+                    const checkbox = document.createElement('input');
+                    checkbox.type = 'checkbox';
+                    checkbox.checked = allEnabled;
+                    checkbox.indeterminate = partial;
+                    checkbox.disabled = group.items.length === 0;
+                    checkbox.setAttribute('aria-label', `Enable ${group.label} by default`);
+                    checkbox.addEventListener('change', () => {
+                        void updateKnowledgeGroupEnabled(group.id, checkbox.checked);
+                    });
+
+                    toggleLabel.appendChild(checkbox);
+                    chip.appendChild(chipButton);
+                    chip.appendChild(toggleLabel);
+                    container.appendChild(chip);
+                });
+
+            renderKnowledgeDetailPanel(visibleGroups.find(group => group.id === onboardingActiveKnowledgeGroupId) || null);
+            scheduleResizeToFit();
+        }
+
+        async function updateKnowledgeEnabled(knowledgeId, enabled) {
+            const previous = new Set(onboardingEnabledKnowledgeIds);
+            if (enabled) onboardingEnabledKnowledgeIds.add(knowledgeId);
+            else onboardingEnabledKnowledgeIds.delete(knowledgeId);
+            renderDefaultKnowledgeList();
+
+            try {
+                const sessionId = await ensureDefaultKnowledgeSessionId();
+                await invoke('set_knowledge_enabled', {
+                    session_id: sessionId,
+                    knowledge_id: knowledgeId,
+                    enabled,
+                });
+            } catch (error) {
+                console.error('Failed to update default knowledge selection:', error);
+                onboardingEnabledKnowledgeIds = previous;
+                renderDefaultKnowledgeList();
+            }
+        }
+
+        async function updateKnowledgeGroupEnabled(groupId, enabled) {
+            const group = getOrderedKnowledgeGroups().find(entry => entry.id === groupId);
+            if (!group || !group.items.length) return;
+
+            const previous = new Set(onboardingEnabledKnowledgeIds);
+            group.items.forEach(item => {
+                if (enabled) onboardingEnabledKnowledgeIds.add(item.id);
+                else onboardingEnabledKnowledgeIds.delete(item.id);
+            });
+            renderDefaultKnowledgeList();
+
+            try {
+                const sessionId = await ensureDefaultKnowledgeSessionId();
+                await Promise.all(group.items.map(item => invoke('set_knowledge_enabled', {
+                    session_id: sessionId,
+                    knowledge_id: item.id,
+                    enabled,
+                })));
+            } catch (error) {
+                console.error('Failed to update default knowledge group selection:', error);
+                onboardingEnabledKnowledgeIds = previous;
+                renderDefaultKnowledgeList();
+            }
+        }
+
+        async function loadDefaultKnowledgeStep() {
+            const sessionId = await ensureDefaultKnowledgeSessionId();
+            const [items, enabledIds] = await Promise.all([
+                invoke('list_knowledge_items'),
+                invoke('get_enabled_knowledge', { session_id: sessionId }),
+            ]);
+            onboardingKnowledgeItems = Array.isArray(items) ? items : [];
+            onboardingEnabledKnowledgeIds = new Set(enabledIds || []);
+            const groups = getOrderedKnowledgeGroups();
+            if (!groups.some(group => group.id === onboardingActiveKnowledgeGroupId)) {
+                onboardingActiveKnowledgeGroupId = null;
+            }
+            toggleKnowledgeLinkForm(false);
+            renderDefaultKnowledgeList();
+        }
+
+        async function addLinkedKnowledgeSource() {
+            const nameInput = document.getElementById('knowledgeLinkName');
+            const sourceInput = document.getElementById('knowledgeLinkSource');
+            const notesInput = document.getElementById('knowledgeLinkNotes');
+            const source = (sourceInput?.value || '').trim();
+            const notes = (notesInput?.value || '').trim();
+            const name = (nameInput?.value || '').trim() || deriveKnowledgeDisplayName(source);
+
+            if (!source) {
+                setKnowledgeLinkStatus('Enter a URL or local path to link a knowledge source.', 'error');
+                return;
+            }
+
+            const sourceKind = /^https?:\/\//i.test(source) ? 'url' : 'path';
+            const linkedItem = {
+                id: generateClientId('knowledge_link'),
+                name,
+                description: notes || `Linked ${sourceKind} source available to every new session by default.`,
+                triggers: buildKnowledgeTriggers(name, notes, source),
+                category: 'source',
+                core_content: [
+                    `Default linked knowledge source: ${source}`,
+                    sourceKind === 'url'
+                        ? 'Use the web tool to fetch this source when it is relevant to the task.'
+                        : 'Use the file tool to inspect this path when it is relevant to the task.',
+                    notes ? `User notes: ${notes}` : '',
+                ].filter(Boolean).join('\n\n'),
+                references: [],
+                metadata: {
+                    origin: 'user',
+                    linked_source: 'true',
+                    source_link: source,
+                    source_kind: sourceKind,
+                },
+                enabled: true,
+                priority: 50,
+            };
+
+            try {
+                await invoke('upsert_knowledge_item', { item: linkedItem });
+                const sessionId = await ensureDefaultKnowledgeSessionId();
+                await invoke('set_knowledge_enabled', {
+                    session_id: sessionId,
+                    knowledge_id: linkedItem.id,
+                    enabled: true,
+                });
+                if (nameInput) nameInput.value = '';
+                if (sourceInput) sourceInput.value = '';
+                if (notesInput) notesInput.value = '';
+                onboardingActiveKnowledgeGroupId = 'source';
+                onboardingKnowledgeSearchQuery = '';
+                await loadDefaultKnowledgeStep();
+                toggleKnowledgeLinkForm(true);
+                setKnowledgeLinkStatus('Linked knowledge source added and enabled by default.', 'success');
+            } catch (error) {
+                console.error('Failed to add linked knowledge source:', error);
+                setKnowledgeLinkStatus(`Failed to add linked source: ${error}`, 'error');
             }
         }
 
@@ -1916,19 +4067,10 @@
             }
         }
 
-        // Debounce timer for URL input changes
-        let _ollamaRefreshTimer = null;
-
-        /// Debounced refresh: waits 500ms after the user stops typing in the URL field.
-        function refreshOllamaModels() {
-            clearTimeout(_ollamaRefreshTimer);
-            _ollamaRefreshTimer = setTimeout(() => void fetchOllamaModels(), 500);
-        }
-
         /// Fetch models from the Ollama endpoint and populate the model dropdown.
         /// Falls back to a manual text input if the server is unreachable.
         async function fetchOllamaModels() {
-            const endpoint = (document.getElementById('ollamaUrl')?.value || '').trim() || 'http://localhost:11434';
+            const endpoint = onboardingOllamaEndpoint || DEFAULT_OLLAMA_BASE_URL;
             const container = document.getElementById('ollamaModelContainer');
             const status = document.getElementById('ollamaStatus');
             const section = document.getElementById('ollamaModelSection');
@@ -2099,10 +4241,6 @@
             let html = '';
             if (provider === 'ollama') {
                 html = `
-                    <div class="config-section">
-                        <label for="ollamaUrl">Ollama URL</label>
-                        <input type="text" id="ollamaUrl" class="onb-input" value="http://localhost:11434">
-                    </div>
                     <div id="ollamaModelSection" class="config-section" style="margin-top:0.75rem; display:none;">
                         <label for="ollamaModel">Model</label>
                         <div id="ollamaModelContainer">
@@ -2143,11 +4281,6 @@
                 html = `<p style="font-size:0.85rem;color:var(--text-secondary);">No additional configuration UI is available for this provider.</p>`;
             }
             container.innerHTML = html;
-
-            // Attach programmatic listeners for dynamic content (CSP-safe).
-            if (provider === 'ollama') {
-                document.getElementById('ollamaUrl')?.addEventListener('input', () => refreshOllamaModels());
-            }
 
             // Async placeholder hydration (key existence) without blocking UI render.
             // Also trigger model fetch for cloud providers (uses keychain key if available).
@@ -2207,27 +4340,6 @@
             }
         }
 
-        // Load voice model config from saved settings
-        async function loadVoiceModelConfig() {
-            try {
-                const config = await invoke('get_config');
-                const modelPath = config?.voice?.local_model_path || '';
-                const select = document.getElementById('whisperModel');
-                if (select && modelPath) {
-                    // Extract filename from path
-                    const filename = modelPath.split('/').pop();
-                    const options = select.querySelectorAll('option');
-                    options.forEach(opt => {
-                        if (opt.value === filename) {
-                            opt.selected = true;
-                        }
-                    });
-                }
-            } catch (error) {
-                console.error('Error loading voice model config:', error);
-            }
-        }
-
         // Load LLM config from saved settings and render
         async function loadLLMConfig() {
             try {
@@ -2252,9 +4364,7 @@
 
                 // Populate Ollama fields if applicable.
                 if (llmPrimary === 'ollama' && ollamaConfig) {
-                    // Set the URL first so the model fetch uses the saved endpoint.
-                    const urlInput = document.getElementById('ollamaUrl');
-                    if (urlInput && ollamaConfig.base_url) urlInput.value = ollamaConfig.base_url;
+                    onboardingOllamaEndpoint = (ollamaConfig.base_url || '').trim() || DEFAULT_OLLAMA_BASE_URL;
 
                     // Fetch models from the saved endpoint, then select the saved
                     // model.  The model element may be a <select> (if Ollama
@@ -2286,6 +4396,8 @@
                             if (firstReal) modelEl.value = firstReal.value;
                         }
                     }
+                } else if (llmPrimary === 'ollama') {
+                    onboardingOllamaEndpoint = DEFAULT_OLLAMA_BASE_URL;
                 }
 
                 if (llmPrimary === 'openai' || llmPrimary === 'anthropic' || llmPrimary === 'gemini' || llmPrimary === 'grok') {

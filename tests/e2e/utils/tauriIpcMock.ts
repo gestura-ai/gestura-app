@@ -34,6 +34,13 @@ export async function installTauriIpcMock(page: Page): Promise<void> {
         openai: { api_key: '', base_url: '', model: 'gpt-4o-mini' },
       },
       ui: { theme_mode: 'system', accent: 'blue' },
+      privacy: {
+        data_collection: false,
+        crash_reports: true,
+        voice_data_local: true,
+        require_auth: false,
+        auth_timeout: 15,
+      },
       mcp_servers: [],
       mdh_pointers: {},
       nats_url: 'nats://127.0.0.1:4222',

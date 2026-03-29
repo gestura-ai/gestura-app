@@ -6,6 +6,14 @@ export interface UiSettings {
   accent?: string;
 }
 
+export interface PrivacySettings {
+  data_collection: boolean;
+  crash_reports: boolean;
+  voice_data_local: boolean;
+  require_auth: boolean;
+  auth_timeout: number;
+}
+
 export interface VoiceSettings {
   provider: string;
   input_path?: string;
@@ -160,6 +168,7 @@ export interface AppConfig {
   voice: VoiceSettings;
   llm: LlmSettings;
   ui: UiSettings;
+  privacy: PrivacySettings;
   mcp_servers: McpServerEntry[];
   mdh_pointers: Record<string, string>;
   nats_url: string;

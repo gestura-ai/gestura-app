@@ -1164,6 +1164,11 @@ mod tests {
         assert_eq!(c.hotkey_listen, "Ctrl+Space");
         assert_eq!(c.grace_period_secs, 30);
         assert_eq!(c.llm.primary, "anthropic");
+        assert!(!c.privacy.data_collection);
+        assert!(c.privacy.crash_reports);
+        assert!(c.privacy.voice_data_local);
+        assert!(!c.privacy.require_auth);
+        assert_eq!(c.privacy.auth_timeout, 15);
         // Clean-config: no pre-populated fallback or provider blocks in defaults;
         // optional fields are None until the user explicitly configures them.
         assert_eq!(c.llm.fallback, None);
@@ -1192,6 +1197,7 @@ mod tests {
             c.get("pipeline.agent_telemetry.trace_export.protocol"),
             Some("grpc".to_string())
         );
+        assert_eq!(c.get("privacy.crash_reports"), Some("true".to_string()));
         assert_eq!(c.get("unknown.key"), None);
     }
 
@@ -1230,6 +1236,22 @@ mod tests {
             config.pipeline.agent_telemetry.trace_export.protocol,
             AgentTelemetryTraceExportProtocol::Grpc
         );
+    }
+
+    #[test]
+    fn test_backward_compatibility_without_privacy_settings() {
+        let default_config = AppConfig::default();
+        let mut json_value: serde_json::Value = serde_json::to_value(&default_config).unwrap();
+
+        json_value.as_object_mut().unwrap().remove("privacy");
+
+        let config: AppConfig = serde_json::from_value(json_value).unwrap();
+
+        assert!(!config.privacy.data_collection);
+        assert!(config.privacy.crash_reports);
+        assert!(config.privacy.voice_data_local);
+        assert!(!config.privacy.require_auth);
+        assert_eq!(config.privacy.auth_timeout, 15);
     }
 
     #[test]

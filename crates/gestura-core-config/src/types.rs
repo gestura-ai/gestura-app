@@ -472,6 +472,9 @@ pub struct AppConfig {
     /// UI preferences (theme, accent)
     #[serde(default, skip_serializing_if = "is_default")]
     pub ui: UiSettings,
+    /// Privacy and data-handling preferences shared by onboarding and settings.
+    #[serde(default, skip_serializing_if = "is_default")]
+    pub privacy: PrivacySettings,
     /// NATS URL for embedded MQ connectivity.
     #[serde(
         default = "default_nats_url",
@@ -565,6 +568,44 @@ impl Default for UiSettings {
             theme_mode: default_ui_theme_mode(),
             accent: None,
         }
+    }
+}
+
+/// Privacy and data-handling preferences for the local app experience.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct PrivacySettings {
+    /// Allow anonymous usage analytics to improve the product.
+    pub data_collection: bool,
+    /// Send crash reports after failures.
+    pub crash_reports: bool,
+    /// Prefer keeping voice-processing data local when available.
+    pub voice_data_local: bool,
+    /// Require explicit auth/confirmation before sensitive commands.
+    pub require_auth: bool,
+    /// Minutes to remember a recent sensitive-command authentication.
+    ///
+    /// A value of `0` means "always remember" until the user explicitly changes it.
+    pub auth_timeout: u32,
+}
+
+impl Default for PrivacySettings {
+    fn default() -> Self {
+        Self {
+            data_collection: false,
+            crash_reports: true,
+            voice_data_local: true,
+            require_auth: false,
+            auth_timeout: 15,
+        }
+    }
+}
+
+fn normalize_privacy_auth_timeout(minutes: u32) -> u32 {
+    if minutes == 0 {
+        0
+    } else {
+        minutes.clamp(1, 120)
     }
 }
 
@@ -919,6 +960,7 @@ impl Default for AppConfig {
             mcp_servers: vec![],
             mdh_pointers: Default::default(),
             ui: UiSettings::default(),
+            privacy: PrivacySettings::default(),
             nats_url: default_nats_url(),
             developer: DeveloperSettings::default(),
             notifications: NotificationSettings::default(),
@@ -1091,6 +1133,13 @@ impl AppConfig {
             "ui.theme_mode" => Some(self.ui.theme_mode.clone()),
             "ui.accent" => self.ui.accent.clone(),
 
+            // Privacy settings
+            "privacy.data_collection" => Some(self.privacy.data_collection.to_string()),
+            "privacy.crash_reports" => Some(self.privacy.crash_reports.to_string()),
+            "privacy.voice_data_local" => Some(self.privacy.voice_data_local.to_string()),
+            "privacy.require_auth" => Some(self.privacy.require_auth.to_string()),
+            "privacy.auth_timeout" => Some(self.privacy.auth_timeout.to_string()),
+
             // Pipeline settings
             "pipeline.max_history_messages" => Some(self.pipeline.max_history_messages.to_string()),
             "pipeline.iteration_budget_enabled" => {
@@ -1181,6 +1230,11 @@ impl AppConfig {
             "voice.audio_device",
             "ui.theme_mode",
             "ui.accent",
+            "privacy.data_collection",
+            "privacy.crash_reports",
+            "privacy.voice_data_local",
+            "privacy.require_auth",
+            "privacy.auth_timeout",
             "pipeline.max_history_messages",
             "pipeline.iteration_budget_enabled",
             "pipeline.max_iterations",
@@ -1223,8 +1277,10 @@ impl AppConfig {
                 self.update_ollama_config(&base_url, value).is_ok()
             }
             "llm.openai.base_url" => {
-                self.llm.openai.get_or_insert_with(OpenAiConfig::default).base_url =
-                    Some(value.to_string());
+                self.llm
+                    .openai
+                    .get_or_insert_with(OpenAiConfig::default)
+                    .base_url = Some(value.to_string());
                 true
             }
             "llm.anthropic.base_url" => {
@@ -1235,13 +1291,17 @@ impl AppConfig {
                 true
             }
             "llm.grok.base_url" => {
-                self.llm.grok.get_or_insert_with(GrokConfig::default).base_url =
-                    Some(value.to_string());
+                self.llm
+                    .grok
+                    .get_or_insert_with(GrokConfig::default)
+                    .base_url = Some(value.to_string());
                 true
             }
             "llm.gemini.base_url" => {
-                self.llm.gemini.get_or_insert_with(GeminiConfig::default).base_url =
-                    Some(value.to_string());
+                self.llm
+                    .gemini
+                    .get_or_insert_with(GeminiConfig::default)
+                    .base_url = Some(value.to_string());
                 true
             }
             "llm.ollama.base_url" => {
@@ -1254,8 +1314,10 @@ impl AppConfig {
                 self.update_ollama_config(value, &model).is_ok()
             }
             "llm.openai.api_key" => {
-                self.llm.openai.get_or_insert_with(OpenAiConfig::default).api_key =
-                    value.to_string();
+                self.llm
+                    .openai
+                    .get_or_insert_with(OpenAiConfig::default)
+                    .api_key = value.to_string();
                 true
             }
             "llm.anthropic.api_key" => {
@@ -1266,13 +1328,17 @@ impl AppConfig {
                 true
             }
             "llm.grok.api_key" => {
-                self.llm.grok.get_or_insert_with(GrokConfig::default).api_key =
-                    value.to_string();
+                self.llm
+                    .grok
+                    .get_or_insert_with(GrokConfig::default)
+                    .api_key = value.to_string();
                 true
             }
             "llm.gemini.api_key" => {
-                self.llm.gemini.get_or_insert_with(GeminiConfig::default).api_key =
-                    value.to_string();
+                self.llm
+                    .gemini
+                    .get_or_insert_with(GeminiConfig::default)
+                    .api_key = value.to_string();
                 true
             }
             "voice.provider" => {
@@ -1303,11 +1369,34 @@ impl AppConfig {
                 self.ui.accent = Some(value.to_string());
                 true
             }
+            "privacy.data_collection" => value
+                .parse::<bool>()
+                .map(|v| self.privacy.data_collection = v)
+                .is_ok(),
+            "privacy.crash_reports" => value
+                .parse::<bool>()
+                .map(|v| self.privacy.crash_reports = v)
+                .is_ok(),
+            "privacy.voice_data_local" => value
+                .parse::<bool>()
+                .map(|v| self.privacy.voice_data_local = v)
+                .is_ok(),
+            "privacy.require_auth" => value
+                .parse::<bool>()
+                .map(|v| self.privacy.require_auth = v)
+                .is_ok(),
+            "privacy.auth_timeout" => value
+                .parse::<u32>()
+                .map(|v| self.privacy.auth_timeout = normalize_privacy_auth_timeout(v))
+                .is_ok(),
             "hotkey_listen" => {
                 self.hotkey_listen = value.to_string();
                 true
             }
-            "grace_period_secs" => value.parse::<u32>().map(|v| self.grace_period_secs = v).is_ok(),
+            "grace_period_secs" => value
+                .parse::<u32>()
+                .map(|v| self.grace_period_secs = v)
+                .is_ok(),
             "nats_url" => {
                 self.nats_url = value.to_string();
                 true
@@ -1438,7 +1527,10 @@ impl AppConfig {
 
     /// Update the primary LLM provider and ensure its config block exists.
     pub fn update_llm_provider(&mut self, provider: &str) -> Result<()> {
-        if !matches!(provider, "openai" | "anthropic" | "grok" | "gemini" | "ollama") {
+        if !matches!(
+            provider,
+            "openai" | "anthropic" | "grok" | "gemini" | "ollama"
+        ) {
             return Err(AppError::Config(format!("Unknown provider: {provider}")));
         }
 
@@ -1450,7 +1542,9 @@ impl AppConfig {
     /// Update the model for a specific LLM provider.
     pub fn update_provider_model(&mut self, provider: &str, model: &str) -> Result<()> {
         if model.trim().is_empty() {
-            return Err(AppError::InvalidInput("Model name cannot be empty".to_string()));
+            return Err(AppError::InvalidInput(
+                "Model name cannot be empty".to_string(),
+            ));
         }
 
         self.llm.ensure_provider_config(provider);
@@ -1581,7 +1675,11 @@ impl AppConfig {
 
     /// Remove an MCP server entry by name.
     pub fn remove_mcp_server(&mut self, name: &str) -> Result<McpServerEntry> {
-        let Some(index) = self.mcp_servers.iter().position(|server| server.name == name) else {
+        let Some(index) = self
+            .mcp_servers
+            .iter()
+            .position(|server| server.name == name)
+        else {
             return Err(AppError::NotFound(format!("MCP server '{name}'")));
         };
         Ok(self.mcp_servers.remove(index))
@@ -1722,6 +1820,25 @@ impl AppConfig {
         }
         if let Some(v) = get_env("UI_ACCENT") {
             self.ui.accent = Some(v);
+        }
+
+        // Privacy settings
+        if let Some(v) = get_env_bool("PRIVACY_DATA_COLLECTION") {
+            self.privacy.data_collection = v;
+        }
+        if let Some(v) = get_env_bool("PRIVACY_CRASH_REPORTS") {
+            self.privacy.crash_reports = v;
+        }
+        if let Some(v) = get_env_bool("PRIVACY_VOICE_DATA_LOCAL") {
+            self.privacy.voice_data_local = v;
+        }
+        if let Some(v) = get_env_bool("PRIVACY_REQUIRE_AUTH") {
+            self.privacy.require_auth = v;
+        }
+        if let Some(v) = get_env("PRIVACY_AUTH_TIMEOUT")
+            && let Ok(minutes) = v.parse::<u32>()
+        {
+            self.privacy.auth_timeout = normalize_privacy_auth_timeout(minutes);
         }
 
         // Pipeline telemetry settings
@@ -1900,7 +2017,10 @@ mod tests {
 
         assert!(config.set("llm.primary", "openai"));
         assert_eq!(config.llm.primary, "openai");
-        assert_eq!(config.llm.openai.as_ref().map(|cfg| cfg.model.as_str()), Some(DEFAULT_OPENAI_MODEL));
+        assert_eq!(
+            config.llm.openai.as_ref().map(|cfg| cfg.model.as_str()),
+            Some(DEFAULT_OPENAI_MODEL)
+        );
     }
 
     #[test]
@@ -1942,16 +2062,35 @@ mod tests {
             ..McpServerEntry::default()
         };
 
-        config.add_mcp_server_entry(entry.clone()).expect("add server");
+        config
+            .add_mcp_server_entry(entry.clone())
+            .expect("add server");
         assert!(config.add_mcp_server_entry(entry).is_err());
 
         config
             .set_mcp_server_enabled("demo", false)
             .expect("disable server");
-        assert_eq!(config.find_mcp_server("demo").map(|server| server.enabled), Some(false));
+        assert_eq!(
+            config.find_mcp_server("demo").map(|server| server.enabled),
+            Some(false)
+        );
 
         let removed = config.remove_mcp_server("demo").expect("remove server");
         assert_eq!(removed.name, "demo");
         assert!(config.find_mcp_server("demo").is_none());
+    }
+
+    #[test]
+    fn privacy_auth_timeout_allows_always_remember_and_clamps_positive_values() {
+        let mut config = AppConfig::default();
+
+        assert!(config.set("privacy.auth_timeout", "0"));
+        assert_eq!(config.privacy.auth_timeout, 0);
+
+        assert!(config.set("privacy.auth_timeout", "240"));
+        assert_eq!(config.privacy.auth_timeout, 120);
+
+        assert!(config.set("privacy.auth_timeout", "7"));
+        assert_eq!(config.privacy.auth_timeout, 7);
     }
 }

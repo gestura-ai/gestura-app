@@ -47,6 +47,13 @@ const defaultConfig = (): AppConfig => ({
     theme_mode: 'system',
     accent: 'blue',
   },
+  privacy: {
+    data_collection: false,
+    crash_reports: true,
+    voice_data_local: true,
+    require_auth: false,
+    auth_timeout: 15,
+  },
   mcp_servers: [],
   mdh_pointers: {},
   nats_url: 'nats://127.0.0.1:4223',
@@ -109,6 +116,10 @@ const normalizeConfig = (raw: PartialConfig): AppConfig => {
     ui: {
       ...defaults.ui,
       ...(raw.ui ?? {}),
+    },
+    privacy: {
+      ...defaults.privacy,
+      ...(raw.privacy ?? {}),
     },
     developer: {
       ...defaults.developer,

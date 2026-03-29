@@ -322,7 +322,7 @@ fn build_tray_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
     let open_agent_project = MenuItem::with_id(
         app,
         "open_agent_project",
-        "Open Agent Project",
+        "Open Agent",
         app_configured,
         Option::<&str>::None,
     )?;

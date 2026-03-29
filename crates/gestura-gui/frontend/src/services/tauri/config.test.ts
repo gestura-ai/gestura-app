@@ -15,6 +15,13 @@ const makeConfig = (): AppConfig => ({
   voice: { provider: 'local' },
   llm: { primary: 'openai' },
   ui: { theme_mode: 'dark' },
+  privacy: {
+    data_collection: false,
+    crash_reports: true,
+    voice_data_local: true,
+    require_auth: false,
+    auth_timeout: 15,
+  },
   mcp_servers: [],
   mdh_pointers: {},
   nats_url: 'nats://127.0.0.1:4222',
@@ -85,6 +92,13 @@ describe('config IPC wrappers', () => {
     });
 
     await expect(getConfig()).resolves.toMatchObject({
+      privacy: {
+        data_collection: false,
+        crash_reports: true,
+        voice_data_local: true,
+        require_auth: false,
+        auth_timeout: 15,
+      },
       ui: { theme_mode: 'system', accent: 'blue' },
       developer: {
         developer_mode: false,
@@ -113,6 +127,19 @@ describe('config IPC wrappers', () => {
 
     await saveConfig(cfg);
     expect(mock).toHaveBeenCalledWith('save_config', { cfg });
+  });
+
+  it('getConfig preserves auth_timeout=0 for always remember', async () => {
+    const mock = vi.mocked(invokeTauri);
+    const cfg = makeConfig();
+    cfg.privacy.auth_timeout = 0;
+    mock.mockResolvedValueOnce(cfg);
+
+    await expect(getConfig()).resolves.toMatchObject({
+      privacy: {
+        auth_timeout: 0,
+      },
+    });
   });
 
   it('saveConfig normalizes legacy compaction strategies before IPC', async () => {

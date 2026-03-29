@@ -3357,7 +3357,17 @@
                         </div>
 
                         <div class="form-group">
-                            <label class="form-label" for="authTimeout">Authentication timeout (minutes)</label>
+                            <label class="form-label" for="authRememberMode">Remember authentication</label>
+                            <select class="form-input" id="authRememberMode" name="auth_remember_mode">
+                                <option value="timeout">Ask again after a time</option>
+                                <option value="always">Always remember</option>
+                            </select>
+                            <div class="help-text">Choose whether Gestura should re-prompt after a delay or keep the
+                                approval remembered.</div>
+                        </div>
+
+                        <div class="form-group" id="authTimeoutGroup">
+                            <label class="form-label" for="authTimeout">Ask again after (minutes)</label>
                             <input type="number" class="form-input" id="authTimeout" name="auth_timeout" value="15"
                                 min="1" max="120">
                             <div class="help-text">How long to remember authentication before asking again</div>
@@ -5317,6 +5327,23 @@
             }
         }
 
+        function normalizePrivacyAuthTimeout(value, fallback = 15) {
+            const parsed = Number.parseInt(String(value ?? ''), 10);
+            if (!Number.isFinite(parsed)) return fallback;
+            if (parsed === 0) return 0;
+            return Math.min(120, Math.max(1, parsed));
+        }
+
+        function updatePrivacyAuthTimeoutControls() {
+            const rememberMode = document.getElementById('authRememberMode')?.value === 'always' ? 'always' : 'timeout';
+            const authTimeoutEl = document.getElementById('authTimeout');
+            const authTimeoutGroupEl = document.getElementById('authTimeoutGroup');
+            const shouldHideTimeout = rememberMode === 'always';
+
+            if (authTimeoutGroupEl) authTimeoutGroupEl.style.display = shouldHideTimeout ? 'none' : '';
+            if (authTimeoutEl) authTimeoutEl.disabled = shouldHideTimeout;
+        }
+
         async function loadConfig() {
             try {
                 // Reset API key sync flags before loading config
@@ -5526,11 +5553,16 @@
                 document.getElementById('mdhTimeout').value = 10000;
 
                 // Security defaults
-                document.getElementById('dataCollection').checked = false;
-                document.getElementById('crashReports').checked = true;
-                document.getElementById('voiceDataLocal').checked = true;
-                document.getElementById('requireAuth').checked = false;
-                document.getElementById('authTimeout').value = 15;
+                const privacyConfig = backendConfig?.privacy || {};
+                document.getElementById('dataCollection').checked = privacyConfig.data_collection === true;
+                document.getElementById('crashReports').checked = privacyConfig.crash_reports !== false;
+                document.getElementById('voiceDataLocal').checked = privacyConfig.voice_data_local !== false;
+                document.getElementById('requireAuth').checked = privacyConfig.require_auth === true;
+                document.getElementById('authRememberMode').value = privacyConfig.auth_timeout === 0 ? 'always' : 'timeout';
+                document.getElementById('authTimeout').value = privacyConfig.auth_timeout === 0
+                    ? 15
+                    : normalizePrivacyAuthTimeout(privacyConfig.auth_timeout, 15);
+                updatePrivacyAuthTimeoutControls();
 
                 // System defaults
                 document.getElementById('exitConfirmation').checked = true;
@@ -5981,6 +6013,15 @@
                         ...prevEnabled,
                         ...computeDefaultEnabledToolsFromUi(),
                     };
+
+                    currentConfig.privacy = currentConfig.privacy || {};
+                    currentConfig.privacy.data_collection = document.getElementById('dataCollection')?.checked === true;
+                    currentConfig.privacy.crash_reports = document.getElementById('crashReports')?.checked !== false;
+                    currentConfig.privacy.voice_data_local = document.getElementById('voiceDataLocal')?.checked !== false;
+                    currentConfig.privacy.require_auth = document.getElementById('requireAuth')?.checked === true;
+                    const rememberMode = document.getElementById('authRememberMode')?.value === 'always' ? 'always' : 'timeout';
+                    const authTimeoutMinutes = normalizePrivacyAuthTimeout(document.getElementById('authTimeout')?.value, 15);
+                    currentConfig.privacy.auth_timeout = rememberMode === 'always' ? 0 : authTimeoutMinutes;
 
                     currentConfig.pipeline = currentConfig.pipeline || {};
                     currentConfig.pipeline.agent_telemetry = currentConfig.pipeline.agent_telemetry || {};
@@ -7680,6 +7721,7 @@
             attachLlmModelSelectionListeners();
             setupProviderSelection();
             setupWebSearchProviderVisibility();
+            document.getElementById('authRememberMode')?.addEventListener('change', updatePrivacyAuthTimeoutControls);
 
             // Show loading states immediately for all model dropdowns
             const modelDropdowns = [

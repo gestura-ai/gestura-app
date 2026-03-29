@@ -1230,7 +1230,11 @@ fn materialize_requirement_breakdown_tasks(
         }
     }
 
-    let root_id_set = breakdown.root_task_ids.iter().cloned().collect::<std::collections::HashSet<_>>();
+    let root_id_set = breakdown
+        .root_task_ids
+        .iter()
+        .cloned()
+        .collect::<std::collections::HashSet<_>>();
     let created_task_ids = breakdown
         .created_tasks
         .iter()
@@ -1305,7 +1309,9 @@ async fn auto_plan_agent_request(
     let _ = crate::task_integration::mark_task_in_progress(app, session_id, &planning_task.id);
 
     let generated_tasks = match generate_requirement_breakdown(session_id, message).await {
-        Ok(task_specs) => materialize_requirement_breakdown_tasks(Some(app), session_id, &task_specs)?,
+        Ok(task_specs) => {
+            materialize_requirement_breakdown_tasks(Some(app), session_id, &task_specs)?
+        }
         Err(error) => {
             tracing::warn!(session_id = %session_id, error = %error, "Failed to auto-plan agent request; no generated execution tasks were created");
             AutoPlanGeneratedTasks {
@@ -8954,13 +8960,26 @@ fn validate_voice_config_with_config(config: &crate::AppConfig) -> VoiceConfigVa
                 "Configure a speech-to-text provider in Settings → Voice & Audio.".to_string(),
             ),
         },
+        "google-speech" | "azure-speech" => VoiceConfigValidation {
+            is_valid: false,
+            provider: provider.to_string(),
+            error_code: Some("PROVIDER_NOT_YET_SUPPORTED".to_string()),
+            error_message: Some(format!(
+                "The configured speech-to-text provider '{provider}' is saved but not yet available for live voice transcription in this build."
+            )),
+            suggestion: Some(
+                "Use Local Whisper or OpenAI for live voice transcription today, or keep this provider configured as a future default."
+                    .to_string(),
+            ),
+        },
         _ => VoiceConfigValidation {
             is_valid: false,
             provider: provider.to_string(),
             error_code: Some("UNKNOWN_PROVIDER".to_string()),
             error_message: Some(format!("Unknown speech-to-text provider: {}", provider)),
             suggestion: Some(
-                "Select a valid provider (Local Whisper or OpenAI) in Settings.".to_string(),
+                "Select a valid provider (Local Whisper, OpenAI, Google Speech, or Azure Speech) in Settings."
+                    .to_string(),
             ),
         },
     }
@@ -9244,7 +9263,8 @@ pub async fn update_whisper_model(model_filename: String) -> Result<(), String> 
 #[tauri::command]
 pub async fn update_llm_provider(provider: String) -> Result<(), String> {
     let mut cfg = AppConfig::load_async().await;
-    cfg.update_llm_provider(&provider).map_err(|e| e.to_string())?;
+    cfg.update_llm_provider(&provider)
+        .map_err(|e| e.to_string())?;
     cfg.save_async().await.map_err(|e| e.to_string())?;
     tracing::info!("LLM provider updated to: {}", provider);
     Ok(())
@@ -9433,6 +9453,10 @@ fn api_key_storage_key_for_provider(provider: &str) -> Option<&'static str> {
         Some("gestura_llm_grok_api_key")
     } else if p.eq_ignore_ascii_case("voice_openai") {
         Some("gestura_voice_openai_api_key")
+    } else if p.eq_ignore_ascii_case("voice_google") {
+        Some("gestura_voice_google_api_key")
+    } else if p.eq_ignore_ascii_case("voice_azure") {
+        Some("gestura_voice_azure_api_key")
     } else if p.eq_ignore_ascii_case("serpapi") {
         Some("gestura_web_search_serpapi_key")
     } else if p.eq_ignore_ascii_case("brave") {
@@ -9455,6 +9479,10 @@ fn legacy_api_key_storage_key_for_provider(provider: &str) -> Option<&'static st
         Some("gestura_api_key_grok")
     } else if p.eq_ignore_ascii_case("voice_openai") {
         Some("gestura_api_key_voice_openai")
+    } else if p.eq_ignore_ascii_case("voice_google") {
+        Some("gestura_api_key_voice_google")
+    } else if p.eq_ignore_ascii_case("voice_azure") {
+        Some("gestura_api_key_voice_azure")
     } else if p.eq_ignore_ascii_case("serpapi") {
         Some("gestura_api_key_serpapi")
     } else if p.eq_ignore_ascii_case("brave") {
@@ -9467,7 +9495,8 @@ fn legacy_api_key_storage_key_for_provider(provider: &str) -> Option<&'static st
 /// Store an API key securely.
 ///
 /// Convenience wrapper that uses provider-specific key names.
-/// Provider can be: "openai", "anthropic", "grok", "serpapi", "brave".
+/// Provider can be: "openai", "anthropic", "grok", "voice_openai",
+/// "voice_google", "voice_azure", "serpapi", or "brave".
 ///
 /// JS↔Rust interop: This command is exposed to the frontend via Tauri.
 #[tauri::command(rename_all = "snake_case")]
@@ -9581,6 +9610,7 @@ pub async fn has_api_key(provider: String) -> Result<bool, String> {
             .as_ref()
             .map(|k| !k.trim().is_empty())
             .unwrap_or(false),
+        "voice_google" | "voice_azure" => false,
         "serpapi" => config
             .web_search
             .serpapi_key

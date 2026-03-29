@@ -1375,7 +1375,10 @@ impl TaskManager {
         let mut cancelled = Vec::new();
 
         for descendant in descendants {
-            if matches!(descendant.status, TaskStatus::Completed | TaskStatus::Cancelled) {
+            if matches!(
+                descendant.status,
+                TaskStatus::Completed | TaskStatus::Cancelled
+            ) {
                 continue;
             }
 
@@ -2261,8 +2264,16 @@ mod tests {
         assert_eq!(breakdown.created_tasks.len(), 2);
         assert_eq!(breakdown.root_task_ids.len(), 1);
         assert_eq!(breakdown.created_tasks[0].name, "Root");
-        assert!(breakdown.created_tasks[0].description.contains("Priority: high"));
-        assert!(breakdown.created_tasks[0].description.contains("Blocking: yes"));
+        assert!(
+            breakdown.created_tasks[0]
+                .description
+                .contains("Priority: high")
+        );
+        assert!(
+            breakdown.created_tasks[0]
+                .description
+                .contains("Blocking: yes")
+        );
         assert_eq!(
             breakdown.created_tasks[1].parent_id.as_deref(),
             Some(breakdown.created_tasks[0].id.as_str())
@@ -2295,7 +2306,11 @@ mod tests {
             }
         );
         assert_eq!(
-            manager.get_task("session-123", &root.id).unwrap().unwrap().status,
+            manager
+                .get_task("session-123", &root.id)
+                .unwrap()
+                .unwrap()
+                .status,
             TaskStatus::InProgress
         );
 
@@ -2307,7 +2322,11 @@ mod tests {
             .unwrap();
         assert_eq!(second, TrackedTaskFinalization::Completed);
         assert_eq!(
-            manager.get_task("session-123", &root.id).unwrap().unwrap().status,
+            manager
+                .get_task("session-123", &root.id)
+                .unwrap()
+                .unwrap()
+                .status,
             TaskStatus::Completed
         );
     }
@@ -2328,23 +2347,25 @@ mod tests {
             .unwrap();
 
         let status = manager
-            .record_task_result(
-                "session-123",
-                &task.id,
-                true,
-                "done".to_string(),
-                3,
-                42,
-            )
+            .record_task_result("session-123", &task.id, true, "done".to_string(), 3, 42)
             .unwrap();
 
         assert_eq!(status, TaskStatus::Completed);
         let task = manager.get_task("session-123", &task.id).unwrap().unwrap();
         let metadata = task.metadata.unwrap();
-        assert_eq!(metadata.get("existing").and_then(|v| v.as_bool()), Some(true));
-        assert_eq!(metadata.get("success").and_then(|v| v.as_bool()), Some(true));
+        assert_eq!(
+            metadata.get("existing").and_then(|v| v.as_bool()),
+            Some(true)
+        );
+        assert_eq!(
+            metadata.get("success").and_then(|v| v.as_bool()),
+            Some(true)
+        );
         assert_eq!(metadata.get("tool_calls").and_then(|v| v.as_i64()), Some(3));
-        assert_eq!(metadata.get("duration_ms").and_then(|v| v.as_i64()), Some(42));
+        assert_eq!(
+            metadata.get("duration_ms").and_then(|v| v.as_i64()),
+            Some(42)
+        );
         assert_eq!(task.status, TaskStatus::Completed);
     }
 }
