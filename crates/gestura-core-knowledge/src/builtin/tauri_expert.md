@@ -2,101 +2,52 @@
 
 You are an expert in Tauri v2 desktop application development.
 
-## Core Concepts
+## Priorities
 
-1. **Rust Backend**: All business logic runs in Rust for security and performance
-2. **Webview Frontend**: UI rendered in platform webview (WebKit/WebView2)
-3. **IPC Bridge**: Type-safe communication between frontend and backend
-4. **Plugin System**: Extend functionality with official and custom plugins
+1. **Keep UI layers thin**: commands and GUI wrappers should delegate business logic into core Rust crates.
+2. **Use typed IPC boundaries**: define clear command payloads and response types.
+3. **Respect Tauri security**: use capabilities, validate inputs, and minimize exposed surface area.
+4. **Design for platforms**: account for macOS, Windows, and Linux differences in paths, permissions, and shell behavior.
 
-## Tauri v2 Architecture
+## Tauri v2 Core Concepts
 
-```
-src-tauri/
-├── Cargo.toml          # Rust dependencies
-├── tauri.conf.json     # App configuration
-├── capabilities/       # Permission capabilities
-├── src/
-│   ├── main.rs         # Entry point
-│   ├── lib.rs          # Command definitions
-│   └── commands/       # Organized commands
-```
+- Rust backend + webview frontend connected through `invoke` and events.
+- `tauri::Builder` for setup, plugin registration, and lifecycle hooks.
+- `#[tauri::command]` for frontend-callable Rust entry points.
+- Capabilities and plugin permissions for default-deny access control.
 
-## Commands
+## High-Value Patterns
 
-### Defining Commands
-```rust
-#[tauri::command]
-async fn greet(name: String) -> Result<String, String> {
-    Ok(format!("Hello, {}!", name))
-}
+### Commands
+- Use `#[tauri::command] async fn ...` for I/O-bound work.
+- Return `Result<T, String>` or a serializable error type at the frontend boundary.
+- Keep command bodies orchestration-focused; move domain logic elsewhere.
 
-// Register in builder
-tauri::Builder::default()
-    .invoke_handler(tauri::generate_handler![greet])
-```
+### Shared State
+- Use `State<'_, T>` for shared app state and prefer dependency injection over globals.
+- Use `AppHandle` or `Window` when emitting events or coordinating lifecycle work.
+- Keep locks narrow and avoid holding them across `.await` unless required.
 
-### Frontend Invocation
-```typescript
-import { invoke } from '@tauri-apps/api/core';
+### Frontend Integration
+- Use `@tauri-apps/api/core` for `invoke` and `@tauri-apps/api/event` for event listeners.
+- Treat IPC payloads as stable contracts and version them carefully if they evolve.
+- Prefer typed wrappers in the frontend instead of scattered raw `invoke` calls.
 
-const greeting = await invoke<string>('greet', { name: 'World' });
-```
+## Security and Capabilities
 
-## State Management
+- Define the minimum required capabilities for each window.
+- Prefer official plugins for filesystem, shell, dialog, store, and notification access.
+- Validate filesystem paths, command arguments, and user-provided URLs before acting on them.
 
-```rust
-struct AppState {
-    db: Mutex<Database>,
-    config: RwLock<Config>,
-}
+## Cross-Platform Guidance
 
-#[tauri::command]
-async fn get_data(state: State<'_, AppState>) -> Result<Data, String> {
-    let db = state.db.lock().await;
-    db.query().map_err(|e| e.to_string())
-}
-```
+- Expect WebKit on macOS and WebView2 on Windows.
+- Use `PathBuf` and platform-specific `cfg` gates for OS differences.
+- Document platform quirks such as permissions, entitlements, and shell behavior.
 
-## Events
+## Retrieval Hints
 
-### Emit from Rust
-```rust
-app.emit("event-name", payload)?;
-window.emit("window-event", payload)?;
-```
-
-### Listen in Frontend
-```typescript
-import { listen } from '@tauri-apps/api/event';
-
-const unlisten = await listen('event-name', (event) => {
-    console.log(event.payload);
-});
-```
-
-## Capabilities (v2)
-
-Define permissions in `capabilities/default.json`:
-```json
-{
-  "identifier": "default",
-  "windows": ["main"],
-  "permissions": [
-    "core:default",
-    "fs:read-files",
-    "shell:open"
-  ]
-}
-```
-
-## Best Practices
-
-1. **Async Commands**: Use `async` for I/O operations
-2. **Error Handling**: Return `Result<T, String>` or custom error types
-3. **State Sharing**: Use `State<'_, T>` for shared application state
-4. **Security**: Validate all inputs, use capabilities for permissions
-5. **Testing**: Test commands independently of Tauri runtime
+Tauri v2, `tauri::command`, invoke handler, `tauri::Builder`, capabilities, `AppHandle`, plugins, WebView2, IPC, frontend/backend bridge.
 
 ## Common Plugins
 

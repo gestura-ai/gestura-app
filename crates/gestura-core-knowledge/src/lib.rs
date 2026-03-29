@@ -126,6 +126,120 @@ mod tests {
     }
 
     #[test]
+    fn test_builtin_queries_resolve_expected_experts() {
+        let tmp = tempdir().unwrap();
+        let store = KnowledgeStore::new(tmp.path());
+        register_builtin_knowledge(&store);
+
+        for (query, expected_id) in [
+            (
+                "help me fix cargo clippy warnings in async rust with tokio and serde",
+                "rust-expert",
+            ),
+            (
+                "build a tauri plugin command with an invoke handler and capabilities",
+                "tauri-expert",
+            ),
+            (
+                "add a clap subcommand with --json output and no_color-friendly terminal ux",
+                "cli-expert",
+            ),
+            (
+                "transcribe microphone audio with whisper-rs, cpal, vad, and speech-to-text",
+                "voice-expert",
+            ),
+            (
+                "implement an mcp server with tools/list, tools/call, resources/read, and notifications/initialized",
+                "mcp-expert",
+            ),
+            (
+                "publish an agent card for a remote agent and stream task delegation with sendSubscribe",
+                "a2a-expert",
+            ),
+        ] {
+            let matches = store.find(&KnowledgeQuery {
+                query: query.to_string(),
+                limit: Some(3),
+                ..Default::default()
+            });
+
+            assert!(!matches.is_empty(), "expected matches for query: {query}");
+            assert_eq!(matches[0].item.id, expected_id, "query: {query}");
+            assert!(
+                !matches[0].matched_triggers.is_empty(),
+                "expected trigger matches for query: {query}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_specialty_queries_resolve_expected_experts() {
+        let tmp = tempdir().unwrap();
+        let store = KnowledgeStore::new(tmp.path());
+        register_builtin_knowledge(&store);
+
+        for (query, expected_id) in [
+            (
+                "design an analytics metric tree with instrumentation, retention cohorts, and experimentation readouts",
+                "analytics-expert",
+            ),
+            (
+                "review a scientific study for experimental design, evidence quality, reproducibility, and confounders",
+                "science-expert",
+            ),
+            (
+                "work through mathematical modeling, optimization, derivations, and estimation checks",
+                "math-expert",
+            ),
+            (
+                "develop marketing positioning, messaging, go to market planning, and growth campaigns for an ICP",
+                "marketing-expert",
+            ),
+            (
+                "review software system design with api contracts, observability, architecture, and production reliability",
+                "software-systems-expert",
+            ),
+            (
+                "design a robotics autonomy stack covering perception, localization, controls, and robot safety",
+                "robotics-expert",
+            ),
+            (
+                "evaluate a mechanical engineering concept for loads, materials, tolerances, manufacturability, and fatigue",
+                "mechanical-engineering-expert",
+            ),
+            (
+                "review an electrical engineering design for power electronics, pcb interfaces, signal integrity, and validation",
+                "electrical-engineering-expert",
+            ),
+            (
+                "plan a civil engineering site with grading, drainage, structures, constructability, and foundation constraints",
+                "civil-engineering-expert",
+            ),
+            (
+                "analyze a chemical engineering process with mass balance, thermodynamics, reaction kinetics, unit operations, and process safety",
+                "chemical-engineering-expert",
+            ),
+            (
+                "evaluate an aerospace mission architecture with flight dynamics, guidance, control, and verification",
+                "aerospace-expert",
+            ),
+        ] {
+            let matches = store.find(&KnowledgeQuery {
+                query: query.to_string(),
+                limit: Some(3),
+                ..Default::default()
+            });
+
+            assert!(!matches.is_empty(), "expected matches for query: {query}");
+            assert_eq!(matches[0].item.id, expected_id, "query: {query}");
+            assert!(
+                !matches[0].matched_triggers.is_empty(),
+                "expected trigger matches for query: {query}"
+            );
+        }
+    }
+
+    #[test]
     fn test_categories() {
         let tmp = tempdir().unwrap();
         let store = KnowledgeStore::new(tmp.path());
@@ -134,6 +248,8 @@ mod tests {
         let cats = store.categories();
         assert!(cats.contains(&"language".to_string()));
         assert!(cats.contains(&"framework".to_string()));
+        assert!(cats.contains(&"analytics".to_string()));
+        assert!(cats.contains(&"robotics".to_string()));
     }
 
     #[test]

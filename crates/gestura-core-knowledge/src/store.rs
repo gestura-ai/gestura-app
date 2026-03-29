@@ -377,15 +377,21 @@ fn builtin_knowledge_items() -> Vec<KnowledgeItem> {
         KnowledgeItem::new(
             "rust-expert",
             "Rust Expert",
-            "Expert Rust programming with ownership, borrowing, and async",
+            "Expert Rust programming with Cargo, ownership, async Tokio, Serde, and robust error handling",
         )
         .with_metadata(ORIGIN_KEY, ORIGIN_BUILTIN)
         .with_triggers([
             "rust",
             "cargo",
+            "cargo fmt",
+            "cargo clippy",
             "ownership",
             "borrowing",
             "lifetime",
+            "serde",
+            "tracing",
+            "thiserror",
+            "anyhow",
             "async rust",
             "tokio",
         ])
@@ -411,36 +417,65 @@ fn builtin_knowledge_items() -> Vec<KnowledgeItem> {
         KnowledgeItem::new(
             "tauri-expert",
             "Tauri Expert",
-            "Expert Tauri v2 desktop application development",
+            "Expert Tauri v2 desktop app development with commands, plugins, capabilities, and frontend/backend IPC",
         )
         .with_metadata(ORIGIN_KEY, ORIGIN_BUILTIN)
-        .with_triggers(["tauri", "desktop app", "tauri v2", "tauri command", "ipc"])
+        .with_triggers([
+            "tauri",
+            "desktop app",
+            "tauri v2",
+            "tauri command",
+            "tauri plugin",
+            "tauri::command",
+            "invoke handler",
+            "capabilities",
+            "webview2",
+            "ipc",
+        ])
         .with_category("framework")
         .with_content(include_str!("builtin/tauri_expert.md")),
         // CLI Development
         KnowledgeItem::new(
             "cli-expert",
             "CLI Expert",
-            "Expert command-line interface development with clap and ratatui",
+            "Expert Rust CLI and TUI development with clap, ratatui, structured output, and terminal UX conventions",
         )
         .with_metadata(ORIGIN_KEY, ORIGIN_BUILTIN)
-        .with_triggers(["cli", "clap", "ratatui", "terminal", "tui", "command line"])
+        .with_triggers([
+            "cli",
+            "clap",
+            "subcommand",
+            "ratatui",
+            "terminal",
+            "terminal ux",
+            "tui",
+            "command line",
+            "--json",
+            "--dry-run",
+            "no_color",
+            "assert_cmd",
+        ])
         .with_category("tool")
         .with_content(include_str!("builtin/cli_expert.md")),
         // Voice & Audio
         KnowledgeItem::new(
             "voice-expert",
             "Voice Expert",
-            "Expert voice processing with Whisper and audio capture",
+            "Expert voice and audio pipelines with Whisper, whisper-rs, cpal, VAD, and speech-to-text",
         )
         .with_metadata(ORIGIN_KEY, ORIGIN_BUILTIN)
         .with_triggers([
             "voice",
             "whisper",
+            "whisper-rs",
             "speech",
+            "speech-to-text",
             "audio",
+            "microphone",
             "transcription",
             "stt",
+            "cpal",
+            "vad",
         ])
         .with_category("domain")
         .with_content(include_str!("builtin/voice_expert.md")),
@@ -448,14 +483,21 @@ fn builtin_knowledge_items() -> Vec<KnowledgeItem> {
         KnowledgeItem::new(
             "mcp-expert",
             "MCP Expert",
-            "Expert Model Context Protocol implementation",
+            "Expert Model Context Protocol (2025-11-25) clients, servers, handshake flow, and tool/resource/prompt semantics",
         )
         .with_metadata(ORIGIN_KEY, ORIGIN_BUILTIN)
         .with_triggers([
             "mcp",
             "model context protocol",
+            "mcp client",
             "tool calling",
             "mcp server",
+            "tools/list",
+            "tools/call",
+            "resources/read",
+            "prompts/get",
+            "notifications/initialized",
+            "json-rpc",
         ])
         .with_category("protocol")
         .with_content(include_str!("builtin/mcp_expert.md")),
@@ -463,10 +505,21 @@ fn builtin_knowledge_items() -> Vec<KnowledgeItem> {
         KnowledgeItem::new(
             "a2a-expert",
             "A2A Expert",
-            "Expert Agent-to-Agent protocol implementation",
+            "Expert Agent-to-Agent protocol design with Agent Cards, remote-agent delegation, streaming, and authentication",
         )
         .with_metadata(ORIGIN_KEY, ORIGIN_BUILTIN)
-        .with_triggers(["a2a", "agent to agent", "agent card", "agent protocol"])
+        .with_triggers([
+            "a2a",
+            "agent to agent",
+            "agent card",
+            "agent protocol",
+            "remote agent",
+            "task delegation",
+            "tasks/send",
+            "sendsubscribe",
+            "bearer auth",
+            "multi-agent",
+        ])
         .with_category("protocol")
         .with_content(include_str!("builtin/a2a_expert.md")),
         // Python Expert
@@ -653,9 +706,536 @@ fn builtin_knowledge_items() -> Vec<KnowledgeItem> {
         .with_content(include_str!("builtin/php_expert.md")),
     ];
 
+    items.extend(specialty_knowledge_items());
     items.extend(anthropic_knowledge_work_plugins_sales_items());
     items.extend(anthropic_skills_items());
     items
+}
+
+fn specialty_knowledge_items() -> Vec<KnowledgeItem> {
+    vec![
+        specialty_item(
+            "analytics-expert",
+            "Analytics Expert",
+            "Metrics, experimentation, cohorts, and instrumentation for trustworthy product and business analytics",
+            "analytics",
+            [
+                "analytics",
+                "metric tree",
+                "instrumentation",
+                "experimentation",
+                "cohort analysis",
+                "retention",
+            ],
+            include_str!("builtin/analytics_expert.md"),
+        )
+        .with_priority(60),
+        specialty_item(
+            "science-expert",
+            "Science Expert",
+            "Hypotheses, study design, evidence quality, and reproducible scientific reasoning",
+            "science",
+            [
+                "science",
+                "scientific method",
+                "experimental design",
+                "evidence review",
+                "reproducibility",
+                "confounder",
+            ],
+            include_str!("builtin/science_expert.md"),
+        )
+        .with_priority(60),
+        specialty_item(
+            "math-expert",
+            "Math Expert",
+            "Modeling, optimization, derivations, estimation, and quantitative validation",
+            "math",
+            [
+                "math",
+                "mathematical modeling",
+                "optimization",
+                "derivation",
+                "estimation",
+                "proof",
+            ],
+            include_str!("builtin/math_expert.md"),
+        )
+        .with_priority(60),
+        specialty_item(
+            "marketing-expert",
+            "Marketing Expert",
+            "Positioning, messaging, go-to-market planning, campaign design, and growth strategy",
+            "marketing",
+            [
+                "marketing",
+                "positioning",
+                "messaging",
+                "go to market",
+                "campaign strategy",
+                "growth",
+            ],
+            include_str!("builtin/marketing_expert.md"),
+        )
+        .with_priority(60),
+        specialty_item(
+            "software-systems-expert",
+            "Software Systems Expert",
+            "Architecture, interfaces, observability, delivery, and operational reliability for production software systems",
+            "software",
+            [
+                "software systems",
+                "software architecture",
+                "system design",
+                "api contracts",
+                "observability",
+                "production reliability",
+            ],
+            include_str!("builtin/software_systems_expert.md"),
+        )
+        .with_priority(60),
+        specialty_item(
+            "robotics-expert",
+            "Robotics Expert",
+            "Perception, localization, controls, integration, and safety for robotic systems",
+            "robotics",
+            [
+                "robotics",
+                "perception",
+                "localization",
+                "controls",
+                "autonomy",
+                "robot safety",
+            ],
+            include_str!("builtin/robotics_expert.md"),
+        )
+        .with_priority(60),
+        specialty_item(
+            "mechanical-engineering-expert",
+            "Mechanical Engineering Expert",
+            "Loads, materials, tolerances, manufacturability, and reliability in mechanical systems",
+            "mechanical-engineering",
+            [
+                "mechanical engineering",
+                "loads",
+                "materials",
+                "tolerances",
+                "manufacturability",
+                "fatigue",
+            ],
+            include_str!("builtin/mechanical_engineering_expert.md"),
+        )
+        .with_priority(60),
+        specialty_item(
+            "electrical-engineering-expert",
+            "Electrical Engineering Expert",
+            "Power, signals, PCB interfaces, validation, and safe electrical system design",
+            "electrical-engineering",
+            [
+                "electrical engineering",
+                "power electronics",
+                "signal integrity",
+                "pcb",
+                "validation",
+                "sensor interface",
+            ],
+            include_str!("builtin/electrical_engineering_expert.md"),
+        )
+        .with_priority(60),
+        specialty_item(
+            "civil-engineering-expert",
+            "Civil Engineering Expert",
+            "Site design, drainage, structures, grading, and constructability for civil projects",
+            "civil-engineering",
+            [
+                "civil engineering",
+                "site grading",
+                "drainage",
+                "structures",
+                "constructability",
+                "foundation",
+            ],
+            include_str!("builtin/civil_engineering_expert.md"),
+        )
+        .with_priority(60),
+        specialty_item(
+            "chemical-engineering-expert",
+            "Chemical Engineering Expert",
+            "Mass balances, thermodynamics, kinetics, unit operations, and process safety",
+            "chemical-engineering",
+            [
+                "chemical engineering",
+                "mass balance",
+                "thermodynamics",
+                "reaction kinetics",
+                "unit operations",
+                "process safety",
+            ],
+            include_str!("builtin/chemical_engineering_expert.md"),
+        )
+        .with_priority(60),
+        specialty_item(
+            "aerospace-expert",
+            "Aerospace Expert",
+            "Mission architecture, flight dynamics, controls, verification, and aerospace systems reasoning",
+            "aerospace",
+            [
+                "aerospace",
+                "mission architecture",
+                "flight dynamics",
+                "guidance",
+                "control",
+                "verification",
+            ],
+            include_str!("builtin/aerospace_expert.md"),
+        )
+        .with_priority(60),
+        specialty_item(
+            "analytics-metrics-instrumentation",
+            "Analytics: Metrics & Instrumentation",
+            "Metric trees, event design, funnels, and trustworthy instrumentation",
+            "analytics",
+            [
+                "analytics",
+                "metrics",
+                "instrumentation",
+                "dashboard",
+                "funnel",
+                "event taxonomy",
+            ],
+            include_str!("builtin/analytics_metrics_instrumentation.md"),
+        ),
+        specialty_item(
+            "analytics-experimentation-insights",
+            "Analytics: Experimentation & Insights",
+            "Experiment design, readouts, cohort analysis, and decision-oriented insight generation",
+            "analytics",
+            [
+                "ab test",
+                "experiment analysis",
+                "cohort",
+                "segmentation",
+                "insight",
+                "measurement",
+            ],
+            include_str!("builtin/analytics_experimentation_insights.md"),
+        ),
+        specialty_item(
+            "science-hypothesis-design",
+            "Science: Hypothesis & Study Design",
+            "Scientific framing for hypotheses, variables, controls, and study design",
+            "science",
+            [
+                "science",
+                "hypothesis",
+                "study design",
+                "controls",
+                "variables",
+                "research design",
+            ],
+            include_str!("builtin/science_hypothesis_design.md"),
+        ),
+        specialty_item(
+            "science-evidence-review",
+            "Science: Evidence & Review",
+            "Evidence quality, literature review, interpretation, and reproducibility reasoning",
+            "science",
+            [
+                "evidence",
+                "literature review",
+                "reproducibility",
+                "bias",
+                "interpretation",
+                "scientific method",
+            ],
+            include_str!("builtin/science_evidence_review.md"),
+        ),
+        specialty_item(
+            "math-modeling-optimization",
+            "Math: Modeling & Optimization",
+            "Mathematical modeling, optimization setup, constraints, and sensitivity reasoning",
+            "math",
+            [
+                "math",
+                "modeling",
+                "optimization",
+                "constraints",
+                "sensitivity analysis",
+                "objective function",
+            ],
+            include_str!("builtin/math_modeling_optimization.md"),
+        ),
+        specialty_item(
+            "math-derivations-estimation",
+            "Math: Derivations & Estimation",
+            "Stepwise derivations, estimation, dimensional checks, and proof-oriented quantitative work",
+            "math",
+            [
+                "derivation",
+                "estimation",
+                "proof",
+                "units",
+                "order of magnitude",
+                "quantitative reasoning",
+            ],
+            include_str!("builtin/math_derivations_estimation.md"),
+        ),
+        specialty_item(
+            "marketing-positioning-messaging",
+            "Marketing: Positioning & Messaging",
+            "Audience definition, positioning, proof points, and message architecture",
+            "marketing",
+            [
+                "marketing",
+                "positioning",
+                "messaging",
+                "brand",
+                "icp",
+                "value proposition",
+            ],
+            include_str!("builtin/marketing_positioning_messaging.md"),
+        ),
+        specialty_item(
+            "marketing-campaign-growth",
+            "Marketing: Campaigns & Growth",
+            "Channel planning, launches, funnel experiments, and growth execution",
+            "marketing",
+            [
+                "campaign",
+                "growth",
+                "launch",
+                "content strategy",
+                "channel mix",
+                "go to market",
+            ],
+            include_str!("builtin/marketing_campaign_growth.md"),
+        ),
+        specialty_item(
+            "software-architecture-interfaces",
+            "Software: Architecture & Interfaces",
+            "System boundaries, APIs, contracts, and production software structure",
+            "software",
+            [
+                "software architecture",
+                "system design",
+                "api design",
+                "interfaces",
+                "data flow",
+                "service boundaries",
+            ],
+            include_str!("builtin/software_architecture_interfaces.md"),
+        ),
+        specialty_item(
+            "software-reliability-delivery",
+            "Software: Reliability & Delivery",
+            "Observability, rollout planning, test strategy, and operational reliability",
+            "software",
+            [
+                "reliability",
+                "observability",
+                "testing strategy",
+                "rollout",
+                "incident prevention",
+                "delivery",
+            ],
+            include_str!("builtin/software_reliability_delivery.md"),
+        ),
+        specialty_item(
+            "robotics-perception-integration",
+            "Robotics: Perception & Integration",
+            "Sensors, localization, integration, calibration, and hardware/software interfaces",
+            "robotics",
+            [
+                "robotics",
+                "perception",
+                "sensor fusion",
+                "localization",
+                "integration",
+                "calibration",
+            ],
+            include_str!("builtin/robotics_perception_integration.md"),
+        ),
+        specialty_item(
+            "robotics-controls-safety",
+            "Robotics: Controls & Safety",
+            "Planning, controls, fallback modes, latency, and safe robot behavior",
+            "robotics",
+            [
+                "controls",
+                "path planning",
+                "safety envelope",
+                "latency",
+                "autonomy",
+                "hardware in the loop",
+            ],
+            include_str!("builtin/robotics_controls_safety.md"),
+        ),
+        specialty_item(
+            "mechanical-design-materials",
+            "Mechanical Engineering: Design & Materials",
+            "Loads, geometry, material choice, tolerances, and mechanical concept selection",
+            "mechanical-engineering",
+            [
+                "mechanical engineering",
+                "mechanical design",
+                "materials",
+                "loads",
+                "tolerance",
+                "stress",
+            ],
+            include_str!("builtin/mechanical_design_materials.md"),
+        ),
+        specialty_item(
+            "mechanical-manufacturing-reliability",
+            "Mechanical Engineering: Manufacturing & Reliability",
+            "Manufacturability, fatigue, wear, maintenance, and failure-mode reasoning",
+            "mechanical-engineering",
+            [
+                "manufacturability",
+                "fatigue",
+                "wear",
+                "assembly",
+                "maintenance",
+                "failure modes",
+            ],
+            include_str!("builtin/mechanical_manufacturing_reliability.md"),
+        ),
+        specialty_item(
+            "electrical-power-interfaces",
+            "Electrical Engineering: Power & Interfaces",
+            "Power architecture, electrical interfaces, grounding, and block-level partitioning",
+            "electrical-engineering",
+            [
+                "electrical engineering",
+                "power electronics",
+                "interfaces",
+                "grounding",
+                "power budget",
+                "block diagram",
+            ],
+            include_str!("builtin/electrical_power_interfaces.md"),
+        ),
+        specialty_item(
+            "electrical-signals-validation",
+            "Electrical Engineering: Signals & Validation",
+            "Signal integrity, bring-up, measurement planning, and hardware validation",
+            "electrical-engineering",
+            [
+                "signal integrity",
+                "analog",
+                "digital design",
+                "pcb",
+                "bring up",
+                "hardware validation",
+            ],
+            include_str!("builtin/electrical_signals_validation.md"),
+        ),
+        specialty_item(
+            "civil-site-drainage",
+            "Civil Engineering: Site & Drainage",
+            "Site constraints, grading, water movement, and civil layout reasoning",
+            "civil-engineering",
+            [
+                "civil engineering",
+                "site design",
+                "drainage",
+                "grading",
+                "stormwater",
+                "site constraints",
+            ],
+            include_str!("builtin/civil_site_drainage.md"),
+        ),
+        specialty_item(
+            "civil-structures-constructability",
+            "Civil Engineering: Structures & Constructability",
+            "Load paths, constructability, sequencing, and code-aware infrastructure reasoning",
+            "civil-engineering",
+            [
+                "structural load",
+                "constructability",
+                "sequencing",
+                "code review",
+                "geotechnical",
+                "infrastructure",
+            ],
+            include_str!("builtin/civil_structures_constructability.md"),
+        ),
+        specialty_item(
+            "chemical-balances-thermodynamics",
+            "Chemical Engineering: Balances & Thermodynamics",
+            "Mass/energy balances, operating windows, and thermodynamic process reasoning",
+            "chemical-engineering",
+            [
+                "chemical engineering",
+                "mass balance",
+                "energy balance",
+                "thermodynamics",
+                "operating window",
+                "process model",
+            ],
+            include_str!("builtin/chemical_balances_thermodynamics.md"),
+        ),
+        specialty_item(
+            "chemical-kinetics-process-safety",
+            "Chemical Engineering: Kinetics & Process Safety",
+            "Reaction rates, separations, hazards, controllability, and process safety",
+            "chemical-engineering",
+            [
+                "reaction kinetics",
+                "separation process",
+                "process safety",
+                "hazard review",
+                "controllability",
+                "scale up",
+            ],
+            include_str!("builtin/chemical_kinetics_process_safety.md"),
+        ),
+        specialty_item(
+            "aerospace-mission-architecture",
+            "Aerospace: Mission & Architecture",
+            "Mission profile, subsystem partitioning, budgets, and aerospace system tradeoffs",
+            "aerospace",
+            [
+                "aerospace",
+                "mission profile",
+                "mass budget",
+                "flight systems",
+                "subsystems",
+                "trade study",
+            ],
+            include_str!("builtin/aerospace_mission_architecture.md"),
+        ),
+        specialty_item(
+            "aerospace-guidance-verification",
+            "Aerospace: Guidance & Verification",
+            "GNC, verification planning, safety margins, and qualification-oriented review",
+            "aerospace",
+            [
+                "gnc",
+                "verification",
+                "qualification",
+                "flight safety",
+                "guidance",
+                "avionics validation",
+            ],
+            include_str!("builtin/aerospace_guidance_verification.md"),
+        ),
+    ]
+}
+
+fn specialty_item<const N: usize>(
+    id: &'static str,
+    name: &'static str,
+    description: &'static str,
+    category: &'static str,
+    triggers: [&'static str; N],
+    content: &'static str,
+) -> KnowledgeItem {
+    KnowledgeItem::new(id, name, description)
+        .with_metadata(ORIGIN_KEY, ORIGIN_BUILTIN)
+        .with_triggers(triggers)
+        .with_category(category)
+        .with_content(content)
 }
 
 fn with_apache_source(
@@ -918,4 +1498,55 @@ fn anthropic_skills_items() -> Vec<KnowledgeItem> {
             "https://raw.githubusercontent.com/anthropics/skills/main/skills/frontend-design/SKILL.md",
         ),
     ]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::builtin_knowledge_items;
+
+    #[test]
+    fn specialty_knowledge_items_are_registered() {
+        let ids = builtin_knowledge_items()
+            .into_iter()
+            .map(|item| item.id)
+            .collect::<std::collections::HashSet<_>>();
+
+        for expected_id in [
+            "analytics-expert",
+            "analytics-metrics-instrumentation",
+            "analytics-experimentation-insights",
+            "science-expert",
+            "science-hypothesis-design",
+            "science-evidence-review",
+            "math-expert",
+            "math-modeling-optimization",
+            "math-derivations-estimation",
+            "marketing-expert",
+            "marketing-positioning-messaging",
+            "marketing-campaign-growth",
+            "software-systems-expert",
+            "software-architecture-interfaces",
+            "software-reliability-delivery",
+            "robotics-expert",
+            "robotics-perception-integration",
+            "robotics-controls-safety",
+            "mechanical-engineering-expert",
+            "mechanical-design-materials",
+            "mechanical-manufacturing-reliability",
+            "electrical-engineering-expert",
+            "electrical-power-interfaces",
+            "electrical-signals-validation",
+            "civil-engineering-expert",
+            "civil-site-drainage",
+            "civil-structures-constructability",
+            "chemical-engineering-expert",
+            "chemical-balances-thermodynamics",
+            "chemical-kinetics-process-safety",
+            "aerospace-expert",
+            "aerospace-mission-architecture",
+            "aerospace-guidance-verification",
+        ] {
+            assert!(ids.contains(expected_id), "missing {expected_id}");
+        }
+    }
 }
