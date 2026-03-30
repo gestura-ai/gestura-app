@@ -8,6 +8,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+#[cfg(target_os = "windows")]
+use core::ffi::c_void;
+
 /// Silence detection configuration
 const SILENCE_THRESHOLD: f32 = 0.005; // RMS threshold for detecting silence (lowered for sensitivity)
 const SILENCE_TIMEOUT_SECS: f32 = 4.0; // Stop recording after 4 seconds of silence
@@ -19,6 +22,92 @@ const WHISPER_SAMPLE_RATE: u32 = 16000; // Whisper requires 16kHz audio
 // Global flag to signal external stop request (e.g., from "Stop Listening" button)
 lazy_static::lazy_static! {
     static ref EXTERNAL_STOP_FLAG: Arc<AtomicBool> = Arc::new(AtomicBool::new(false));
+}
+
+#[cfg(target_os = "windows")]
+lazy_static::lazy_static! {
+    static ref WINDOWS_AUDIO_HOST_ACCESS: Mutex<()> = Mutex::new(());
+}
+
+#[cfg(target_os = "windows")]
+type HResult = i32;
+
+#[cfg(target_os = "windows")]
+const COINIT_MULTITHREADED: u32 = 0;
+
+#[cfg(target_os = "windows")]
+const S_OK: HResult = 0;
+
+#[cfg(target_os = "windows")]
+const S_FALSE: HResult = 1;
+
+#[cfg(target_os = "windows")]
+const RPC_E_CHANGED_MODE: HResult = -2_147_417_850;
+
+#[cfg(target_os = "windows")]
+#[link(name = "ole32")]
+unsafe extern "system" {
+    fn CoInitializeEx(pv_reserved: *mut c_void, coinit: u32) -> HResult;
+    fn CoUninitialize();
+}
+
+#[cfg(target_os = "windows")]
+struct WindowsComGuard {
+    should_uninitialize: bool,
+}
+
+#[cfg(target_os = "windows")]
+impl WindowsComGuard {
+    fn initialize_for_audio() -> Self {
+        let hr = unsafe { CoInitializeEx(std::ptr::null_mut(), COINIT_MULTITHREADED) };
+        match hr {
+            S_OK | S_FALSE => Self {
+                should_uninitialize: true,
+            },
+            RPC_E_CHANGED_MODE => {
+                tracing::debug!(
+                    "Windows COM apartment already initialized with a different threading model; reusing current apartment for audio host access"
+                );
+                Self {
+                    should_uninitialize: false,
+                }
+            }
+            other => {
+                tracing::warn!(
+                    hresult = format_args!("{other:#010x}"),
+                    "Failed to initialize COM before Windows audio host access; continuing with existing thread state"
+                );
+                Self {
+                    should_uninitialize: false,
+                }
+            }
+        }
+    }
+}
+
+#[cfg(target_os = "windows")]
+impl Drop for WindowsComGuard {
+    fn drop(&mut self) {
+        if self.should_uninitialize {
+            unsafe { CoUninitialize() };
+        }
+    }
+}
+
+fn with_audio_host_access<T>(operation: impl FnOnce() -> T) -> T {
+    #[cfg(target_os = "windows")]
+    {
+        let _audio_lock = WINDOWS_AUDIO_HOST_ACCESS
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _com_guard = WindowsComGuard::initialize_for_audio();
+        operation()
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        operation()
+    }
 }
 
 /// Request the audio recording to stop from external code
@@ -128,137 +217,112 @@ pub struct AudioDeviceInfo {
 
 /// Check if microphone is available
 pub fn is_microphone_available() -> bool {
-    let host = cpal::default_host();
-    host.default_input_device().is_some()
+    with_audio_host_access(|| {
+        let host = cpal::default_host();
+        host.default_input_device().is_some()
+    })
 }
 
 /// List all available audio input devices
 pub fn list_audio_input_devices() -> Vec<AudioDeviceInfo> {
-    let host = cpal::default_host();
-    let default_device_name = host.default_input_device().and_then(|d| d.name().ok());
+    with_audio_host_access(|| {
+        let host = cpal::default_host();
+        let default_device_name = host.default_input_device().and_then(|d| d.name().ok());
 
-    let mut devices = Vec::new();
+        let mut devices = Vec::new();
 
-    if let Ok(input_devices) = host.input_devices() {
-        for device in input_devices {
-            if let Ok(name) = device.name() {
-                let is_default = default_device_name
-                    .as_ref()
-                    .map(|d| d == &name)
-                    .unwrap_or(false);
-                devices.push(AudioDeviceInfo { name, is_default });
+        if let Ok(input_devices) = host.input_devices() {
+            for device in input_devices {
+                if let Ok(name) = device.name() {
+                    let is_default = default_device_name
+                        .as_ref()
+                        .map(|d| d == &name)
+                        .unwrap_or(false);
+                    devices.push(AudioDeviceInfo { name, is_default });
+                }
             }
         }
-    }
 
-    devices
+        devices
+    })
 }
 
 /// Record audio with Voice Activity Detection - stops after silence timeout
 fn record_audio_with_vad(output_path: &Path, config: &AudioCaptureConfig) -> Result<f32, AppError> {
-    // Get default audio host
-    let host = cpal::default_host();
+    with_audio_host_access(|| {
+        // Get default audio host
+        let host = cpal::default_host();
 
-    // Try to find the specified device, or fall back to default
-    let device = if let Some(ref name) = config.device_name {
-        let found = host
-            .input_devices()
-            .ok()
-            .and_then(|mut devices| devices.find(|d| d.name().ok().as_deref() == Some(name)));
+        // Try to find the specified device, or fall back to default
+        let device = if let Some(ref name) = config.device_name {
+            let found = host
+                .input_devices()
+                .ok()
+                .and_then(|mut devices| devices.find(|d| d.name().ok().as_deref() == Some(name)));
 
-        if let Some(dev) = found {
-            tracing::info!("Using configured audio input device: {}", name);
-            dev
+            if let Some(dev) = found {
+                tracing::info!("Using configured audio input device: {}", name);
+                dev
+            } else {
+                tracing::warn!("Configured device '{}' not found, using default", name);
+                host.default_input_device()
+                    .ok_or_else(|| AppError::Voice("No input device available".into()))?
+            }
         } else {
-            tracing::warn!("Configured device '{}' not found, using default", name);
             host.default_input_device()
                 .ok_or_else(|| AppError::Voice("No input device available".into()))?
-        }
-    } else {
-        host.default_input_device()
-            .ok_or_else(|| AppError::Voice("No input device available".into()))?
-    };
+        };
 
-    tracing::info!("Using audio input device: {:?}", device.name());
+        tracing::info!("Using audio input device: {:?}", device.name());
 
-    // Get supported config
-    let device_config = device
-        .default_input_config()
-        .map_err(|e| AppError::Voice(format!("Failed to get config: {}", e)))?;
+        // Get supported config
+        let device_config = device
+            .default_input_config()
+            .map_err(|e| AppError::Voice(format!("Failed to get config: {}", e)))?;
 
-    let sample_rate = device_config.sample_rate().0;
-    let channels = device_config.channels();
+        let sample_rate = device_config.sample_rate().0;
+        let channels = device_config.channels();
 
-    tracing::info!("Audio config: {}Hz, {} channels", sample_rate, channels);
+        tracing::info!("Audio config: {}Hz, {} channels", sample_rate, channels);
 
-    // Create shared buffer for samples
-    let samples: Arc<Mutex<Vec<f32>>> = Arc::new(Mutex::new(Vec::new()));
-    let samples_clone = Arc::clone(&samples);
+        // Create shared buffer for samples
+        let samples: Arc<Mutex<Vec<f32>>> = Arc::new(Mutex::new(Vec::new()));
+        let samples_clone = Arc::clone(&samples);
 
-    // Shared VAD state
-    let vad_state = Arc::new(Mutex::new(VadState::new()));
-    let vad_state_clone = Arc::clone(&vad_state);
+        // Shared VAD state
+        let vad_state = Arc::new(Mutex::new(VadState::new()));
+        let vad_state_clone = Arc::clone(&vad_state);
 
-    // Flag to signal when to stop recording
-    let should_stop = Arc::new(AtomicBool::new(false));
-    let should_stop_clone = Arc::clone(&should_stop);
+        // Flag to signal when to stop recording
+        let should_stop = Arc::new(AtomicBool::new(false));
+        let should_stop_clone = Arc::clone(&should_stop);
 
-    // Samples per VAD window
-    let samples_per_window = (sample_rate as u64 * channels as u64 * VAD_WINDOW_MS / 1000) as usize;
+        // Samples per VAD window
+        let samples_per_window =
+            (sample_rate as u64 * channels as u64 * VAD_WINDOW_MS / 1000) as usize;
 
-    // Buffer for VAD analysis
-    let vad_buffer: Arc<Mutex<Vec<f32>>> = Arc::new(Mutex::new(Vec::new()));
-    let vad_buffer_clone = Arc::clone(&vad_buffer);
+        // Buffer for VAD analysis
+        let vad_buffer: Arc<Mutex<Vec<f32>>> = Arc::new(Mutex::new(Vec::new()));
+        let vad_buffer_clone = Arc::clone(&vad_buffer);
 
-    // Capture config values for closure
-    let silence_threshold = config.silence_threshold;
-    let silence_timeout = config.silence_timeout_secs;
-    let max_recording = config.max_recording_secs;
-    let wait_for_speech = config.wait_for_speech_timeout_secs;
+        // Capture config values for closure
+        let silence_threshold = config.silence_threshold;
+        let silence_timeout = config.silence_timeout_secs;
+        let max_recording = config.max_recording_secs;
+        let wait_for_speech = config.wait_for_speech_timeout_secs;
 
-    // Build input stream based on sample format
-    let stream = match device_config.sample_format() {
-        cpal::SampleFormat::F32 => device
-            .build_input_stream(
-                &device_config.clone().into(),
-                move |data: &[f32], _: &cpal::InputCallbackInfo| {
-                    process_audio_data(
-                        data,
-                        &samples_clone,
-                        &vad_buffer_clone,
-                        &vad_state_clone,
-                        &should_stop_clone,
-                        samples_per_window,
-                        silence_threshold,
-                        silence_timeout,
-                        max_recording,
-                        wait_for_speech,
-                    );
-                },
-                |err| {
-                    tracing::error!("Audio stream error: {}", err);
-                },
-                None,
-            )
-            .map_err(|e| AppError::Voice(format!("Failed to build stream: {}", e)))?,
-        cpal::SampleFormat::I16 => {
-            let samples_clone_i16 = Arc::clone(&samples);
-            let vad_buffer_i16 = Arc::clone(&vad_buffer);
-            let vad_state_i16 = Arc::clone(&vad_state);
-            let should_stop_i16 = Arc::clone(&should_stop);
-
-            device
+        // Build input stream based on sample format
+        let stream = match device_config.sample_format() {
+            cpal::SampleFormat::F32 => device
                 .build_input_stream(
                     &device_config.clone().into(),
-                    move |data: &[i16], _: &cpal::InputCallbackInfo| {
-                        let f32_data: Vec<f32> =
-                            data.iter().map(|&s| s as f32 / i16::MAX as f32).collect();
+                    move |data: &[f32], _: &cpal::InputCallbackInfo| {
                         process_audio_data(
-                            &f32_data,
-                            &samples_clone_i16,
-                            &vad_buffer_i16,
-                            &vad_state_i16,
-                            &should_stop_i16,
+                            data,
+                            &samples_clone,
+                            &vad_buffer_clone,
+                            &vad_state_clone,
+                            &should_stop_clone,
                             samples_per_window,
                             silence_threshold,
                             silence_timeout,
@@ -271,72 +335,104 @@ fn record_audio_with_vad(output_path: &Path, config: &AudioCaptureConfig) -> Res
                     },
                     None,
                 )
-                .map_err(|e| AppError::Voice(format!("Failed to build stream: {}", e)))?
+                .map_err(|e| AppError::Voice(format!("Failed to build stream: {}", e)))?,
+            cpal::SampleFormat::I16 => {
+                let samples_clone_i16 = Arc::clone(&samples);
+                let vad_buffer_i16 = Arc::clone(&vad_buffer);
+                let vad_state_i16 = Arc::clone(&vad_state);
+                let should_stop_i16 = Arc::clone(&should_stop);
+
+                device
+                    .build_input_stream(
+                        &device_config.clone().into(),
+                        move |data: &[i16], _: &cpal::InputCallbackInfo| {
+                            let f32_data: Vec<f32> =
+                                data.iter().map(|&s| s as f32 / i16::MAX as f32).collect();
+                            process_audio_data(
+                                &f32_data,
+                                &samples_clone_i16,
+                                &vad_buffer_i16,
+                                &vad_state_i16,
+                                &should_stop_i16,
+                                samples_per_window,
+                                silence_threshold,
+                                silence_timeout,
+                                max_recording,
+                                wait_for_speech,
+                            );
+                        },
+                        |err| {
+                            tracing::error!("Audio stream error: {}", err);
+                        },
+                        None,
+                    )
+                    .map_err(|e| AppError::Voice(format!("Failed to build stream: {}", e)))?
+            }
+            _ => return Err(AppError::Voice("Unsupported sample format".into())),
+        };
+
+        // Start recording
+        stream
+            .play()
+            .map_err(|e| AppError::Voice(format!("Failed to start stream: {}", e)))?;
+
+        tracing::info!(
+            "Recording with VAD - will stop after {}s of silence...",
+            config.silence_timeout_secs
+        );
+
+        // Wait for speech to end (with silence timeout), max duration, or external stop request
+        loop {
+            std::thread::sleep(Duration::from_millis(100));
+
+            // Check internal VAD stop flag
+            if should_stop.load(Ordering::SeqCst) {
+                tracing::info!("Recording stopped by VAD (silence/max duration)");
+                break;
+            }
+
+            // Check external stop request (e.g., "Stop Listening" button)
+            if is_stop_requested() {
+                tracing::info!("Recording stopped by external request");
+                should_stop.store(true, Ordering::SeqCst);
+                break;
+            }
+
+            // Also check for max duration from main thread
+            let state = vad_state.lock().unwrap();
+            if state.recording_start.elapsed().as_secs() >= config.max_recording_secs {
+                break;
+            }
         }
-        _ => return Err(AppError::Voice("Unsupported sample format".into())),
-    };
 
-    // Start recording
-    stream
-        .play()
-        .map_err(|e| AppError::Voice(format!("Failed to start stream: {}", e)))?;
+        // Stop recording - explicitly pause and drop the stream to release the microphone
+        let _ = stream.pause();
+        drop(stream);
+        tracing::info!("Audio stream stopped and microphone released");
 
-    tracing::info!(
-        "Recording with VAD - will stop after {}s of silence...",
-        config.silence_timeout_secs
-    );
+        // Get recorded samples
+        let recorded_samples = samples.lock().unwrap();
+        let sample_count = recorded_samples.len();
+        let duration_secs = sample_count as f32 / (sample_rate as f32 * channels as f32);
 
-    // Wait for speech to end (with silence timeout), max duration, or external stop request
-    loop {
-        std::thread::sleep(Duration::from_millis(100));
+        tracing::info!("Recorded {} samples ({:.2}s)", sample_count, duration_secs);
 
-        // Check internal VAD stop flag
-        if should_stop.load(Ordering::SeqCst) {
-            tracing::info!("Recording stopped by VAD (silence/max duration)");
-            break;
+        // If externally stopped with no audio, return early without error
+        if sample_count == 0 {
+            if is_stop_requested() {
+                return Err(AppError::Voice("Recording cancelled by user".into()));
+            }
+            return Err(AppError::Voice("No audio captured".into()));
         }
 
-        // Check external stop request (e.g., "Stop Listening" button)
-        if is_stop_requested() {
-            tracing::info!("Recording stopped by external request");
-            should_stop.store(true, Ordering::SeqCst);
-            break;
-        }
+        // Resample audio to 16kHz mono for Whisper compatibility
+        let resampled = resample_to_16khz(&recorded_samples, sample_rate, channels);
 
-        // Also check for max duration from main thread
-        let state = vad_state.lock().unwrap();
-        if state.recording_start.elapsed().as_secs() >= config.max_recording_secs {
-            break;
-        }
-    }
+        // Save to WAV file at 16kHz mono (what Whisper expects)
+        save_samples_to_wav(&resampled, WHISPER_SAMPLE_RATE, 1, output_path)?;
 
-    // Stop recording - explicitly pause and drop the stream to release the microphone
-    let _ = stream.pause();
-    drop(stream);
-    tracing::info!("Audio stream stopped and microphone released");
-
-    // Get recorded samples
-    let recorded_samples = samples.lock().unwrap();
-    let sample_count = recorded_samples.len();
-    let duration_secs = sample_count as f32 / (sample_rate as f32 * channels as f32);
-
-    tracing::info!("Recorded {} samples ({:.2}s)", sample_count, duration_secs);
-
-    // If externally stopped with no audio, return early without error
-    if sample_count == 0 {
-        if is_stop_requested() {
-            return Err(AppError::Voice("Recording cancelled by user".into()));
-        }
-        return Err(AppError::Voice("No audio captured".into()));
-    }
-
-    // Resample audio to 16kHz mono for Whisper compatibility
-    let resampled = resample_to_16khz(&recorded_samples, sample_rate, channels);
-
-    // Save to WAV file at 16kHz mono (what Whisper expects)
-    save_samples_to_wav(&resampled, WHISPER_SAMPLE_RATE, 1, output_path)?;
-
-    Ok(duration_secs)
+        Ok(duration_secs)
+    })
 }
 
 /// Process audio data for VAD analysis
