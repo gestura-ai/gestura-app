@@ -50,7 +50,8 @@ jobs:
         # Tauri requires GTK, GLib, and WebKit libraries for compilation
         # ALSA is required for audio functionality (alsa-sys crate)
         # libclang-dev is required for bindgen to generate FFI bindings for whisper-rs
-        sudo apt-get install -y build-essential cmake pkg-config libdbus-1-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev libasound2-dev libclang-dev
+        # libssl-dev is required for openssl-sys via transitive native-tls/OpenSSL consumers
+        sudo apt-get install -y build-essential cmake pkg-config libdbus-1-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev libasound2-dev libclang-dev libssl-dev
         # Ubuntu 24.04+ uses webkit2gtk-4.1, older versions use 4.0
         sudo apt-get install -y libwebkit2gtk-4.1-dev 2>/dev/null || sudo apt-get install -y libwebkit2gtk-4.0-dev
 
@@ -225,7 +226,8 @@ jobs:
         # Tauri requires GTK, GLib, and WebKit libraries for compilation
         # ALSA is required for audio functionality (alsa-sys crate)
         # libclang-dev is required for bindgen to generate FFI bindings for whisper-rs
-        sudo apt-get install -y build-essential cmake pkg-config libdbus-1-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev libasound2-dev libclang-dev
+        # libssl-dev is required for openssl-sys via transitive native-tls/OpenSSL consumers
+        sudo apt-get install -y build-essential cmake pkg-config libdbus-1-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev libasound2-dev libclang-dev libssl-dev
         # Ubuntu 24.04+ uses webkit2gtk-4.1, older versions use 4.0
         sudo apt-get install -y libwebkit2gtk-4.1-dev 2>/dev/null || sudo apt-get install -y libwebkit2gtk-4.0-dev
 

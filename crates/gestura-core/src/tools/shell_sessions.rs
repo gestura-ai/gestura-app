@@ -70,6 +70,7 @@ mod imp {
     const SHELL_OUTPUT_SEND_TIMEOUT: Duration = Duration::from_millis(100);
     const STATUS_CHUNK_SEND_TIMEOUT: Duration = Duration::from_millis(100);
     const STALL_SIGNAL_TAIL_BYTES: usize = 4096;
+    const SHELL_READY_TIMEOUT: Duration = Duration::from_secs(5);
 
     const INTERACTIVE_PROMPT_PATTERNS: &[&str] = &[
         "ok to proceed?",
@@ -511,7 +512,14 @@ mod imp {
                 AppError::Session(format!("failed to take PTY writer: {error:#}"))
             })?;
 
-            prepare_shell(mode, &mut writer)?;
+            let ready_marker = matches!(mode, SessionMode::Automation)
+                .then(|| format!("__GESTURA_READY_{}__", uuid::Uuid::new_v4()));
+            let (ready_tx, ready_rx) = if ready_marker.is_some() {
+                let (tx, rx) = std::sync::mpsc::channel();
+                (Some(tx), Some(rx))
+            } else {
+                (None, None)
+            };
 
             let shell_session_id = format!("shell-{}", uuid::Uuid::new_v4());
             let active_sender = Arc::new(StdMutex::new(None));
@@ -531,9 +539,36 @@ mod imp {
                     event_tx: event_tx.clone(),
                     shell_session_id: shell_session_id.clone(),
                     emit_raw_output: matches!(mode, SessionMode::Interactive),
+                    ready_marker: ready_marker.clone(),
+                    ready_tx,
                 },
             );
             spawn_wait_loop(child, closed.clone(), shell_session_id.clone());
+
+            prepare_shell(mode, &mut writer, ready_marker.as_deref())?;
+
+            if let Some(ready_rx) = ready_rx {
+                match ready_rx.recv_timeout(SHELL_READY_TIMEOUT) {
+                    Ok(Ok(())) => {}
+                    Ok(Err(message)) => {
+                        closed.store(true, Ordering::SeqCst);
+                        return Err(AppError::Session(message));
+                    }
+                    Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                        closed.store(true, Ordering::SeqCst);
+                        return Err(AppError::Session(
+                            "timed out waiting for PTY shell initialization".to_string(),
+                        ));
+                    }
+                    Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                        closed.store(true, Ordering::SeqCst);
+                        return Err(AppError::Session(
+                            "PTY shell initialization watcher disconnected unexpectedly"
+                                .to_string(),
+                        ));
+                    }
+                }
+            }
 
             Ok(Arc::new(Self {
                 shell_session_id,
@@ -1235,11 +1270,24 @@ mod imp {
 
         #[cfg(not(windows))]
         {
-            CommandBuilder::new("sh")
+            let shell_path = if std::path::Path::new("/bin/bash").exists() {
+                "/bin/bash"
+            } else {
+                "bash"
+            };
+            let mut builder = CommandBuilder::new(shell_path);
+            builder.arg("--noprofile");
+            builder.arg("--norc");
+            builder.arg("-i");
+            builder
         }
     }
 
-    fn prepare_shell(mode: SessionMode, writer: &mut Box<dyn Write + Send>) -> Result<()> {
+    fn prepare_shell(
+        mode: SessionMode,
+        writer: &mut Box<dyn Write + Send>,
+        ready_marker: Option<&str>,
+    ) -> Result<()> {
         if matches!(mode, SessionMode::Interactive) {
             writer.flush().map_err(AppError::Io)?;
             return Ok(());
@@ -1248,12 +1296,23 @@ mod imp {
         #[cfg(windows)]
         {
             writer.write_all(b"prompt $G\r\n").map_err(AppError::Io)?;
+            if let Some(ready_marker) = ready_marker {
+                writer
+                    .write_all(format!("echo {ready_marker}\r\n").as_bytes())
+                    .map_err(AppError::Io)?;
+            }
         }
 
         #[cfg(not(windows))]
         {
+            let mut init_script = String::from("export PS1=''\nunset PROMPT_COMMAND\nstty -echo\n");
+            if let Some(ready_marker) = ready_marker {
+                init_script.push_str("printf '");
+                init_script.push_str(ready_marker);
+                init_script.push_str("\\n'\n");
+            }
             writer
-                .write_all(b"export PS1=''\nunset PROMPT_COMMAND\nstty -echo\n")
+                .write_all(init_script.as_bytes())
                 .map_err(AppError::Io)?;
         }
 
@@ -1268,6 +1327,8 @@ mod imp {
         event_tx: broadcast::Sender<StreamChunk>,
         shell_session_id: String,
         emit_raw_output: bool,
+        ready_marker: Option<String>,
+        ready_tx: Option<std::sync::mpsc::Sender<std::result::Result<(), String>>>,
     }
 
     fn spawn_reader_loop(mut reader: Box<dyn Read + Send>, context: ReaderLoopContext) {
@@ -1279,18 +1340,43 @@ mod imp {
             event_tx,
             shell_session_id,
             emit_raw_output,
+            ready_marker,
+            ready_tx,
         } = context;
 
         tokio::task::spawn_blocking(move || {
             let mut buffer = [0_u8; 4096];
+            let mut ready_marker = ready_marker;
+            let mut ready_tx = ready_tx;
+            let mut ready_buffer = String::new();
             loop {
                 match reader.read(&mut buffer) {
                     Ok(0) => {
+                        if let Some(ready_tx) = ready_tx.take() {
+                            let _ =
+                                ready_tx
+                                    .send(Err("PTY shell closed before initialization completed"
+                                        .to_string()));
+                        }
                         closed.store(true, Ordering::SeqCst);
                         return;
                     }
                     Ok(read) => {
                         let chunk = String::from_utf8_lossy(&buffer[..read]).into_owned();
+
+                        if let Some(marker) = ready_marker.as_ref() {
+                            ready_buffer.push_str(&chunk);
+                            if ready_buffer.contains(marker) {
+                                if let Some(ready_tx) = ready_tx.take() {
+                                    let _ = ready_tx.send(Ok(()));
+                                }
+                                ready_marker = None;
+                                ready_buffer.clear();
+                            } else {
+                                trim_to_tail(&mut ready_buffer, marker.len() + 64);
+                            }
+                        }
+
                         let sender = active_sender.lock().ok().and_then(|guard| guard.clone());
                         if let Some(sender) = sender {
                             let _ = sender.blocking_send(chunk.clone());
@@ -1311,6 +1397,12 @@ mod imp {
                         }
                     }
                     Err(_) => {
+                        if let Some(ready_tx) = ready_tx.take() {
+                            let _ = ready_tx.send(Err(
+                                "PTY shell reader failed before initialization completed"
+                                    .to_string(),
+                            ));
+                        }
                         closed.store(true, Ordering::SeqCst);
                         return;
                     }

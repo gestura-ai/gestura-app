@@ -400,37 +400,24 @@ fn update_task_with_result_with_manager(
         .map(|value| i32::try_from(value).unwrap_or(i32::MAX))
         .unwrap_or_default();
 
-    manager
-        .record_task_result(
-            session_id,
-            task_id,
-            success,
-            output.to_string(),
-            tool_call_count,
-            duration_ms_i32,
-        )
-        .map_err(|e| e.to_string())?;
-
     let existing_task = manager
         .get_task(session_id, task_id)
         .map_err(|e| e.to_string())?
         .ok_or_else(|| format!("Task '{task_id}' not found"))?;
 
-    let metadata = match tool_calls {
-        Some(tool_calls) => merge_task_metadata(
-            existing_task.metadata,
-            serde_json::json!({
-                "tool_calls": tool_calls,
-                "completed_at": chrono::Utc::now().to_rfc3339()
-            }),
-        ),
-        None => merge_task_metadata(
-            existing_task.metadata,
-            serde_json::json!({
-                "completed_at": chrono::Utc::now().to_rfc3339()
-            }),
-        ),
-    };
+    let mut metadata_patch = serde_json::json!({
+        "success": success,
+        "output": output,
+        "tool_calls": tool_call_count,
+        "duration_ms": duration_ms_i32,
+        "completed_at": chrono::Utc::now().to_rfc3339(),
+    });
+
+    if let Some(tool_calls) = tool_calls {
+        metadata_patch["tool_calls"] = tool_calls;
+    }
+
+    let metadata = merge_task_metadata(existing_task.metadata, metadata_patch);
 
     manager
         .update_task_metadata(session_id, task_id, metadata)
