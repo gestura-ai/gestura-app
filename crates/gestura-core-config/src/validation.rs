@@ -272,6 +272,10 @@ fn validate_hotkey_config(config: &AppConfig, result: &mut ConfigValidationResul
     if config.hotkey_listen.is_empty() {
         result.add_warning("hotkey_listen", "No listen hotkey configured");
     }
+
+    if config.hotkey_new_session.is_empty() {
+        result.add_warning("hotkey_new_session", "No new-session hotkey configured");
+    }
 }
 
 /// Configuration health check result

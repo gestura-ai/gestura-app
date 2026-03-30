@@ -54,6 +54,11 @@ pub const ENV_MAPPINGS: &[(&str, &str, &str)] = &[
         "Global hotkey to toggle the app",
     ),
     (
+        "HOTKEY_NEW_SESSION",
+        "hotkey_new_session",
+        "Global hotkey to open a new agent session",
+    ),
+    (
         "GRACE_PERIOD_SECS",
         "grace_period_secs",
         "Agent shutdown grace period in seconds",

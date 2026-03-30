@@ -231,6 +231,7 @@ async fn test_configuration_persistence() {
 
     // Modify config
     config.hotkey_listen = "Ctrl+Alt+G".to_string();
+    config.hotkey_new_session = "Ctrl+Shift+Space".to_string();
     config.grace_period_secs = 45;
     config.ui.theme_mode = "dark".to_string();
     config.ui.accent = Some("emerald".to_string());
@@ -240,6 +241,7 @@ async fn test_configuration_persistence() {
     let reloaded_config = AppConfig::load_from_path(&config_path);
 
     assert_eq!(reloaded_config.hotkey_listen, "Ctrl+Alt+G");
+    assert_eq!(reloaded_config.hotkey_new_session, "Ctrl+Shift+Space");
     assert_eq!(reloaded_config.grace_period_secs, 45);
     assert_eq!(reloaded_config.ui.theme_mode, "dark");
     assert_eq!(reloaded_config.ui.accent, Some("emerald".to_string()));

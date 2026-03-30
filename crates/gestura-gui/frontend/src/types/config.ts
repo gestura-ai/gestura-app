@@ -164,6 +164,7 @@ export interface PipelineSettings {
 
 export interface AppConfig {
   hotkey_listen: string;
+  hotkey_new_session: string;
   grace_period_secs: number;
   voice: VoiceSettings;
   llm: LlmSettings;

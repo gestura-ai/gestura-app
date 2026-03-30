@@ -6,6 +6,7 @@ use gestura_gui::AppConfigSecurityExt;
 fn stage1_config_loads_defaults() {
     let cfg = gestura_gui::AppConfig::load();
     assert!(!cfg.hotkey_listen.is_empty());
+    assert!(!cfg.hotkey_new_session.is_empty());
     assert!(cfg.grace_period_secs > 0);
 }
 

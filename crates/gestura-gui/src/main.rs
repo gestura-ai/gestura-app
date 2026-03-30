@@ -14,7 +14,7 @@ use gestura_gui::agents::AgentManager;
 use gestura_gui::commands;
 #[allow(unused_imports)]
 use gestura_gui::dispatcher::EventDispatcher;
-use gestura_gui::hotkeys::register_hotkey;
+use gestura_gui::hotkeys::sync_hotkeys;
 use gestura_gui::kv::KvStore;
 use gestura_gui::{AppConfig, AppConfigSecurityExt, AppState};
 
@@ -520,7 +520,7 @@ async fn main() {
             });
 
             gestura_gui::tray::init_tray(app.handle())?;
-            register_hotkey(app.handle(), &config.hotkey_listen);
+            sync_hotkeys(app.handle(), &config);
 
             // macOS: start as a tray-only (accessory) app — no Dock icon.
             // Individual agent session windows will flip the policy to Regular

@@ -1370,6 +1370,22 @@ async fn auto_plan_agent_request(
 mod tests {
     use super::*;
 
+    #[test]
+    fn post_onboarding_welcome_message_mentions_hotkeys_and_settings() {
+        let config = AppConfig {
+            hotkey_listen: "Ctrl+Space".to_string(),
+            hotkey_new_session: "Ctrl+Shift+Space".to_string(),
+            ..AppConfig::default()
+        };
+
+        let message = build_post_onboarding_welcome_message(&config);
+
+        assert!(message.contains("`Ctrl+Space`"));
+        assert!(message.contains("`Ctrl+Shift+Space`"));
+        assert!(message.contains("Voice activation"));
+        assert!(message.contains("MCPs"));
+    }
+
     /// Ensures the GUI legacy single-shot path compiles and returns an error
     /// when no provider is configured.
     #[tokio::test]
@@ -2126,11 +2142,13 @@ pub async fn get_config() -> Result<AppConfig, String> {
 ///
 /// JS↔Rust interop: The frontend invokes this command with `{ cfg: AppConfig }`.
 #[tauri::command(rename_all = "snake_case")]
-pub async fn save_config(cfg: AppConfig) -> Result<(), String> {
+pub async fn save_config(cfg: AppConfig, app: tauri::AppHandle) -> Result<(), String> {
     // Defense-in-depth: ignore/scrub any secrets the frontend might send.
     let mut cfg = cfg;
     strip_secrets_in_place(&mut cfg);
-    cfg.save_async().await.map_err(|e| e.to_string())
+    cfg.save_async().await.map_err(|e| e.to_string())?;
+    crate::hotkeys::sync_hotkeys(&app, &cfg);
+    Ok(())
 }
 
 /// Clear all known plaintext secret fields from an `AppConfig`.
@@ -9209,15 +9227,31 @@ pub fn stop_voice_listening(app: tauri::AppHandle) -> Result<String, String> {
 /// once the file exists) and emits an `"onboarding-complete"` event so the
 /// system tray can rebuild its menu and re-enable the gated items
 /// ("New Agent Session" and "Start Listening").
+fn build_post_onboarding_welcome_message(config: &AppConfig) -> String {
+    let listen_hotkey = config.hotkey_listen.trim();
+    let new_session_hotkey = config.hotkey_new_session.trim();
+
+    format!(
+        "Hello! I’m ready to help.\n\n- Press `{listen_hotkey}` any time to start or stop listening.\n- Press `{new_session_hotkey}` to open a fresh agent session from anywhere.\n- For an always-listening workflow, open the tray icon → **Configuration** and enable **Voice activation**.\n- Use the tray **Configuration** window and this session’s menu to customize providers, tools, MCPs, knowledge, memory, and more.\n\nTell me what you’d like to build, fix, or explore next.",
+    )
+}
+
 #[tauri::command]
 pub async fn complete_onboarding(app: tauri::AppHandle) -> Result<(), String> {
     tracing::info!("Onboarding completed by user");
     // Save the config to disk — this is the canonical "onboarding done" marker.
     let config = AppConfig::load_async().await;
     config.save_async().await.map_err(|e| e.to_string())?;
+    crate::hotkeys::sync_hotkeys(&app, &config);
     // Notify the system tray (and any other listeners) that onboarding has
     // finished so they can re-evaluate is_app_configured() and update their state.
     let _ = app.emit("onboarding-complete", ());
+    let welcome_message = build_post_onboarding_welcome_message(&config);
+    if let Err(error) =
+        crate::window_manager::create_new_agent_session_with_assistant_message(&welcome_message)
+    {
+        tracing::error!(%error, "Onboarding completed but failed to open the first agent session");
+    }
     tracing::info!("Emitted onboarding-complete event");
     Ok(())
 }

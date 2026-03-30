@@ -7,6 +7,7 @@ import type { AppConfig } from '../../types/config';
 function makeConfig(): AppConfig {
   return {
     hotkey_listen: 'Ctrl+Shift+G',
+    hotkey_new_session: 'Ctrl+Shift+N',
     grace_period_secs: 30,
     voice: { provider: 'local' },
     llm: { primary: 'openai' },
@@ -63,6 +64,24 @@ function makeConfig(): AppConfig {
 }
 
 describe('SettingsPanel reflection controls', () => {
+  it('updates the new-session hotkey without dropping sibling system config', () => {
+    const onConfigUpdate = vi.fn().mockResolvedValue(undefined);
+    const { getByDisplayValue } = render(
+      <SettingsPanel config={makeConfig()} onConfigUpdate={onConfigUpdate} />
+    );
+
+    fireEvent.change(getByDisplayValue('Ctrl+Shift+N'), {
+      target: { value: 'Ctrl+Shift+Space' },
+    });
+
+    expect(onConfigUpdate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        hotkey_listen: 'Ctrl+Shift+G',
+        hotkey_new_session: 'Ctrl+Shift+Space',
+      })
+    );
+  });
+
   it('updates nested agent telemetry settings without dropping sibling pipeline config', () => {
     const onConfigUpdate = vi.fn().mockResolvedValue(undefined);
     const { container } = render(

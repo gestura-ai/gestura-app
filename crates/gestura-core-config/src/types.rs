@@ -43,6 +43,10 @@ fn is_default_hotkey_listen(v: &String) -> bool {
     v == "Ctrl+Space"
 }
 
+fn is_default_hotkey_new_session(v: &String) -> bool {
+    v == "Ctrl+Shift+Space"
+}
+
 fn is_default_grace_period_secs(v: &u32) -> bool {
     *v == 30
 }
@@ -58,6 +62,10 @@ fn is_default_ui_theme_mode(v: &String) -> bool {
 // Default-value provider fns required by `#[serde(default = "...")]`
 fn default_hotkey_listen() -> String {
     "Ctrl+Space".to_string()
+}
+
+fn default_hotkey_new_session() -> String {
+    "Ctrl+Shift+Space".to_string()
 }
 
 fn default_grace_period_secs() -> u32 {
@@ -451,6 +459,12 @@ pub struct AppConfig {
         skip_serializing_if = "is_default_hotkey_listen"
     )]
     pub hotkey_listen: String,
+    /// Global hotkey to open a new agent session window.
+    #[serde(
+        default = "default_hotkey_new_session",
+        skip_serializing_if = "is_default_hotkey_new_session"
+    )]
+    pub hotkey_new_session: String,
     /// Grace period in seconds for agent shutdown.
     #[serde(
         default = "default_grace_period_secs",
@@ -954,6 +968,7 @@ impl Default for AppConfig {
     fn default() -> Self {
         Self {
             hotkey_listen: default_hotkey_listen(),
+            hotkey_new_session: default_hotkey_new_session(),
             grace_period_secs: default_grace_period_secs(),
             llm: LlmSettings::default(),
             voice: VoiceSettings::default(),
@@ -1075,6 +1090,7 @@ impl AppConfig {
         match key {
             // Core settings
             "hotkey_listen" => Some(self.hotkey_listen.clone()),
+            "hotkey_new_session" => Some(self.hotkey_new_session.clone()),
             "grace_period_secs" => Some(self.grace_period_secs.to_string()),
             "nats_url" => Some(self.nats_url.clone()),
 
@@ -1210,6 +1226,7 @@ impl AppConfig {
     pub fn list_keys() -> Vec<&'static str> {
         let mut keys = vec![
             "hotkey_listen",
+            "hotkey_new_session",
             "grace_period_secs",
             "nats_url",
             "llm.primary",
@@ -1391,6 +1408,10 @@ impl AppConfig {
                 .is_ok(),
             "hotkey_listen" => {
                 self.hotkey_listen = value.to_string();
+                true
+            }
+            "hotkey_new_session" => {
+                self.hotkey_new_session = value.to_string();
                 true
             }
             "grace_period_secs" => value
@@ -1699,6 +1720,9 @@ impl AppConfig {
         // Core settings
         if let Some(v) = get_env("HOTKEY_LISTEN") {
             self.hotkey_listen = v;
+        }
+        if let Some(v) = get_env("HOTKEY_NEW_SESSION") {
+            self.hotkey_new_session = v;
         }
         if let Some(v) = get_env_u32("GRACE_PERIOD_SECS") {
             self.grace_period_secs = v;
@@ -2009,6 +2033,21 @@ impl WhisperModelInfo {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn new_session_hotkey_round_trips_through_config_accessors() {
+        let mut config = AppConfig::default();
+
+        assert_eq!(config.hotkey_new_session, "Ctrl+Shift+Space");
+        assert_eq!(
+            config.get("hotkey_new_session"),
+            Some("Ctrl+Shift+Space".to_string())
+        );
+        assert!(AppConfig::list_keys().contains(&"hotkey_new_session"));
+
+        assert!(config.set("hotkey_new_session", "Ctrl+Shift+N"));
+        assert_eq!(config.hotkey_new_session, "Ctrl+Shift+N");
+    }
 
     #[test]
     fn set_llm_primary_ensures_provider_config() {

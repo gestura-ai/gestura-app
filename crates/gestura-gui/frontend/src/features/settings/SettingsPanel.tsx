@@ -113,12 +113,21 @@ const SettingsPanel: React.FC<SettingsPanelProps> = ({ config, onConfigUpdate })
       </PanelSection>
 
       <PanelSection heading="System">
-        <FormGroup label="Global Hotkey">
+        <FormGroup label="Listen Hotkey">
           <input
             type="text"
             value={config.hotkey_listen}
             onChange={(e) => updateConfig({ hotkey_listen: e.target.value })}
             placeholder="Ctrl+Space"
+          />
+        </FormGroup>
+
+        <FormGroup label="New Session Hotkey">
+          <input
+            type="text"
+            value={config.hotkey_new_session}
+            onChange={(e) => updateConfig({ hotkey_new_session: e.target.value })}
+            placeholder="Ctrl+Shift+Space"
           />
         </FormGroup>
 

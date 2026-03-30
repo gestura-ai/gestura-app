@@ -74,6 +74,7 @@ import App from './App';
 function makeConfig(): AppConfig {
   return {
     hotkey_listen: 'Ctrl+Shift+G',
+    hotkey_new_session: 'Ctrl+Shift+N',
     grace_period_secs: 30,
     voice: { provider: 'local' },
     llm: { primary: 'openai' },

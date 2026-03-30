@@ -1801,11 +1801,18 @@
                         </div>
 
                         <div class="form-group">
-                            <label class="form-label" for="hotkey">Global Hotkey</label>
+                            <label class="form-label" for="hotkey">Listen Hotkey</label>
                             <input type="text" class="form-input" id="hotkey" name="hotkey_listen"
-                                placeholder="e.g., Cmd+Shift+G">
+                                placeholder="e.g., Ctrl+Space">
                             <div class="help-text">Press the key combination you want to use to activate voice listening
                             </div>
+                        </div>
+
+                        <div class="form-group">
+                            <label class="form-label" for="newSessionHotkey">New Session Hotkey</label>
+                            <input type="text" class="form-input" id="newSessionHotkey" name="hotkey_new_session"
+                                placeholder="e.g., Ctrl+Shift+Space">
+                            <div class="help-text">Open a fresh agent session window from anywhere</div>
                         </div>
 
                         <div class="checkbox-group">
@@ -5363,7 +5370,8 @@
                 }
 
                 // Voice & Audio defaults
-                document.getElementById('hotkey').value = backendConfig?.hotkey_listen || 'Cmd+Shift+G';
+                document.getElementById('hotkey').value = backendConfig?.hotkey_listen || 'Ctrl+Space';
+                document.getElementById('newSessionHotkey').value = backendConfig?.hotkey_new_session || 'Ctrl+Shift+Space';
                 document.getElementById('voiceActivation').checked = false;
                 document.getElementById('pushToTalk').checked = true;
                 document.getElementById('listeningTimeout').value = 30;
@@ -6019,6 +6027,8 @@
                     currentConfig.privacy.crash_reports = document.getElementById('crashReports')?.checked !== false;
                     currentConfig.privacy.voice_data_local = document.getElementById('voiceDataLocal')?.checked !== false;
                     currentConfig.privacy.require_auth = document.getElementById('requireAuth')?.checked === true;
+                    currentConfig.hotkey_listen = (document.getElementById('hotkey')?.value || '').trim() || 'Ctrl+Space';
+                    currentConfig.hotkey_new_session = (document.getElementById('newSessionHotkey')?.value || '').trim() || 'Ctrl+Shift+Space';
                     const rememberMode = document.getElementById('authRememberMode')?.value === 'always' ? 'always' : 'timeout';
                     const authTimeoutMinutes = normalizePrivacyAuthTimeout(document.getElementById('authTimeout')?.value, 15);
                     currentConfig.privacy.auth_timeout = rememberMode === 'always' ? 0 : authTimeoutMinutes;

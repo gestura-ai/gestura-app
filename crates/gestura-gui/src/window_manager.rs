@@ -376,12 +376,28 @@ impl WindowManager {
 
     /// Create a new agent session and window.
     pub fn create_agent_session(&self) -> tauri::Result<String> {
-        self.create_agent_session_with_workspace(None)
+        self.create_agent_session_with_options(None, None)
+    }
+
+    /// Create a new agent session seeded with an initial assistant message.
+    pub fn create_agent_session_with_initial_assistant_message(
+        &self,
+        content: String,
+    ) -> tauri::Result<String> {
+        self.create_agent_session_with_options(None, Some(content))
     }
 
     fn create_agent_session_with_workspace(
         &self,
         selected_workspace: Option<PathBuf>,
+    ) -> tauri::Result<String> {
+        self.create_agent_session_with_options(selected_workspace, None)
+    }
+
+    fn create_agent_session_with_options(
+        &self,
+        selected_workspace: Option<PathBuf>,
+        initial_assistant_message: Option<String>,
     ) -> tauri::Result<String> {
         let session_id = Uuid::new_v4().to_string();
         let window_label = format!("agent-{}", session_id);
@@ -449,7 +465,7 @@ impl WindowManager {
 
         // Create the session with user-friendly title
         let now = chrono::Utc::now();
-        let session = AgentSession {
+        let mut session = AgentSession {
             id: session_id.clone(),
             title: format!("Agent {}", now.format("%b %d, %H:%M")),
             created_at: now,
@@ -459,6 +475,12 @@ impl WindowManager {
             message_count: 0,
             state: session_state,
         };
+
+        if let Some(content) = initial_assistant_message.as_deref() {
+            session.state.add_assistant_message(content, None);
+            session.message_count = session.state.messages.len();
+            session.last_active = chrono::Utc::now();
+        }
 
         // Store the session
         {
@@ -1105,6 +1127,15 @@ pub fn get_window_manager() -> Option<WindowManager> {
 pub fn create_new_agent_session() -> tauri::Result<String> {
     if let Some(manager) = get_window_manager() {
         manager.create_agent_session()
+    } else {
+        Err(tauri::Error::FailedToReceiveMessage)
+    }
+}
+
+/// Create a new agent session with an initial assistant greeting already present.
+pub fn create_new_agent_session_with_assistant_message(content: &str) -> tauri::Result<String> {
+    if let Some(manager) = get_window_manager() {
+        manager.create_agent_session_with_initial_assistant_message(content.to_string())
     } else {
         Err(tauri::Error::FailedToReceiveMessage)
     }

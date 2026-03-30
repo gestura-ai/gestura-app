@@ -11,6 +11,7 @@ import { getConfig, saveConfig, setUiPrefs } from './config';
 
 const makeConfig = (): AppConfig => ({
   hotkey_listen: 'Ctrl+Shift+G',
+  hotkey_new_session: 'Ctrl+Shift+N',
   grace_period_secs: 1,
   voice: { provider: 'local' },
   llm: { primary: 'openai' },
@@ -83,6 +84,7 @@ describe('config IPC wrappers', () => {
     const mock = vi.mocked(invokeTauri);
     mock.mockResolvedValueOnce({
       hotkey_listen: 'Ctrl+Shift+G',
+      hotkey_new_session: 'Ctrl+Shift+N',
       grace_period_secs: 1,
       voice: { provider: 'local' },
       llm: { primary: 'openai' },
@@ -92,6 +94,7 @@ describe('config IPC wrappers', () => {
     });
 
     await expect(getConfig()).resolves.toMatchObject({
+      hotkey_new_session: 'Ctrl+Shift+N',
       privacy: {
         data_collection: false,
         crash_reports: true,

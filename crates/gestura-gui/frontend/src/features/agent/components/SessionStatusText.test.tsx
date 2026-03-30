@@ -43,6 +43,16 @@ describe('SessionStatusText', () => {
     expect(warningText.closest('.session-status-text')).not.toHaveClass('session-status-text--animated');
   });
 
+  it('shows explicit loading status text instead of replacing it with thinking copy', () => {
+    render(<SessionStatusText status={{ text: "Connected to Ollama — loading model 'llama3.2'…", kind: 'busy' }} />);
+
+    const loadingText = screen.getByText("Connected to Ollama — loading model 'llama3.2'…");
+    expect(loadingText.closest('.session-status-text')).toHaveClass('session-status-text--normal');
+    expect(loadingText.closest('.session-status-text')).not.toHaveClass('session-status-text--animated');
+    expect(loadingText.closest('.session-status-text')?.querySelector('.session-status-text__spinner')).toBeInTheDocument();
+    expect(screen.queryByText('Thinking')).not.toBeInTheDocument();
+  });
+
   it('renders alert styling for error statuses', () => {
     render(<SessionStatusText status={{ text: 'Error: invoke failed', kind: 'error' }} />);
 

@@ -149,6 +149,7 @@ test.describe('@smoke Gestura App', () => {
     // The mocked default config sets llm.primary=openai, which should overwrite
     // the template default (ollama). If we select too early, the in-flight
     // hydration can race and revert the provider.
+    await expect(page.locator('input[name="llmSetupMode"][value="advanced"]')).toBeChecked();
     await expect(page.locator('#llmProvider')).toHaveValue('openai');
 
     await page.selectOption('#llmProvider', 'grok');

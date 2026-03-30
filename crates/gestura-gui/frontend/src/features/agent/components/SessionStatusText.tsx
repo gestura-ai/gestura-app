@@ -13,6 +13,10 @@ const READY_WORDS = ['Ready', 'Standing by', 'Waiting', 'Available'] as const;
 const LISTENING_WORDS = ['Listening', 'Capturing', 'Transcribing', 'Parsing'] as const;
 const RESUMING_WORDS = ['Resuming', 'Restoring', 'Rehydrating', 'Continuing'] as const;
 
+function isExplicitLoadingStatus(text: string): boolean {
+  return /\bloading\b|\bwarming\s+up\b|\bstarting\b/i.test(text);
+}
+
 function toneForStatus(status: StatusState): SessionStatusTone {
   const text = status.text.trim();
 
@@ -31,6 +35,10 @@ function animatedWordsForStatus(status: StatusState, tone: SessionStatusTone): r
   const text = status.text.trim();
 
   if (tone !== 'normal') {
+    return null;
+  }
+
+  if (isExplicitLoadingStatus(text)) {
     return null;
   }
 
@@ -96,6 +104,7 @@ export interface SessionStatusTextProps {
 export const SessionStatusText: React.FC<SessionStatusTextProps> = ({ status }) => {
   const statusText = status.text.trim();
   const tone = toneForStatus(status);
+  const loading = isExplicitLoadingStatus(statusText);
   const words = useMemo(() => animatedWordsForStatus(status, tone), [status, tone]);
   const animated = Boolean(words && words.length > 1);
   const ready = tone === 'normal' && /^ready$/i.test(statusText);
@@ -116,7 +125,7 @@ export const SessionStatusText: React.FC<SessionStatusTextProps> = ({ status }) 
   }, [animated, status.kind, status.text]);
 
   const displayWord = words ? rollingWord(words, tick) : status.text;
-  const spinnerFrame = animated && !ready ? BRAILLE_FRAMES[tick % BRAILLE_FRAMES.length] : null;
+  const spinnerFrame = (animated || loading) && !ready ? BRAILLE_FRAMES[tick % BRAILLE_FRAMES.length] : null;
 
   return (
     <div

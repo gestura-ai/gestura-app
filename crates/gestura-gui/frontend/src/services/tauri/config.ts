@@ -36,6 +36,7 @@ const sanitizeConfigForRust = (cfg: AppConfig): AppConfig => ({
 
 const defaultConfig = (): AppConfig => ({
   hotkey_listen: 'Ctrl+Space',
+  hotkey_new_session: 'Ctrl+Shift+Space',
   grace_period_secs: 30,
   voice: {
     provider: 'local',
