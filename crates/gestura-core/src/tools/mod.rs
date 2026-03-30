@@ -342,15 +342,15 @@ pub mod shell_streaming {
                 tokio::time::sleep(std::time::Duration::from_secs(3)).await;
                 unsafe { libc::kill(pid as i32, libc::SIGKILL) };
             });
+            Ok(())
         }
         #[cfg(not(unix))]
         {
             let _ = pid;
-            return Err(crate::error::AppError::Io(std::io::Error::other(
+            Err(crate::error::AppError::Io(std::io::Error::other(
                 "Process signals not supported on this platform",
-            )));
+            )))
         }
-        Ok(())
     }
 
     /// Send SIGSTOP (pause) to a running shell process.

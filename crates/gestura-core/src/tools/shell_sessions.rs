@@ -1230,7 +1230,7 @@ mod imp {
         {
             let mut builder = CommandBuilder::new("cmd.exe");
             builder.arg("/Q");
-            return builder;
+            builder
         }
 
         #[cfg(not(windows))]
