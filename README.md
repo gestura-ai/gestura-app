@@ -51,14 +51,11 @@ canonical architecture and API reference for the project.
 
 ### Generated Docs Quick Start
 
-Hosted Rustdoc publishes from GitHub Actions to:
+Generated Rustdoc is built in CI and uploaded as a downloadable GitHub Actions
+artifact.
 
-- `https://gestura-ai.github.io/gestura-app/`
-- Primary facade entry point: `https://gestura-ai.github.io/gestura-app/gestura_core/index.html`
-
-The Pages workflow lives at `.github/workflows/rustdoc-pages.yml`.
-For the first deployment, make sure the repository Pages settings are configured
-to **Build and deployment → Source: GitHub Actions**.
+The workflow lives at `.github/workflows/rustdoc-pages.yml` and uploads the
+generated docs as the `rustdoc-site` artifact.
 
 If you want a single local generated-doc entry point, start with the public facade:
 

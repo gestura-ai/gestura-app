@@ -13,11 +13,9 @@ on:
 
 permissions:
   contents: read
-  pages: write
-  id-token: write
 
 concurrency:
-  group: rustdoc-pages
+  group: rustdoc-build
   cancel-in-progress: true
 
 env:
@@ -26,7 +24,7 @@ env:
 
 jobs:
   build:
-    name: Build Rustdoc site
+    name: Build Rustdoc artifact
     runs-on: ubuntu-22.04
 
     steps:
@@ -94,7 +92,7 @@ jobs:
       - name: Build hosted Rustdoc
         run: cargo doc --no-deps --all-features $DOC_PACKAGES
 
-      - name: Prepare Pages artifact
+      - name: Prepare Rustdoc artifact
         run: |
           touch target/doc/.nojekyll
           if [ -f target/doc/index.html ]; then
@@ -119,34 +117,20 @@ jobs:
       - name: Write build summary
         run: |
           {
-            echo "## Hosted Rustdoc publish target"
+            echo "## Rustdoc artifact output"
             echo
-            echo "- URL: https://gestura-ai.github.io/gestura-app/"
-            echo "- Primary crate entry point: https://gestura-ai.github.io/gestura-app/gestura_core/index.html"
+            echo "- Workflow artifact: rustdoc-site"
+            echo "- Primary crate entry point in artifact: gestura_core/index.html"
+            echo "- Workspace landing page in artifact: workspace-index.html"
             echo
             echo "### Published packages"
             sed "s/^/- /" rustdoc-packages.txt
           } >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Configure GitHub Pages
-        uses: actions/configure-pages@v5
+      - name: Upload Rustdoc artifact
+        uses: actions/upload-artifact@v4
         with:
-          enablement: true
-
-      - name: Upload Pages artifact
-        uses: actions/upload-pages-artifact@v3
-        with:
+          name: rustdoc-site
           path: target/doc
-
-  deploy:
-    name: Deploy Rustdoc site
-    needs: build
-    runs-on: ubuntu-latest
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
-
-    steps:
-      - name: Deploy to GitHub Pages
-        id: deployment
-        uses: actions/deploy-pages@v4
+          if-no-files-found: error
+          retention-days: 14

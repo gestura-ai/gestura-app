@@ -3436,7 +3436,12 @@ impl<M: OrchestratorAgentManager> AgentOrchestrator<M> {
                     };
 
                 if let Err(error) = orchestrator
-                    .complete_task_execution(task, task_result, preserve_existing_checkpoint, attempt)
+                    .complete_task_execution(
+                        task,
+                        task_result,
+                        preserve_existing_checkpoint,
+                        attempt,
+                    )
                     .await
                 {
                     tracing::error!(error = %error, "Failed to finalize delegated task execution");
