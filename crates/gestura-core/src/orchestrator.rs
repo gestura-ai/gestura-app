@@ -1373,6 +1373,7 @@ pub trait OrchestratorObserver: Send + Sync {
 struct ActiveTaskControl {
     task: DelegatedTask,
     local_cancel_token: Option<CancellationToken>,
+    attempt: u32,
 }
 
 #[derive(Debug)]
@@ -3346,17 +3347,8 @@ impl<M: OrchestratorAgentManager> AgentOrchestrator<M> {
         let local_cancel_token = (!matches!(task.execution_mode, AgentExecutionMode::Remote))
             .then(CancellationToken::new);
 
-        let (run_snapshot, task_snapshot) = {
+        let (run_snapshot, task_snapshot, attempt) = {
             let mut active = self.active_tasks.lock().await;
-            active.insert(
-                task.id.clone(),
-                ActiveTaskControl {
-                    task: task.clone(),
-                    local_cancel_token: local_cancel_token.clone(),
-                },
-            );
-            drop(active);
-
             let mut runs = self.supervisor_runs.lock().await;
             let run = runs
                 .get_mut(&run_id)
@@ -3381,11 +3373,21 @@ impl<M: OrchestratorAgentManager> AgentOrchestrator<M> {
                     };
                 record.clone()
             };
+            let attempt = task_snapshot.attempts;
+
+            active.insert(
+                task.id.clone(),
+                ActiveTaskControl {
+                    task: task.clone(),
+                    local_cancel_token: local_cancel_token.clone(),
+                    attempt,
+                },
+            );
 
             run.updated_at = Utc::now();
             run.status = recalculate_run_status(run);
 
-            (run.clone(), task_snapshot)
+            (run.clone(), task_snapshot, attempt)
         };
 
         record_task_dispatch(&task, &task_snapshot, &run_snapshot);
@@ -3434,7 +3436,7 @@ impl<M: OrchestratorAgentManager> AgentOrchestrator<M> {
                     };
 
                 if let Err(error) = orchestrator
-                    .complete_task_execution(task, task_result, preserve_existing_checkpoint)
+                    .complete_task_execution(task, task_result, preserve_existing_checkpoint, attempt)
                     .await
                 {
                     tracing::error!(error = %error, "Failed to finalize delegated task execution");
@@ -3670,6 +3672,7 @@ impl<M: OrchestratorAgentManager> AgentOrchestrator<M> {
         task: DelegatedTask,
         task_result: TaskResult,
         preserve_existing_checkpoint: bool,
+        expected_attempt: u32,
     ) -> Result<(), String> {
         let run_id = task_result
             .run_id
@@ -3685,7 +3688,7 @@ impl<M: OrchestratorAgentManager> AgentOrchestrator<M> {
             finalized_state,
             gate_message,
         ) = {
-            self.active_tasks.lock().await.remove(&task.id);
+            let mut active = self.active_tasks.lock().await;
 
             let mut runs = self.supervisor_runs.lock().await;
             let run = runs
@@ -3696,6 +3699,32 @@ impl<M: OrchestratorAgentManager> AgentOrchestrator<M> {
                 .iter_mut()
                 .find(|record| record.task.id == task.id)
                 .ok_or_else(|| format!("Task '{}' not found in run", task.id))?;
+
+            if record.attempts != expected_attempt {
+                tracing::debug!(
+                    task_id = %task.id,
+                    run_id = %run_id,
+                    expected_attempt,
+                    actual_attempt = record.attempts,
+                    "Ignoring stale delegated task completion after retry"
+                );
+                return Ok(());
+            }
+
+            if let Some(control) = active.get(&task.id)
+                && control.attempt != expected_attempt
+            {
+                tracing::debug!(
+                    task_id = %task.id,
+                    run_id = %run_id,
+                    expected_attempt,
+                    active_attempt = control.attempt,
+                    "Ignoring stale delegated task completion for superseded active attempt"
+                );
+                return Ok(());
+            }
+
+            active.remove(&task.id);
 
             if record.result.is_some()
                 && record.completed_at.is_some()
@@ -9044,6 +9073,7 @@ mod tests {
                     duration_ms: 10,
                 },
                 false,
+                0,
             )
             .await
             .unwrap();
@@ -9221,7 +9251,11 @@ mod tests {
     async fn test_child_run_cancellation_and_retry_roll_up_to_parent() {
         let tmp = tempdir().unwrap();
         let manager = crate::agents::AgentManager::new(tmp.path().join("child-cancel-retry.db"));
-        let orchestrator = AgentOrchestrator::new(manager, AppConfig::default());
+        let orchestrator = AgentOrchestrator::new_with_workspace_root(
+            manager,
+            AppConfig::default(),
+            Some(tmp.path().to_path_buf()),
+        );
 
         orchestrator.supervisor_runs.lock().await.insert(
             "run-parent".to_string(),
@@ -9236,7 +9270,7 @@ mod tests {
                 name: None,
                 parent_task_id: None,
                 session_id: None,
-                workspace_dir: None,
+                workspace_dir: Some(tmp.path().to_path_buf()),
                 approval_required: false,
                 reviewer_required: false,
                 test_required: false,
@@ -9266,7 +9300,7 @@ mod tests {
                 approval_required: false,
                 reviewer_required: false,
                 test_required: false,
-                workspace_dir: None,
+                workspace_dir: Some(tmp.path().to_path_buf()),
                 execution_mode: AgentExecutionMode::SharedWorkspace,
                 environment_id: None,
                 remote_target: None,
@@ -9282,7 +9316,16 @@ mod tests {
 
         orchestrator.retry_task("task-child-retry").await.unwrap();
         let parent_retried = orchestrator.get_supervisor_run("run-parent").await.unwrap();
-        assert_eq!(parent_retried.status, SupervisorRunStatus::Running);
+        let child_retried = orchestrator.get_supervisor_run("run-child").await.unwrap();
+        let child_record = child_retried
+            .tasks
+            .iter()
+            .find(|record| record.task.id == "task-child-retry")
+            .expect("retried child task should still exist");
+        assert_eq!(child_record.attempts, 1);
+        assert_ne!(child_record.state, SupervisorTaskState::Cancelled);
+        assert_ne!(child_retried.status, SupervisorRunStatus::Cancelled);
+        assert_ne!(parent_retried.status, SupervisorRunStatus::Cancelled);
     }
 
     #[tokio::test]
@@ -9549,6 +9592,7 @@ mod tests {
             ActiveTaskControl {
                 task: task.clone(),
                 local_cancel_token: Some(CancellationToken::new()),
+                attempt: 1,
             },
         );
         persist_checkpoint_to_disk(
@@ -9793,6 +9837,7 @@ mod tests {
             ActiveTaskControl {
                 task: task.clone(),
                 local_cancel_token: Some(token.clone()),
+                attempt: 1,
             },
         );
 
@@ -9855,6 +9900,7 @@ mod tests {
             ActiveTaskControl {
                 task: task.clone(),
                 local_cancel_token: None,
+                attempt: 1,
             },
         );
 
@@ -10011,6 +10057,7 @@ mod tests {
                     duration_ms: 10,
                 },
                 true,
+                1,
             )
             .await
             .unwrap();
@@ -10144,6 +10191,7 @@ mod tests {
                     duration_ms: 25,
                 },
                 false,
+                1,
             )
             .await
             .unwrap();
