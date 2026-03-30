@@ -112,12 +112,17 @@ impl McpToken {
 
 /// Check if keychain access is disabled via environment variables
 ///
-/// Returns `true` when `GESTURA_DISABLE_KEYCHAIN=1`, `GESTURA_NO_KEYCHAIN=1`,
-/// or `CI` environment variable is set.
+/// Returns `true` when `GESTURA_DISABLE_KEYCHAIN=1` or
+/// `GESTURA_NO_KEYCHAIN=1` is set.
+///
+/// Outside unit-test builds, `CI` also disables keychain access to avoid
+/// non-interactive runner hangs. Unit tests intentionally ignore bare `CI`
+/// because test builds already use in-memory mock secure storage.
 pub fn keychain_access_disabled() -> bool {
-    std::env::var_os("GESTURA_DISABLE_KEYCHAIN").is_some()
-        || std::env::var_os("GESTURA_NO_KEYCHAIN").is_some()
-        || std::env::var_os("CI").is_some()
+    let explicitly_disabled = std::env::var_os("GESTURA_DISABLE_KEYCHAIN").is_some()
+        || std::env::var_os("GESTURA_NO_KEYCHAIN").is_some();
+
+    explicitly_disabled || (cfg!(not(test)) && std::env::var_os("CI").is_some())
 }
 
 /// Create the appropriate secure storage implementation based on features.
@@ -144,6 +149,50 @@ pub fn create_secure_storage() -> Box<dyn SecureStorage> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::ffi::OsString;
+    use std::sync::{Mutex, OnceLock};
+
+    fn env_lock() -> &'static Mutex<()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+    }
+
+    struct ScopedEnvVar {
+        key: &'static str,
+        old: Option<OsString>,
+    }
+
+    impl ScopedEnvVar {
+        fn set(key: &'static str, value: &str) -> Self {
+            let old = std::env::var_os(key);
+            unsafe {
+                std::env::set_var(key, value);
+            }
+            Self { key, old }
+        }
+
+        fn unset(key: &'static str) -> Self {
+            let old = std::env::var_os(key);
+            unsafe {
+                std::env::remove_var(key);
+            }
+            Self { key, old }
+        }
+    }
+
+    impl Drop for ScopedEnvVar {
+        fn drop(&mut self) {
+            if let Some(value) = &self.old {
+                unsafe {
+                    std::env::set_var(self.key, value);
+                }
+            } else {
+                unsafe {
+                    std::env::remove_var(self.key);
+                }
+            }
+        }
+    }
 
     #[test]
     fn test_mcp_token_creation() {
@@ -171,5 +220,28 @@ mod tests {
         let past = chrono::Utc::now() - chrono::Duration::hours(1);
         let expired_token = McpToken::with_expiry("test".to_string(), past);
         assert!(expired_token.is_expired());
+    }
+
+    #[test]
+    fn keychain_access_disabled_ignores_ci_in_unit_tests() {
+        let _guard = env_lock().lock().unwrap_or_else(|e| e.into_inner());
+        let _ci = ScopedEnvVar::set("CI", "1");
+        let _disabled = ScopedEnvVar::unset("GESTURA_DISABLE_KEYCHAIN");
+        let _no_keychain = ScopedEnvVar::unset("GESTURA_NO_KEYCHAIN");
+
+        assert!(
+            !keychain_access_disabled(),
+            "unit tests should not skip mocked secure storage just because CI is set"
+        );
+    }
+
+    #[test]
+    fn keychain_access_disabled_still_respects_explicit_overrides() {
+        let _guard = env_lock().lock().unwrap_or_else(|e| e.into_inner());
+        let _ci = ScopedEnvVar::unset("CI");
+        let _disabled = ScopedEnvVar::set("GESTURA_DISABLE_KEYCHAIN", "1");
+        let _no_keychain = ScopedEnvVar::unset("GESTURA_NO_KEYCHAIN");
+
+        assert!(keychain_access_disabled());
     }
 }
