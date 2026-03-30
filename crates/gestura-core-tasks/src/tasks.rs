@@ -29,6 +29,15 @@ use std::fs;
 use std::path::PathBuf;
 use uuid::Uuid;
 
+const GESTURA_HOME_DIR_ENV: &str = "GESTURA_HOME_DIR";
+
+fn gestura_home_dir() -> PathBuf {
+    std::env::var_os(GESTURA_HOME_DIR_ENV)
+        .map(PathBuf::from)
+        .or_else(dirs::home_dir)
+        .unwrap_or_else(|| PathBuf::from("."))
+}
+
 /// Status of a task
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum TaskStatus {
@@ -1605,10 +1614,7 @@ static GLOBAL_TASK_MANAGER: std::sync::OnceLock<TaskManager> = std::sync::OnceLo
 /// statics — doing so produces independent in-memory caches that cause stale
 /// reads when a different subsystem writes tasks to disk.
 pub fn get_global_task_manager() -> &'static TaskManager {
-    GLOBAL_TASK_MANAGER.get_or_init(|| {
-        let base_dir = dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from("."));
-        TaskManager::new(base_dir)
-    })
+    GLOBAL_TASK_MANAGER.get_or_init(|| TaskManager::new(gestura_home_dir()))
 }
 
 #[cfg(test)]

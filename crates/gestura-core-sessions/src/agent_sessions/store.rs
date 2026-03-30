@@ -72,12 +72,10 @@ pub trait AgentSessionStore {
 
 /// Returns the Gestura data directory (`~/.gestura/`).
 ///
-/// This replicates `AppConfig::data_dir()` logic so the sessions crate does not
-/// depend on the config module.
+/// This mirrors `AppConfig::data_dir()` while keeping the sessions crate
+/// independent from the config module.
 fn gestura_data_dir() -> PathBuf {
-    dirs::home_dir()
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join(".gestura")
+    super::gestura_home_dir().join(".gestura")
 }
 
 /// Default directory for persisted agent sessions.

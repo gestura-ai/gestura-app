@@ -20,9 +20,7 @@ use super::{AgentSession, AgentSessionStore, SessionState};
 
 /// Returns the Gestura data directory (`~/.gestura/`).
 fn gestura_data_dir() -> PathBuf {
-    dirs::home_dir()
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join(".gestura")
+    super::gestura_home_dir().join(".gestura")
 }
 
 /// Returns the path for the legacy GUI session history file: `~/.gestura/gui_sessions.json`.

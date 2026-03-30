@@ -59,6 +59,15 @@ fn is_default_ui_theme_mode(v: &String) -> bool {
     v == "system"
 }
 
+const GESTURA_HOME_DIR_ENV: &str = "GESTURA_HOME_DIR";
+
+fn gestura_home_dir() -> PathBuf {
+    std::env::var_os(GESTURA_HOME_DIR_ENV)
+        .map(PathBuf::from)
+        .or_else(dirs::home_dir)
+        .unwrap_or_else(|| PathBuf::from("."))
+}
+
 // Default-value provider fns required by `#[serde(default = "...")]`
 fn default_hotkey_listen() -> String {
     "Ctrl+Space".to_string()
@@ -993,10 +1002,14 @@ impl Default for AppConfig {
 
 impl AppConfig {
     /// Returns the default directory for storing Gestura data
-    /// On all platforms: ~/.gestura/
+    /// On all platforms: `~/.gestura/`
+    ///
+    /// When `GESTURA_HOME_DIR` is set, Gestura resolves its data directory from
+    /// that override instead of the OS home-directory lookup. This keeps spawned
+    /// CLI processes and tests deterministic on platforms where standard home-dir
+    /// resolution ignores `HOME`/`USERPROFILE` overrides.
     pub fn data_dir() -> PathBuf {
-        let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
-        home.join(".gestura")
+        gestura_home_dir().join(".gestura")
     }
 
     /// Returns the default config path: `~/.gestura/config.yaml`

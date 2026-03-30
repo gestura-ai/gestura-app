@@ -14,6 +14,46 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 static NEXT_ISOLATED_HOME_ID: AtomicU64 = AtomicU64::new(0);
 
+fn gestura_data_dir(home: &Path) -> PathBuf {
+    home.join(".gestura")
+}
+
+#[cfg(windows)]
+fn windows_home_components(home: &Path) -> (String, String) {
+    let home = home.to_string_lossy().replace('/', "\\");
+    if home.len() >= 2 && home.as_bytes()[1] == b':' {
+        let drive = home[..2].to_string();
+        let rest = &home[2..];
+        let path = if rest.is_empty() {
+            "\\".to_string()
+        } else if rest.starts_with('\\') {
+            rest.to_string()
+        } else {
+            format!("\\{rest}")
+        };
+        (drive, path)
+    } else {
+        ("C:".to_string(), "\\".to_string())
+    }
+}
+
+fn configure_isolated_home_env(cmd: &mut Command, home: &Path) {
+    cmd.env("GESTURA_DISABLE_KEYCHAIN", "1");
+    cmd.env("GESTURA_HOME_DIR", home);
+
+    // Keep standard home variables aligned for code paths that still consult
+    // the platform environment directly.
+    cmd.env("HOME", home);
+    cmd.env("USERPROFILE", home);
+
+    #[cfg(windows)]
+    {
+        let (home_drive, home_path) = windows_home_components(home);
+        cmd.env("HOMEDRIVE", home_drive);
+        cmd.env("HOMEPATH", home_path);
+    }
+}
+
 /// Get a Command for the gestura binary
 #[allow(deprecated)] // cargo_bin is deprecated but we need it for tests
 fn gestura() -> Command {
@@ -31,13 +71,7 @@ fn gestura() -> Command {
 fn gestura_with_home(home: &Path) -> Command {
     let mut cmd = Command::cargo_bin("gestura").unwrap();
 
-    cmd.env("GESTURA_DISABLE_KEYCHAIN", "1");
-
-    // `dirs::home_dir()` checks different env vars per platform.
-    cmd.env("HOME", home);
-    cmd.env("USERPROFILE", home);
-    cmd.env("HOMEDRIVE", "C:");
-    cmd.env("HOMEPATH", "\\");
+    configure_isolated_home_env(&mut cmd, home);
 
     cmd
 }
@@ -59,7 +93,7 @@ fn isolated_home_dir() -> PathBuf {
 }
 
 fn write_saved_session(home: &Path) -> AgentSession {
-    let sessions_dir = home.join(".gestura").join("agent_sessions");
+    let sessions_dir = gestura_data_dir(home).join("agent_sessions");
     let workspace_dir = home.join("workspace");
     std::fs::create_dir_all(&workspace_dir).unwrap();
 
@@ -255,7 +289,7 @@ fn test_session_fork_persists_new_core_session_identity() {
         .assert()
         .success();
 
-    let store = FileAgentSessionStore::new(home.join(".gestura").join("agent_sessions"));
+    let store = FileAgentSessionStore::new(gestura_data_dir(&home).join("agent_sessions"));
     let sessions = store
         .list(SessionFilter::All)
         .expect("sessions should load from canonical store");
@@ -286,7 +320,7 @@ fn test_session_delete_removes_from_core_session_store() {
         .assert()
         .success();
 
-    let store = FileAgentSessionStore::new(home.join(".gestura").join("agent_sessions"));
+    let store = FileAgentSessionStore::new(gestura_data_dir(&home).join("agent_sessions"));
     let sessions = store
         .list(SessionFilter::All)
         .expect("sessions should load from canonical store");
@@ -370,11 +404,7 @@ fn test_agent_prompt_file_executes_single_headless_command() {
     std::fs::create_dir_all(&home).unwrap();
     std::fs::write(&prompt_path, "/task create root_task from prompt file\n").unwrap();
 
-    let output = gestura()
-        .env("HOME", &home)
-        .env("USERPROFILE", &home)
-        .env("HOMEDRIVE", "C:")
-        .env("HOMEPATH", "\\")
+    let output = gestura_with_home(&home)
         .args([
             "agent",
             "--prompt-file",
@@ -387,7 +417,7 @@ fn test_agent_prompt_file_executes_single_headless_command() {
         .get_output()
         .clone();
 
-    let sessions_dir = home.join(".gestura").join("agent_sessions");
+    let sessions_dir = gestura_data_dir(&home).join("agent_sessions");
     let mut session_files = std::fs::read_dir(&sessions_dir)
         .unwrap()
         .map(|entry| entry.unwrap().path())
@@ -401,8 +431,7 @@ fn test_agent_prompt_file_executes_single_headless_command() {
         .expect("session file should have a valid stem")
         .to_string();
 
-    let tasks_path = home
-        .join(".gestura")
+    let tasks_path = gestura_data_dir(&home)
         .join("tasks")
         .join(format!("{session_id}.json"));
     assert!(
@@ -441,11 +470,7 @@ fn test_agent_basic_accepts_piped_slash_commands() {
 #[test]
 fn test_agent_basic_task_commands_persist_to_global_task_store() {
     let home = isolated_home_dir();
-    let output = gestura()
-        .env("HOME", &home)
-        .env("USERPROFILE", &home)
-        .env("HOMEDRIVE", "C:")
-        .env("HOMEPATH", "\\")
+    let output = gestura_with_home(&home)
         .args(["agent", "--basic"])
         .write_stdin("/task create root_task verify persistence\n/quit\n")
         .assert()
@@ -453,7 +478,7 @@ fn test_agent_basic_task_commands_persist_to_global_task_store() {
         .get_output()
         .clone();
 
-    let sessions_dir = home.join(".gestura").join("agent_sessions");
+    let sessions_dir = gestura_data_dir(&home).join("agent_sessions");
     let mut session_files = std::fs::read_dir(&sessions_dir)
         .unwrap()
         .map(|entry| entry.unwrap().path())
@@ -467,8 +492,7 @@ fn test_agent_basic_task_commands_persist_to_global_task_store() {
         .expect("session file should have a valid stem")
         .to_string();
 
-    let tasks_path = home
-        .join(".gestura")
+    let tasks_path = gestura_data_dir(&home)
         .join("tasks")
         .join(format!("{session_id}.json"));
     assert!(
@@ -495,17 +519,13 @@ fn test_agent_basic_task_commands_persist_to_global_task_store() {
 #[test]
 fn test_agent_basic_current_task_updates_session_working_memory() {
     let home = isolated_home_dir();
-    gestura()
-        .env("HOME", &home)
-        .env("USERPROFILE", &home)
-        .env("HOMEDRIVE", "C:")
-        .env("HOMEPATH", "\\")
+    gestura_with_home(&home)
         .args(["agent", "--basic"])
         .write_stdin("/task create root_task sync current task\n/quit\n")
         .assert()
         .success();
 
-    let sessions_dir = home.join(".gestura").join("agent_sessions");
+    let sessions_dir = gestura_data_dir(&home).join("agent_sessions");
     let mut session_files = std::fs::read_dir(&sessions_dir)
         .unwrap()
         .map(|entry| entry.unwrap().path())
@@ -520,8 +540,7 @@ fn test_agent_basic_current_task_updates_session_working_memory() {
         .expect("session file should have a valid stem")
         .to_string();
 
-    let tasks_path = home
-        .join(".gestura")
+    let tasks_path = gestura_data_dir(&home)
         .join("tasks")
         .join(format!("{session_id}.json"));
     let task_list: Value = serde_json::from_str(&std::fs::read_to_string(&tasks_path).unwrap())
@@ -533,11 +552,7 @@ fn test_agent_basic_current_task_updates_session_working_memory() {
         .expect("expected a created task id")
         .to_string();
 
-    gestura()
-        .env("HOME", &home)
-        .env("USERPROFILE", &home)
-        .env("HOMEDRIVE", "C:")
-        .env("HOMEPATH", "\\")
+    gestura_with_home(&home)
         .args(["agent", "--basic", "--resume", "--session", &session_id])
         .write_stdin(format!("/task current set {task_id}\n/quit\n"))
         .assert()
