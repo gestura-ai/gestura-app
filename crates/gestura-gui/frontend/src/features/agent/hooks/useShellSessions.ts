@@ -8,6 +8,24 @@ import type {
   ShellSessionState,
 } from '../types';
 
+type ShellSessionsBySession = Record<string, ShellSessionRecord[]>;
+
+function sessionShellKey(sessionId: string): string {
+  return sessionId.trim() || '__global__';
+}
+
+function updateSessionShells(
+  current: ShellSessionsBySession,
+  sessionKey: string,
+  updater: (shells: ShellSessionRecord[]) => ShellSessionRecord[],
+): ShellSessionsBySession {
+  const nextShells = updater(current[sessionKey] ?? []);
+  return {
+    ...current,
+    [sessionKey]: nextShells,
+  };
+}
+
 interface UnpackedPayload<T = unknown> {
   incomingSessionId: string | null;
   value: T;
@@ -218,13 +236,13 @@ export function useShellSessions(
   sessionId: string,
   options: { restoreHistory?: boolean } = {},
 ): ShellSessionRecord[] {
-  const [shells, setShells] = useState<ShellSessionRecord[]>([]);
+  const [shellsBySession, setShellsBySession] = useState<ShellSessionsBySession>({});
   const historyHydratedSessionRef = useRef<string | null>(null);
   const markActivity = useCallback(() => Date.now(), []);
   const { restoreHistory = true } = options;
+  const sessionKey = sessionShellKey(sessionId);
 
   useEffect(() => {
-    setShells([]);
     historyHydratedSessionRef.current = null;
     const win = getCurrentWebviewWindow();
     const unlisten: UnlistenFn[] = [];
@@ -262,7 +280,11 @@ export function useShellSessions(
         if (!payload) return;
         const activityAt = markActivity();
 
-        setShells((current) => applyShellSessionLifecyclePayload(current, payload, activityAt));
+        setShellsBySession((current) => updateSessionShells(
+          current,
+          sessionKey,
+          (shells) => applyShellSessionLifecyclePayload(shells, payload, activityAt),
+        ));
       });
 
       await safeListen('agent-stream-shell-lifecycle', (event) => {
@@ -270,7 +292,11 @@ export function useShellSessions(
         if (!payload) return;
         const activityAt = markActivity();
 
-        setShells((current) => applyShellLifecyclePayload(current, payload, activityAt));
+        setShellsBySession((current) => updateSessionShells(
+          current,
+          sessionKey,
+          (shells) => applyShellLifecyclePayload(shells, payload, activityAt),
+        ));
       });
 
       await safeListen('agent-stream-shell-output', (event) => {
@@ -278,7 +304,11 @@ export function useShellSessions(
         if (!payload) return;
         const activityAt = markActivity();
 
-        setShells((current) => applyShellOutputPayload(current, payload, activityAt));
+        setShellsBySession((current) => updateSessionShells(
+          current,
+          sessionKey,
+          (shells) => applyShellOutputPayload(shells, payload, activityAt),
+        ));
       });
     }
 
@@ -294,7 +324,7 @@ export function useShellSessions(
         }
       });
     };
-  }, [markActivity, sessionId]);
+  }, [markActivity, sessionId, sessionKey]);
 
   useEffect(() => {
     if (!restoreHistory || historyHydratedSessionRef.current === sessionId) {
@@ -333,7 +363,17 @@ export function useShellSessions(
           }
         }, []);
 
-        setShells((current) => (current.length > 0 ? current : restored));
+        setShellsBySession((current) => {
+          const existing = current[sessionKey] ?? [];
+          if (existing.length > 0 || restored.length === 0) {
+            return current;
+          }
+
+          return {
+            ...current,
+            [sessionKey]: restored,
+          };
+        });
       })
       .catch(() => {
         historyHydratedSessionRef.current = sessionId;
@@ -342,9 +382,9 @@ export function useShellSessions(
     return () => {
       cancelled = true;
     };
-  }, [markActivity, restoreHistory, sessionId]);
+  }, [markActivity, restoreHistory, sessionId, sessionKey]);
 
-  return shells;
+  return shellsBySession[sessionKey] ?? [];
 }
 
 export default useShellSessions;

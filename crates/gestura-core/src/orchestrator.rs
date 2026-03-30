@@ -3697,6 +3697,27 @@ impl<M: OrchestratorAgentManager> AgentOrchestrator<M> {
                 .find(|record| record.task.id == task.id)
                 .ok_or_else(|| format!("Task '{}' not found in run", task.id))?;
 
+            if record.result.is_some()
+                && record.completed_at.is_some()
+                && matches!(
+                    record.state,
+                    SupervisorTaskState::Completed
+                        | SupervisorTaskState::Failed
+                        | SupervisorTaskState::Cancelled
+                        | SupervisorTaskState::Blocked
+                        | SupervisorTaskState::ReviewPending
+                        | SupervisorTaskState::TestPending
+                )
+            {
+                tracing::debug!(
+                    task_id = %task.id,
+                    run_id = %run_id,
+                    state = ?record.state,
+                    "Ignoring duplicate terminal task completion"
+                );
+                return Ok(());
+            }
+
             record.result = Some(task_result.clone());
             record.completed_at = Some(Utc::now());
             record.updated_at = Utc::now();

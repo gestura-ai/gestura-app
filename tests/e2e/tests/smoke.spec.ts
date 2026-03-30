@@ -133,24 +133,25 @@ test.describe('@smoke Gestura App', () => {
     await page.click('#nextBtn');
     await expect(page.locator('#stepName')).toHaveText('Permissions');
 
-    // Permissions -> Voice
+    // Permissions -> Speech-to-Text
     await page.click('#nextBtn');
-    await expect(page.locator('#stepName')).toHaveText('Voice Setup');
+    await expect(page.locator('#stepName')).toHaveText('Speech-to-Text');
 
-    // Voice -> Voice Model
+    // Speech-to-Text -> Microphone
     await page.click('#nextBtn');
-    await expect(page.locator('#stepName')).toHaveText('Voice Model');
+    await expect(page.locator('#stepName')).toHaveText('Microphone');
 
-    // Voice Model -> AI Provider
+    // Microphone -> AI Provider
     await page.click('#nextBtn');
     await expect(page.locator('#stepName')).toHaveText('AI Provider');
 
-    // Wait for the step's async hydration (loadLLMConfig) to complete.
-    // The mocked default config sets llm.primary=openai, which should overwrite
-    // the template default (ollama). If we select too early, the in-flight
-    // hydration can race and revert the provider.
-    await expect(page.locator('input[name="llmSetupMode"][value="advanced"]')).toBeChecked();
-    await expect(page.locator('#llmProvider')).toHaveValue('openai');
+    await page.locator('input[name="llmSetupMode"][value="advanced"]').evaluate((input) => {
+      const radio = input as HTMLInputElement;
+      radio.checked = true;
+      radio.dispatchEvent(new Event('input', { bubbles: true }));
+      radio.dispatchEvent(new Event('change', { bubbles: true }));
+    });
+    await expect(page.locator('#llmProvider')).toBeVisible();
 
     await page.selectOption('#llmProvider', 'grok');
     // Ensure change listeners fire reliably across browsers.

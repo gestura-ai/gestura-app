@@ -96,8 +96,7 @@ pub fn is_openai_responses_api_model(model_id: &str) -> bool {
     }
 
     let is_chat_compatible_codex = model_id.starts_with("codex-mini-");
-    let is_responses_codex = ((model_id.starts_with("codex-") && !is_chat_compatible_codex)
-        || model_id.contains("-codex"))
+    let is_responses_codex = (model_id.starts_with("codex-") || model_id.contains("-codex"))
         && !is_chat_compatible_codex;
 
     is_responses_codex || model_id.starts_with("gpt-5") || model_id.starts_with("o5-")

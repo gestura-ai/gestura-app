@@ -62,7 +62,7 @@ tauri-plugin-dialog.workspace = true
 tauri-plugin-opener.workspace = true
 tokio.workspace = true
 async-trait.workspace = true
-async-nats = { workspace = true, optional = true }
+async-nats = { optional = true, version = "0.46" }
 reqwest.workspace = true
 futures-util.workspace = true
 bytes.workspace = true

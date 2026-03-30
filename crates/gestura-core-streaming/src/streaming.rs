@@ -1193,16 +1193,31 @@ async fn emit_ready_openai_responses_tool_calls(
     }
 }
 
-async fn stream_openai_chat_compatible(
-    api_key: &str,
-    base_url: &str,
-    model: &str,
-    prompt: &str,
-    tools: Option<&[serde_json::Value]>,
+struct OpenAiChatCompatibleStreamRequest<'a> {
+    api_key: &'a str,
+    base_url: &'a str,
+    model: &'a str,
+    prompt: &'a str,
+    tools: Option<&'a [serde_json::Value]>,
     tx: mpsc::Sender<StreamChunk>,
     cancel_token: CancellationToken,
-    provider_name: &str,
+    provider_name: &'a str,
+}
+
+async fn stream_openai_chat_compatible(
+    req: OpenAiChatCompatibleStreamRequest<'_>,
 ) -> Result<(), AppError> {
+    let OpenAiChatCompatibleStreamRequest {
+        api_key,
+        base_url,
+        model,
+        prompt,
+        tools,
+        tx,
+        cancel_token,
+        provider_name,
+    } = req;
+
     let url = format!(
         "{}{}",
         base_url.trim_end_matches('/'),
@@ -1462,7 +1477,7 @@ pub async fn stream_openai(
 
     match openai_api_for_model(model) {
         OpenAiApi::ChatCompletions => {
-            stream_openai_chat_compatible(
+            stream_openai_chat_compatible(OpenAiChatCompatibleStreamRequest {
                 api_key,
                 base_url,
                 model,
@@ -1470,8 +1485,8 @@ pub async fn stream_openai(
                 tools,
                 tx,
                 cancel_token,
-                "OpenAI",
-            )
+                provider_name: "OpenAI",
+            })
             .await
         }
         OpenAiApi::Responses => {
@@ -2124,16 +2139,16 @@ pub async fn start_streaming(
             "grok" => {
                 // Grok uses OpenAI-compatible API
                 if let Some(c) = &config.grok {
-                    stream_openai_chat_compatible(
-                        &c.api_key,
-                        c.base_url.as_deref().unwrap_or("https://api.x.ai"),
-                        &c.model,
+                    stream_openai_chat_compatible(OpenAiChatCompatibleStreamRequest {
+                        api_key: &c.api_key,
+                        base_url: c.base_url.as_deref().unwrap_or("https://api.x.ai"),
+                        model: &c.model,
                         prompt,
-                        tool_schemas.as_ref().map(|s| s.openai.as_slice()),
+                        tools: tool_schemas.as_ref().map(|s| s.openai.as_slice()),
                         tx,
                         cancel_token,
-                        "Grok",
-                    )
+                        provider_name: "Grok",
+                    })
                     .await
                 } else {
                     stream_unconfigured_error("grok", tx).await

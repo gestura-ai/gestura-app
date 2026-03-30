@@ -9,8 +9,14 @@
 # The json-ld crate is used for structured data processing.
 # Risk: Low - we don't use the unsafe features that cause the soundness issues.
 # Monitor: https://github.com/RustSec/advisory-db/issues for updates.
+# rustls-webpki 0.102.8: async-nats 0.46.0 still depends on the 0.102 line,
+# which is flagged by RUSTSEC-2026-0049. We upgraded all fixable paths in the
+# lockfile and updated async-nats to the latest published release, but the
+# remaining occurrence is still blocked on an upstream async-nats dependency
+# update to rustls-webpki >= 0.103.10.
 ignore = [
     "RUSTSEC-2022-0040", # owning_ref - no fix available, transitive dep
+    "RUSTSEC-2026-0049", # rustls-webpki via async-nats 0.46.0 - awaiting upstream update
 ]
 
 # Treat unmaintained/unsound advisories as informational warnings, not errors

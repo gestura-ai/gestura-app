@@ -160,10 +160,12 @@ mod tests {
         let mut config = AppConfig::default();
         config.pipeline.reflection.enabled = true;
 
-        let mut state = SessionState::default();
-        state.reflection_settings = Some(SessionReflectionSettings {
-            enabled: Some(false),
-        });
+        let state = SessionState {
+            reflection_settings: Some(SessionReflectionSettings {
+                enabled: Some(false),
+            }),
+            ..SessionState::default()
+        };
 
         assert!(!effective_session_reflection_enabled(&state, &config));
     }

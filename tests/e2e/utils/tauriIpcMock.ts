@@ -14,6 +14,7 @@ export async function installTauriIpcMock(page: Page): Promise<void> {
     // eslint-disable-next-line no-undef
     globalThis.isTauri = true;
 
+    const ONBOARDING_COMPLETE_KEY = 'gestura_onboarding_completed';
     const STORAGE_KEY = '__gestura_e2e_config__';
     const API_KEYS_KEY = '__gestura_e2e_api_keys__';
 
@@ -200,6 +201,9 @@ export async function installTauriIpcMock(page: Page): Promise<void> {
 
         case 'get_config':
           return loadConfig();
+
+        case 'is_first_run':
+          return localStorage.getItem(ONBOARDING_COMPLETE_KEY) !== 'true';
 
         case 'get_effective_llm_config': {
           // agent.html expects a tuple: [provider, model]
@@ -410,8 +414,11 @@ export async function installTauriIpcMock(page: Page): Promise<void> {
         case 'open_system_preferences':
         case 'request_permission':
         case 'register_consent':
-        case 'complete_onboarding':
         case 'close_onboarding_window':
+          return null;
+
+        case 'complete_onboarding':
+          localStorage.setItem(ONBOARDING_COMPLETE_KEY, 'true');
           return null;
 
         case 'connect_mcp_server':

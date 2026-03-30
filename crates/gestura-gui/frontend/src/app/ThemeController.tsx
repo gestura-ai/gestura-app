@@ -96,7 +96,7 @@ const applyTheme = (mode: string, accent: string) => {
   }
 };
 
-const ThemeController: React.FC<ThemeControllerProps> = ({ uiSettings, onUpdate: _onUpdate }) => {
+const ThemeController: React.FC<ThemeControllerProps> = ({ uiSettings }) => {
   useEffect(() => {
     // Apply theme on mount and when settings change
     applyTheme(uiSettings.theme_mode, uiSettings.accent || 'blue');

@@ -23,6 +23,8 @@ const ACTIVE_THRESHOLD_MS = 5_000;
 const RECENT_THRESHOLD_MS = 20_000;
 const STALLED_THRESHOLD_MS = 60_000;
 const RECENT_LINE_WINDOW = 16;
+const ANSI_ESCAPE = String.fromCharCode(27);
+const ANSI_ESCAPE_PATTERN = new RegExp(`${ANSI_ESCAPE}\\[[0-9;?]*[ -/]*[@-~]`, 'g');
 
 const INTERACTIVE_PROMPTS = [
   'ok to proceed?',
@@ -75,7 +77,7 @@ function isTerminalState(shell: RenderableShell): boolean {
 }
 
 function stripAnsi(value: string): string {
-  return value.replace(/\x1b\[[0-9;?]*[ -/]*[@-~]/g, '');
+  return value.replace(ANSI_ESCAPE_PATTERN, '');
 }
 
 function normalizeOutput(value: string): string {

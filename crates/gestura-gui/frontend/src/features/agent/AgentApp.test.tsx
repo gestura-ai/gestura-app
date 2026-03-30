@@ -1,4 +1,4 @@
-import { act, render, screen } from '@testing-library/react';
+import { act, cleanup, render, screen } from '@testing-library/react';
 import { LogicalSize } from '@tauri-apps/api/dpi';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ShellSessionRecord } from './types';
@@ -133,6 +133,14 @@ vi.mock('./components/AgentSessionHeader', () => ({
 
 import AgentApp from './AgentApp';
 
+async function flushAgentAppAsyncWork(): Promise<void> {
+  await act(async () => {
+    vi.runOnlyPendingTimers();
+    await Promise.resolve();
+    await Promise.resolve();
+  });
+}
+
 describe('AgentApp', () => {
   beforeEach(() => {
     shouldCrashChatPanel = false;
@@ -160,8 +168,9 @@ describe('AgentApp', () => {
     vi.useFakeTimers();
   });
 
-  afterEach(() => {
-    vi.runOnlyPendingTimers();
+  afterEach(async () => {
+    cleanup();
+    await flushAgentAppAsyncWork();
     vi.useRealTimers();
   });
 
@@ -305,8 +314,14 @@ describe('AgentApp', () => {
 
     render(<AgentApp sessionId="session-crash" />);
 
+    await act(async () => {
+      await Promise.resolve();
+    });
+
     expect(screen.getByText('Agent session failed to load')).toBeInTheDocument();
     expect(screen.getByText(/Session: session-crash/)).toBeInTheDocument();
+
+    await flushAgentAppAsyncWork();
 
     consoleError.mockRestore();
   });
