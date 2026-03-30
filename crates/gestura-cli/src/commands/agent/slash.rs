@@ -2,6 +2,9 @@
 
 use std::path::{Path, PathBuf};
 
+#[cfg(test)]
+use std::cell::RefCell;
+
 use super::tui::{ManagedCommandAction, ManagedCommandEntry};
 use crate::commands::tools::permissions::permission_manager;
 use chrono::{Local, Utc};
@@ -88,6 +91,245 @@ fn managed_entry(
         detail,
         action,
     }
+}
+
+#[derive(Debug, Clone)]
+struct AudioDeviceSnapshot {
+    mic_available: bool,
+    devices: Vec<gestura_core::AudioDeviceInfo>,
+}
+
+impl AudioDeviceSnapshot {
+    fn capture() -> Self {
+        Self {
+            mic_available: gestura_core::is_microphone_available(),
+            devices: gestura_core::list_audio_input_devices(),
+        }
+    }
+}
+
+#[cfg(test)]
+std::thread_local! {
+    static TEST_AUDIO_DEVICE_SNAPSHOT: RefCell<Option<AudioDeviceSnapshot>> = const {
+        RefCell::new(None)
+    };
+}
+
+#[cfg(test)]
+pub(crate) struct TestAudioDeviceSnapshotGuard;
+
+#[cfg(test)]
+impl Drop for TestAudioDeviceSnapshotGuard {
+    fn drop(&mut self) {
+        TEST_AUDIO_DEVICE_SNAPSHOT.with(|snapshot| {
+            *snapshot.borrow_mut() = None;
+        });
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn install_test_audio_device_snapshot(
+    mic_available: bool,
+    devices: Vec<gestura_core::AudioDeviceInfo>,
+) -> TestAudioDeviceSnapshotGuard {
+    TEST_AUDIO_DEVICE_SNAPSHOT.with(|snapshot| {
+        *snapshot.borrow_mut() = Some(AudioDeviceSnapshot {
+            mic_available,
+            devices,
+        });
+    });
+    TestAudioDeviceSnapshotGuard
+}
+
+fn audio_device_snapshot() -> AudioDeviceSnapshot {
+    #[cfg(test)]
+    if let Some(snapshot) = TEST_AUDIO_DEVICE_SNAPSHOT.with(|snapshot| snapshot.borrow().clone()) {
+        return snapshot;
+    }
+
+    AudioDeviceSnapshot::capture()
+}
+
+fn device_subcommand_lines(snapshot: &AudioDeviceSnapshot) -> Vec<String> {
+    let mut lines = vec!["━━━ Audio Devices ━━━".to_string(), String::new()];
+    lines.push(format!(
+        "Microphone available: {}",
+        if snapshot.mic_available {
+            "✓ yes"
+        } else {
+            "✗ no"
+        }
+    ));
+    lines.push(String::new());
+
+    if snapshot.devices.is_empty() {
+        lines.push("No audio input devices found.".to_string());
+    } else {
+        lines.push(format!("{} device(s) detected:", snapshot.devices.len()));
+        for device in &snapshot.devices {
+            let marker = if device.is_default { " (default)" } else { "" };
+            lines.push(format!("  • {}{}", device.name, marker));
+        }
+    }
+
+    lines
+}
+
+fn build_device_browser_entries(
+    config: &AppConfig,
+    snapshot: &AudioDeviceSnapshot,
+) -> Vec<ManagedCommandEntry> {
+    let configured_device = config.voice.audio_device.as_deref();
+    let default_device = snapshot.devices.iter().find(|device| device.is_default);
+
+    let mut entries = vec![managed_entry(
+        "Microphone Readiness",
+        if snapshot.mic_available {
+            format!("{} input device(s) available", snapshot.devices.len())
+        } else {
+            "No microphone input detected".to_string()
+        },
+        "/device scan",
+        vec![
+            format!(
+                "Microphone available: {}",
+                if snapshot.mic_available { "yes" } else { "no" }
+            ),
+            format!("Detected input devices: {}", snapshot.devices.len()),
+            format!(
+                "Configured voice.audio_device: {}",
+                configured_device.unwrap_or("(system default)")
+            ),
+        ],
+        ManagedCommandAction::Execute("/device scan".to_string()),
+    )];
+
+    entries.push(managed_entry(
+        "Default Input Device",
+        default_device
+            .map(|device| device.name.clone())
+            .unwrap_or_else(|| "(none)".to_string()),
+        "/device list",
+        vec![
+            format!(
+                "Default device: {}",
+                default_device
+                    .map(|device| device.name.as_str())
+                    .unwrap_or("(none)")
+            ),
+            format!(
+                "Configured voice.audio_device: {}",
+                configured_device.unwrap_or("(system default)")
+            ),
+            "Use /config get voice.audio_device to inspect or /config update voice.audio_device <name> to change it.".to_string(),
+        ],
+        ManagedCommandAction::Execute("/device list".to_string()),
+    ));
+
+    for device in &snapshot.devices {
+        let summary = if device.is_default {
+            "default input".to_string()
+        } else {
+            "available input".to_string()
+        };
+        let is_configured = configured_device.is_some_and(|name| name == device.name);
+        entries.push(managed_entry(
+            format!("Device: {}", device.name),
+            summary,
+            "/device list",
+            vec![
+                format!("Name: {}", device.name),
+                format!(
+                    "Default device: {}",
+                    if device.is_default { "yes" } else { "no" }
+                ),
+                format!(
+                    "Selected in config: {}",
+                    if is_configured { "yes" } else { "no" }
+                ),
+                "Use /config update voice.audio_device <name> to pin this input device."
+                    .to_string(),
+            ],
+            ManagedCommandAction::Prefill(format!(
+                "/config update voice.audio_device \"{}\"",
+                device.name
+            )),
+        ));
+    }
+
+    entries
+}
+
+fn build_health_diagnostic_lines(
+    config: &AppConfig,
+    snapshot: &AudioDeviceSnapshot,
+) -> Vec<String> {
+    let config_path = AppConfig::default_path();
+    let config_ok = config_path.exists();
+    let mcp_count = config.mcp_servers.len();
+    let mcp_enabled = config
+        .mcp_servers
+        .iter()
+        .filter(|server| server.enabled)
+        .count();
+
+    vec![
+        "━━━ System Health ━━━".to_string(),
+        String::new(),
+        format!("✓ Gestura v{}", gestura_core::VERSION),
+        format!(
+            "{} Config: {}",
+            if config_ok { "✓" } else { "○" },
+            config_path.display()
+        ),
+        String::new(),
+        "LLM Providers:".to_string(),
+        format!(
+            "  {} OpenAI",
+            if has_openai_configured(config) {
+                "✓"
+            } else {
+                "○"
+            }
+        ),
+        format!(
+            "  {} Anthropic",
+            if has_anthropic_configured(config) {
+                "✓"
+            } else {
+                "○"
+            }
+        ),
+        format!(
+            "  {} Grok",
+            if has_grok_configured(config) {
+                "✓"
+            } else {
+                "○"
+            }
+        ),
+        format!(
+            "  {} Ollama",
+            if has_ollama_configured(config) {
+                "✓"
+            } else {
+                "○"
+            }
+        ),
+        String::new(),
+        "Audio:".to_string(),
+        format!(
+            "  {} Microphone",
+            if snapshot.mic_available { "✓" } else { "○" }
+        ),
+        format!("  {} device(s) detected", snapshot.devices.len()),
+        String::new(),
+        "MCP:".to_string(),
+        format!(
+            "  {} server(s) configured ({} enabled)",
+            mcp_count, mcp_enabled
+        ),
+    ]
 }
 
 fn current_model_label(config: &AppConfig, session: &AgentSession) -> String {
@@ -521,29 +763,7 @@ pub(crate) fn run_device_subcommand(args: &[&str]) -> std::result::Result<Vec<St
         .unwrap_or_default();
 
     match subcommand.as_str() {
-        "" | "list" | "scan" => {
-            let devices = gestura_core::list_audio_input_devices();
-            let mic_available = gestura_core::is_microphone_available();
-
-            let mut lines = vec!["━━━ Audio Devices ━━━".to_string(), String::new()];
-            lines.push(format!(
-                "Microphone available: {}",
-                if mic_available { "✓ yes" } else { "✗ no" }
-            ));
-            lines.push(String::new());
-
-            if devices.is_empty() {
-                lines.push("No audio input devices found.".to_string());
-            } else {
-                lines.push(format!("{} device(s) detected:", devices.len()));
-                for dev in &devices {
-                    let marker = if dev.is_default { " (default)" } else { "" };
-                    lines.push(format!("  • {}{}", dev.name, marker));
-                }
-            }
-
-            Ok(lines)
-        }
+        "" | "list" | "scan" => Ok(device_subcommand_lines(&audio_device_snapshot())),
         other => Err(format!(
             "Unknown /device subcommand: {}. Try: list, scan",
             other
@@ -552,155 +772,11 @@ pub(crate) fn run_device_subcommand(args: &[&str]) -> std::result::Result<Vec<St
 }
 
 pub(crate) fn device_browser_entries(config: &AppConfig) -> Vec<ManagedCommandEntry> {
-    let devices = gestura_core::list_audio_input_devices();
-    let mic_available = gestura_core::is_microphone_available();
-    let configured_device = config.voice.audio_device.as_deref();
-    let default_device = devices.iter().find(|device| device.is_default);
-
-    let mut entries = vec![managed_entry(
-        "Microphone Readiness",
-        if mic_available {
-            format!("{} input device(s) available", devices.len())
-        } else {
-            "No microphone input detected".to_string()
-        },
-        "/device scan",
-        vec![
-            format!(
-                "Microphone available: {}",
-                if mic_available { "yes" } else { "no" }
-            ),
-            format!("Detected input devices: {}", devices.len()),
-            format!(
-                "Configured voice.audio_device: {}",
-                configured_device.unwrap_or("(system default)")
-            ),
-        ],
-        ManagedCommandAction::Execute("/device scan".to_string()),
-    )];
-
-    entries.push(managed_entry(
-        "Default Input Device",
-        default_device
-            .map(|device| device.name.clone())
-            .unwrap_or_else(|| "(none)".to_string()),
-        "/device list",
-        vec![
-            format!(
-                "Default device: {}",
-                default_device
-                    .map(|device| device.name.as_str())
-                    .unwrap_or("(none)")
-            ),
-            format!(
-                "Configured voice.audio_device: {}",
-                configured_device.unwrap_or("(system default)")
-            ),
-            "Use /config get voice.audio_device to inspect or /config update voice.audio_device <name> to change it.".to_string(),
-        ],
-        ManagedCommandAction::Execute("/device list".to_string()),
-    ));
-
-    for device in devices {
-        let summary = if device.is_default {
-            "default input".to_string()
-        } else {
-            "available input".to_string()
-        };
-        let is_configured = configured_device.is_some_and(|name| name == device.name);
-        entries.push(managed_entry(
-            format!("Device: {}", device.name),
-            summary,
-            "/device list",
-            vec![
-                format!("Name: {}", device.name),
-                format!(
-                    "Default device: {}",
-                    if device.is_default { "yes" } else { "no" }
-                ),
-                format!(
-                    "Selected in config: {}",
-                    if is_configured { "yes" } else { "no" }
-                ),
-                "Use /config update voice.audio_device <name> to pin this input device."
-                    .to_string(),
-            ],
-            ManagedCommandAction::Prefill(format!(
-                "/config update voice.audio_device \"{}\"",
-                device.name
-            )),
-        ));
-    }
-
-    entries
+    build_device_browser_entries(config, &audio_device_snapshot())
 }
 
 pub(crate) fn health_diagnostic_lines(config: &AppConfig) -> Vec<String> {
-    let config_path = AppConfig::default_path();
-    let config_ok = config_path.exists();
-    let devices = gestura_core::list_audio_input_devices();
-    let mic_available = gestura_core::is_microphone_available();
-    let mcp_count = config.mcp_servers.len();
-    let mcp_enabled = config
-        .mcp_servers
-        .iter()
-        .filter(|server| server.enabled)
-        .count();
-
-    vec![
-        "━━━ System Health ━━━".to_string(),
-        String::new(),
-        format!("✓ Gestura v{}", gestura_core::VERSION),
-        format!(
-            "{} Config: {}",
-            if config_ok { "✓" } else { "○" },
-            config_path.display()
-        ),
-        String::new(),
-        "LLM Providers:".to_string(),
-        format!(
-            "  {} OpenAI",
-            if has_openai_configured(config) {
-                "✓"
-            } else {
-                "○"
-            }
-        ),
-        format!(
-            "  {} Anthropic",
-            if has_anthropic_configured(config) {
-                "✓"
-            } else {
-                "○"
-            }
-        ),
-        format!(
-            "  {} Grok",
-            if has_grok_configured(config) {
-                "✓"
-            } else {
-                "○"
-            }
-        ),
-        format!(
-            "  {} Ollama",
-            if has_ollama_configured(config) {
-                "✓"
-            } else {
-                "○"
-            }
-        ),
-        String::new(),
-        "Audio:".to_string(),
-        format!("  {} Microphone", if mic_available { "✓" } else { "○" }),
-        format!("  {} device(s) detected", devices.len()),
-        String::new(),
-        "MCP:".to_string(),
-        format!(
-            "  {} server(s) configured ({} enabled)",
-            mcp_count, mcp_enabled
-        ),
-    ]
+    build_health_diagnostic_lines(config, &audio_device_snapshot())
 }
 
 pub(crate) fn privacy_policy_lines() -> Vec<String> {
@@ -5075,6 +5151,7 @@ fn validate_mcp_entry(entry: &McpServerEntry) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use gestura_core::AudioDeviceInfo;
     use gestura_core::agent_sessions::MessageSource;
     use uuid::Uuid;
 
@@ -5085,6 +5162,19 @@ mod tests {
         std::fs::create_dir_all(&base).unwrap();
 
         AgentSession::new_with_workspace(base, None).unwrap()
+    }
+
+    fn sample_audio_devices() -> Vec<AudioDeviceInfo> {
+        vec![
+            AudioDeviceInfo {
+                name: "Studio Mic".to_string(),
+                is_default: true,
+            },
+            AudioDeviceInfo {
+                name: "USB Interface".to_string(),
+                is_default: false,
+            },
+        ]
     }
 
     #[test]
@@ -5118,15 +5208,18 @@ mod tests {
 
     #[test]
     fn device_subcommand_accepts_list_and_scan() {
+        let _audio = install_test_audio_device_snapshot(true, sample_audio_devices());
         let list_lines = run_device_subcommand(&["list"]).unwrap();
         let scan_lines = run_device_subcommand(&["scan"]).unwrap();
 
         assert!(list_lines.join("\n").contains("Audio Devices"));
         assert!(scan_lines.join("\n").contains("Microphone available:"));
+        assert!(scan_lines.join("\n").contains("Studio Mic (default)"));
     }
 
     #[test]
     fn device_browser_entries_include_readiness_and_default_device_views() {
+        let _audio = install_test_audio_device_snapshot(true, sample_audio_devices());
         let entries = device_browser_entries(&AppConfig::default());
 
         assert!(
@@ -5138,6 +5231,11 @@ mod tests {
             entries
                 .iter()
                 .any(|entry| entry.title == "Default Input Device")
+        );
+        assert!(
+            entries
+                .iter()
+                .any(|entry| entry.title == "Device: Studio Mic")
         );
     }
 
@@ -5160,12 +5258,14 @@ mod tests {
 
     #[test]
     fn health_diagnostic_lines_include_audio_and_mcp_sections() {
+        let _audio = install_test_audio_device_snapshot(false, sample_audio_devices());
         let lines = health_diagnostic_lines(&AppConfig::default());
         let joined = lines.join("\n");
 
         assert!(joined.contains("System Health"));
         assert!(joined.contains("Audio:"));
         assert!(joined.contains("MCP:"));
+        assert!(joined.contains("2 device(s) detected"));
     }
 
     #[test]

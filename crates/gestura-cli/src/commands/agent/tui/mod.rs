@@ -4431,6 +4431,13 @@ mod tests {
     fn slash_device_list_posts_audio_devices_message() {
         let mut app = create_test_app();
         let rt = create_test_runtime();
+        let _audio = super::super::slash::install_test_audio_device_snapshot(
+            true,
+            vec![gestura_core::AudioDeviceInfo {
+                name: "Studio Mic".to_string(),
+                is_default: true,
+            }],
+        );
 
         let action = handle_command(&mut app, "/device list", &rt).expect("command succeeds");
 
@@ -4439,12 +4446,20 @@ mod tests {
         assert_eq!(last.role, "system");
         assert!(last.content.contains("Audio Devices"));
         assert!(last.content.contains("Microphone available:"));
+        assert!(last.content.contains("Studio Mic (default)"));
     }
 
     #[test]
     fn slash_device_opens_managed_browser() {
         let mut app = create_test_app();
         let rt = create_test_runtime();
+        let _audio = super::super::slash::install_test_audio_device_snapshot(
+            true,
+            vec![gestura_core::AudioDeviceInfo {
+                name: "Studio Mic".to_string(),
+                is_default: true,
+            }],
+        );
 
         let action = handle_command(&mut app, "/device", &rt).expect("command succeeds");
 
@@ -4457,6 +4472,13 @@ mod tests {
     fn slash_device_list_matches_shared_subcommand_output() {
         let mut app = create_test_app();
         let rt = create_test_runtime();
+        let _audio = super::super::slash::install_test_audio_device_snapshot(
+            true,
+            vec![gestura_core::AudioDeviceInfo {
+                name: "Studio Mic".to_string(),
+                is_default: true,
+            }],
+        );
 
         let action = handle_command(&mut app, "/device list", &rt).expect("command succeeds");
 
@@ -4472,6 +4494,13 @@ mod tests {
     fn slash_health_posts_system_health_message() {
         let mut app = create_test_app();
         let rt = create_test_runtime();
+        let _audio = super::super::slash::install_test_audio_device_snapshot(
+            false,
+            vec![gestura_core::AudioDeviceInfo {
+                name: "Studio Mic".to_string(),
+                is_default: true,
+            }],
+        );
 
         let action = handle_command(&mut app, "/health", &rt).expect("command succeeds");
 
@@ -4480,6 +4509,7 @@ mod tests {
         assert_eq!(last.role, "system");
         assert!(last.content.contains("System Health"));
         assert!(last.content.contains("LLM Providers:"));
+        assert!(last.content.contains("1 device(s) detected"));
     }
 
     #[test]
