@@ -83,14 +83,6 @@ json-ld = { version = "0.16", optional = true }
 keyring = { workspace = true, optional = true }
 
 
-# macOS specific (optional)
-objc = { version = "0.2", optional = true }
-cocoa = { version = "0.25", optional = true }
-
-# Linux specific (optional) - xdg-desktop-portal integration
-ashpd = { version = "0.10.3", optional = true }
-zbus = { version = "5", optional = true }
-
 # Utilities
 lazy_static.workspace = true
 tempfile.workspace = true
@@ -113,6 +105,16 @@ portable-pty = "0.9.0"
 [target.'cfg(unix)'.dependencies]
 # Unix signal handling (for screen recording on Unix platforms)
 nix = { workspace = true }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+# macOS specific (optional)
+objc = { version = "0.2", optional = true }
+cocoa = { version = "0.25", optional = true }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+# Linux specific (optional) - xdg-desktop-portal integration
+ashpd = { version = "0.10.3", optional = true }
+zbus = { version = "5", optional = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util"] }

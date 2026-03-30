@@ -837,7 +837,7 @@ impl ScreenTools {
         };
 
         // Kill the process (Windows doesn't have SIGINT)
-        let _ = handle.child.kill()?;
+        handle.child.kill()?;
         let _ = handle.child.wait()?;
 
         let duration_ms = (chrono::Utc::now() - handle.started_at).num_milliseconds();
