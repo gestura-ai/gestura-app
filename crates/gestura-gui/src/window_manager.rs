@@ -206,6 +206,7 @@ const WINDOW_TYPE_AGENT: &str = "agent";
 const WINDOW_TYPE_CONFIG: &str = "config";
 const WINDOW_TYPE_ONBOARDING: &str = "onboarding";
 
+#[cfg(any(test, target_os = "macos"))]
 fn uses_regular_activation_policy(window_type: &str) -> bool {
     matches!(
         window_type,
@@ -675,6 +676,7 @@ impl WindowManager {
         }
 
         let windows = Arc::clone(&self.windows);
+        #[cfg(target_os = "macos")]
         let app_handle = self.app.clone();
         let window_label = window_label.to_string();
         window.on_window_event(move |event| {
@@ -743,6 +745,7 @@ impl WindowManager {
         // `complete_onboarding()` succeeds, at which point `is_app_configured()`
         // returns `true` and the event handler allows the close to proceed.
         let windows = Arc::clone(&self.windows);
+        #[cfg(target_os = "macos")]
         let app_handle = self.app.clone();
         let window_label = window_label.to_string();
         window.on_window_event(move |event| {
