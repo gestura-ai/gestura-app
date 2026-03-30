@@ -1458,6 +1458,9 @@ mod tests {
         // This test also mutates the process-global test keychain store.
         let _keychain_guard = keychain_lock().lock().unwrap_or_else(|e| e.into_inner());
 
+        // This test uses the in-process keychain shim, so bare CI must not disable it.
+        let _ci = ScopedEnvVar::unset("CI");
+
         clear_test_keychain_store();
 
         let dir = tempfile::tempdir().unwrap();
@@ -1531,6 +1534,9 @@ mod tests {
 
         // This test also mutates the process-global test keychain store.
         let _keychain_guard = keychain_lock().lock().unwrap_or_else(|e| e.into_inner());
+
+        // This test uses the in-process keychain shim, so bare CI must not disable it.
+        let _ci = ScopedEnvVar::unset("CI");
 
         clear_test_keychain_store();
 
@@ -1714,7 +1720,11 @@ mod tests {
     #[test]
     #[cfg(feature = "security")]
     fn hydrate_secrets_sync_falls_back_to_legacy_keys_and_self_heals() {
+        let _guard = env_lock().lock().unwrap_or_else(|e| e.into_inner());
         let _keychain_guard = keychain_lock().lock().unwrap_or_else(|e| e.into_inner());
+
+        // This test uses the in-process keychain shim, so bare CI must not disable it.
+        let _ci = ScopedEnvVar::unset("CI");
 
         clear_test_keychain_store();
 
