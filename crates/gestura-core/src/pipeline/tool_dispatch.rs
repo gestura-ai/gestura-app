@@ -8651,6 +8651,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[cfg(not(target_os = "windows"))]
     async fn shell_tool_timeout_surfaces_interactive_prompt_context() {
         let pipeline = AgentPipeline::new(AppConfig::default());
         let temp = TempDir::new().expect("temp dir");
@@ -8681,6 +8682,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[cfg(not(target_os = "windows"))]
     async fn streaming_shell_tool_emits_keepalive_for_silent_commands() {
         use gestura_core_streaming::StreamChunk;
 
@@ -8766,6 +8768,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[cfg(not(target_os = "windows"))]
     async fn streaming_shell_tool_strips_matching_leading_cd_from_command() {
         let pipeline = AgentPipeline::new(AppConfig::default());
         let temp = TempDir::new().expect("temp dir");

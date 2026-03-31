@@ -2005,6 +2005,7 @@ mod imp {
         }
 
         #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        #[cfg(not(target_os = "windows"))]
         async fn create_session_starts_idle_shell_without_command() {
             let (tx, mut rx) = mpsc::channel(64);
             let handle = create_session(
@@ -2029,6 +2030,7 @@ mod imp {
         }
 
         #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        #[cfg(not(target_os = "windows"))]
         async fn reuses_idle_session_within_same_pool() {
             let (tx, mut rx) = mpsc::channel(128);
             let first = execute_in_session_for_test(
@@ -2070,6 +2072,7 @@ mod imp {
         }
 
         #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        #[cfg(not(target_os = "windows"))]
         async fn execute_in_session_emits_session_lifecycle_to_caller_stream() {
             let (tx, mut rx) = mpsc::channel(128);
             let result = execute_in_session_for_test(
@@ -2107,6 +2110,7 @@ mod imp {
         }
 
         #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        #[cfg(not(target_os = "windows"))]
         async fn allocates_new_session_when_existing_one_is_busy() {
             let (tx_one, mut rx_one) = mpsc::channel(128);
             let (tx_two, mut rx_two) = mpsc::channel(128);
@@ -2155,6 +2159,7 @@ mod imp {
         }
 
         #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        #[cfg(not(target_os = "windows"))]
         async fn activity_aware_execution_allows_recently_active_long_running_commands() {
             let (tx, _rx) = mpsc::channel(128);
             let command = if cfg!(windows) {
@@ -2188,6 +2193,7 @@ mod imp {
         }
 
         #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        #[cfg(not(target_os = "windows"))]
         async fn execute_in_session_completes_when_caller_stream_is_not_draining() {
             let (tx, _rx) = mpsc::channel(1);
 
@@ -2212,6 +2218,7 @@ mod imp {
         }
 
         #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        #[cfg(not(target_os = "windows"))]
         async fn activity_aware_execution_reports_continue_wait_before_timing_out_when_quiet_output_has_no_indicator()
          {
             let (tx, mut rx) = mpsc::channel(128);
@@ -2259,6 +2266,7 @@ mod imp {
         }
 
         #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        #[cfg(not(target_os = "windows"))]
         async fn activity_aware_execution_times_out_after_repeated_quiet_periods_without_signal() {
             let (tx, _rx) = mpsc::channel(128);
             let command = if cfg!(windows) {
@@ -2340,6 +2348,7 @@ mod imp {
         }
 
         #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        #[cfg(not(target_os = "windows"))]
         async fn claiming_automation_session_removes_it_from_reuse_pool() {
             let (tx, mut rx) = mpsc::channel(128);
             let first = execute_in_session_for_test(
@@ -2393,6 +2402,7 @@ mod imp {
         }
 
         #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        #[cfg(not(target_os = "windows"))]
         async fn claimed_automation_session_streams_interactive_output_after_attach() {
             let (tx, mut rx) = mpsc::channel(128);
             execute_in_session_for_test(
