@@ -499,13 +499,13 @@ fn check_audio_server_available() -> Result<bool, Box<dyn std::error::Error>> {
         let proxy = zbus::blocking::fdo::DBusProxy::new(&conn)?;
 
         // PipeWire typically runs as org.pipewire.Daemon
-        if proxy.name_has_owner("org.pipewire.Daemon")? {
+        if proxy.name_has_owner("org.pipewire.Daemon".try_into()?)? {
             tracing::debug!("PipeWire audio server detected");
             return Ok(true);
         }
 
         // Check for PulseAudio
-        if proxy.name_has_owner("org.PulseAudio1")? {
+        if proxy.name_has_owner("org.PulseAudio1".try_into()?)? {
             tracing::debug!("PulseAudio server detected");
             return Ok(true);
         }
@@ -564,13 +564,13 @@ fn check_atspi_available() -> Result<bool, Box<dyn std::error::Error>> {
     let proxy = zbus::blocking::fdo::DBusProxy::new(&conn)?;
 
     // AT-SPI2 registry runs as org.a11y.Bus
-    if proxy.name_has_owner("org.a11y.Bus")? {
+    if proxy.name_has_owner("org.a11y.Bus".try_into()?)? {
         tracing::debug!("AT-SPI2 registry detected");
         return Ok(true);
     }
 
     // Also check for the AT-SPI2 registry daemon
-    if proxy.name_has_owner("org.a11y.atspi.Registry")? {
+    if proxy.name_has_owner("org.a11y.atspi.Registry".try_into()?)? {
         tracing::debug!("AT-SPI2 registry daemon detected");
         return Ok(true);
     }
@@ -618,7 +618,7 @@ fn check_bluez_available() -> Result<bool, Box<dyn std::error::Error>> {
     let proxy = zbus::blocking::fdo::DBusProxy::new(&conn)?;
 
     // BlueZ daemon runs as org.bluez
-    if proxy.name_has_owner("org.bluez")? {
+    if proxy.name_has_owner("org.bluez".try_into()?)? {
         tracing::debug!("BlueZ daemon detected");
 
         // Additional check: Try to access the BlueZ object manager
@@ -712,7 +712,7 @@ fn check_screencast_portal_available() -> Result<bool, Box<dyn std::error::Error
 
     // Check if the xdg-desktop-portal service is available
     // The portal runs as org.freedesktop.portal.Desktop
-    if proxy.name_has_owner("org.freedesktop.portal.Desktop")? {
+    if proxy.name_has_owner("org.freedesktop.portal.Desktop".try_into()?)? {
         tracing::debug!("xdg-desktop-portal detected on session bus");
 
         // Additional verification: Check if the ScreenCast interface is available
@@ -726,7 +726,7 @@ fn check_screencast_portal_available() -> Result<bool, Box<dyn std::error::Error
         ) {
             Ok(response) => {
                 // Parse the introspection XML to check for ScreenCast interface
-                if let Ok(body) = response.body::<String>() {
+                if let Ok(body) = response.body().deserialize::<String>() {
                     if body.contains("org.freedesktop.portal.ScreenCast") {
                         tracing::debug!("ScreenCast interface available in xdg-desktop-portal");
                         return Ok(true);
