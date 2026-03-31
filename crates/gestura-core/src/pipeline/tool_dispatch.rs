@@ -5409,11 +5409,14 @@ mod tests {
     use serde_json::json;
     use tempfile::TempDir;
 
+    #[cfg(not(target_os = "windows"))]
     const STREAMING_SHELL_TOOL_TEST_TIMEOUT: tokio::time::Duration =
         tokio::time::Duration::from_secs(20);
+    #[cfg(not(target_os = "windows"))]
     const STREAMING_SHELL_TOOL_SHUTDOWN_TIMEOUT: tokio::time::Duration =
         tokio::time::Duration::from_secs(5);
 
+    #[cfg(not(target_os = "windows"))]
     fn silent_shell_test_command() -> &'static str {
         #[cfg(target_os = "windows")]
         {
@@ -5426,6 +5429,7 @@ mod tests {
         }
     }
 
+    #[cfg(not(target_os = "windows"))]
     fn cwd_echo_command(relative_dir: &str) -> String {
         #[cfg(target_os = "windows")]
         {
@@ -5438,6 +5442,7 @@ mod tests {
         }
     }
 
+    #[cfg(not(target_os = "windows"))]
     async fn shutdown_shell_session_for_test(pool_key: &str) {
         tokio::time::timeout(
             STREAMING_SHELL_TOOL_SHUTDOWN_TIMEOUT,

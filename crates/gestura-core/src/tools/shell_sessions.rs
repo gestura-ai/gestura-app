@@ -1761,9 +1761,12 @@ mod imp {
     mod tests {
         use super::*;
 
+        #[cfg(not(target_os = "windows"))]
         const PTY_TEST_COMMAND_TIMEOUT: Duration = Duration::from_secs(15);
+        #[cfg(not(target_os = "windows"))]
         const PTY_TEST_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
 
+        #[cfg(not(target_os = "windows"))]
         fn shell_echo_command(text: &str) -> String {
             #[cfg(windows)]
             {
@@ -1776,6 +1779,7 @@ mod imp {
             }
         }
 
+        #[cfg(not(target_os = "windows"))]
         fn shell_delayed_echo_command(delay_secs: u64, text: &str) -> String {
             #[cfg(windows)]
             {
@@ -1791,6 +1795,7 @@ mod imp {
             }
         }
 
+        #[cfg(not(target_os = "windows"))]
         fn interactive_echo_input(text: &str) -> String {
             #[cfg(windows)]
             {
@@ -1803,6 +1808,7 @@ mod imp {
             }
         }
 
+        #[cfg(not(target_os = "windows"))]
         async fn execute_in_session_for_test(
             pool_key: &str,
             initial_cwd: Option<&str>,
@@ -1826,6 +1832,7 @@ mod imp {
             .expect("timed out waiting for PTY test command")
         }
 
+        #[cfg(not(target_os = "windows"))]
         async fn execute_in_session_with_options_for_test(
             pool_key: &str,
             initial_cwd: Option<&str>,
@@ -1849,6 +1856,7 @@ mod imp {
             .expect("timed out waiting for PTY test command with custom options")
         }
 
+        #[cfg(not(target_os = "windows"))]
         async fn stop_session_for_test(shell_session_id: &str) {
             let _ = tokio::time::timeout(PTY_TEST_SHUTDOWN_TIMEOUT, stop_session(shell_session_id))
                 .await
@@ -1856,6 +1864,7 @@ mod imp {
                 .expect("stop PTY session");
         }
 
+        #[cfg(not(target_os = "windows"))]
         async fn shutdown_session_for_test(pool_key: &str) {
             tokio::time::timeout(PTY_TEST_SHUTDOWN_TIMEOUT, shutdown_session(pool_key))
                 .await
@@ -1863,6 +1872,7 @@ mod imp {
                 .expect("shutdown PTY session pool");
         }
 
+        #[cfg(not(target_os = "windows"))]
         async fn recv_session_lifecycle(
             rx: &mut mpsc::Receiver<StreamChunk>,
         ) -> (String, ShellSessionState, bool, bool) {
@@ -1883,6 +1893,7 @@ mod imp {
             }
         }
 
+        #[cfg(not(target_os = "windows"))]
         async fn recv_command_started(rx: &mut mpsc::Receiver<StreamChunk>) -> (String, String) {
             loop {
                 if let StreamChunk::ShellLifecycle {
