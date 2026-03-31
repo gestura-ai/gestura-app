@@ -61,7 +61,6 @@ mod imp {
     const DEFAULT_COLS: u16 = 120;
     const INTERRUPT_GRACE_SECS: u64 = 2;
     const STOP_ESCALATION_MILLIS: u64 = 300;
-    const ACTIVE_CHUNK_BUFFER: usize = 256;
     const SESSION_EVENT_BUFFER: usize = 512;
     const DEFAULT_EXECUTION_TIMEOUT_SECS: u64 = 300;
     const MIN_STALL_TIMEOUT_SECS: u64 = 30;
@@ -119,6 +118,23 @@ mod imp {
         }
     }
 
+    async fn send_stream_chunk_best_effort(
+        tx: &mpsc::Sender<StreamChunk>,
+        chunk: StreamChunk,
+        chunk_kind: &'static str,
+    ) {
+        match tokio::time::timeout(SHELL_OUTPUT_SEND_TIMEOUT, tx.send(chunk)).await {
+            Ok(Ok(())) | Ok(Err(_)) => {}
+            Err(_) => {
+                tracing::debug!(
+                    timeout_ms = SHELL_OUTPUT_SEND_TIMEOUT.as_millis(),
+                    chunk_kind,
+                    "Dropping PTY stream chunk because the receiver is not draining fast enough"
+                );
+            }
+        }
+    }
+
     async fn send_status_chunk_best_effort(tx: &mpsc::Sender<StreamChunk>, message: String) {
         match tokio::time::timeout(
             STATUS_CHUNK_SEND_TIMEOUT,
@@ -162,7 +178,7 @@ mod imp {
         master: Mutex<Box<dyn MasterPty + Send>>,
         writer: SharedWriter,
         command_lock: Mutex<()>,
-        active_sender: Arc<StdMutex<Option<mpsc::Sender<String>>>>,
+        active_sender: Arc<StdMutex<Option<mpsc::UnboundedSender<String>>>>,
         event_tx: broadcast::Sender<StreamChunk>,
         killer: Arc<StdMutex<Box<dyn ChildKiller + Send + Sync>>>,
         closed: Arc<AtomicBool>,
@@ -717,7 +733,7 @@ mod imp {
             Ok(())
         }
 
-        fn set_active_sender(&self, sender: Option<mpsc::Sender<String>>) -> Result<()> {
+        fn set_active_sender(&self, sender: Option<mpsc::UnboundedSender<String>>) -> Result<()> {
             let mut guard = self.active_sender.lock().map_err(|_| {
                 AppError::Session("failed to lock active PTY command sender".to_string())
             })?;
@@ -774,7 +790,7 @@ mod imp {
         async fn emit_session_lifecycle_to(&self, tx: &mpsc::Sender<StreamChunk>) {
             let chunk = self.session_lifecycle_chunk();
             self.emit_broadcast(chunk.clone());
-            let _ = tx.send(chunk).await;
+            send_stream_chunk_best_effort(tx, chunk, "shell-session-lifecycle").await;
         }
 
         async fn await_detached_pty_operation(
@@ -883,7 +899,7 @@ mod imp {
             );
             let start = Instant::now();
 
-            let (chunk_tx, mut chunk_rx) = mpsc::channel::<String>(ACTIVE_CHUNK_BUFFER);
+            let (chunk_tx, mut chunk_rx) = mpsc::unbounded_channel::<String>();
             self.user_stop_requested.store(false, Ordering::SeqCst);
             self.set_active_sender(Some(chunk_tx))?;
             self.set_active_command(Some(process_id.clone()), Some(command.to_string()))?;
@@ -912,7 +928,7 @@ mod imp {
                 cwd: command_cwd.map(ToOwned::to_owned),
             };
             self.emit_broadcast(start_chunk.clone());
-            let _ = tx.send(start_chunk).await;
+            send_stream_chunk_best_effort(&tx, start_chunk, "shell-lifecycle").await;
 
             let mut parser = SessionOutputParser::new(start_marker, done_prefix);
             let mut stdout = String::new();
@@ -1208,7 +1224,7 @@ mod imp {
                 cwd: command_cwd.map(ToOwned::to_owned),
             };
             self.emit_broadcast(lifecycle_chunk.clone());
-            let _ = tx.send(lifecycle_chunk).await;
+            send_stream_chunk_best_effort(tx, lifecycle_chunk, "shell-lifecycle").await;
             self.emit_session_lifecycle_to(tx).await;
 
             Ok(StreamingCommandResult {
@@ -1363,7 +1379,7 @@ mod imp {
     }
 
     struct ReaderLoopContext {
-        active_sender: Arc<StdMutex<Option<mpsc::Sender<String>>>>,
+        active_sender: Arc<StdMutex<Option<mpsc::UnboundedSender<String>>>>,
         active_process_id: Arc<StdMutex<Option<String>>>,
         closed: Arc<AtomicBool>,
         claimed_by_user: Arc<AtomicBool>,
@@ -1423,7 +1439,7 @@ mod imp {
 
                             let sender = active_sender.lock().ok().and_then(|guard| guard.clone());
                             if let Some(sender) = sender {
-                                let _ = sender.blocking_send(chunk.clone());
+                                let _ = sender.send(chunk.clone());
                             }
                             let process_id = active_process_id
                                 .lock()
@@ -2169,6 +2185,30 @@ mod imp {
             assert!(result.stdout.contains("done"));
 
             shutdown_session_for_test("pty-activity-aware-pool").await;
+        }
+
+        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        async fn execute_in_session_completes_when_caller_stream_is_not_draining() {
+            let (tx, _rx) = mpsc::channel(1);
+
+            let result = execute_in_session_for_test(
+                "pty-non-draining-caller-stream",
+                std::env::current_dir()
+                    .ok()
+                    .and_then(|p| p.to_str().map(ToOwned::to_owned))
+                    .as_deref(),
+                &shell_echo_command("still-completes"),
+                None,
+                Some(10),
+                tx,
+            )
+            .await
+            .expect("PTY command result despite non-draining caller stream");
+
+            assert!(result.success);
+            assert!(result.stdout.contains("still-completes"));
+
+            shutdown_session_for_test("pty-non-draining-caller-stream").await;
         }
 
         #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
