@@ -71,6 +71,8 @@ mod imp {
     const STATUS_CHUNK_SEND_TIMEOUT: Duration = Duration::from_millis(100);
     const STALL_SIGNAL_TAIL_BYTES: usize = 4096;
     const SHELL_READY_TIMEOUT: Duration = Duration::from_secs(5);
+    const PTY_WRITE_TIMEOUT: Duration = Duration::from_secs(5);
+    const PTY_KILL_TIMEOUT: Duration = Duration::from_secs(5);
 
     const INTERACTIVE_PROMPT_PATTERNS: &[&str] = &[
         "ok to proceed?",
@@ -775,33 +777,49 @@ mod imp {
             let _ = tx.send(chunk).await;
         }
 
-        async fn write_to_pty(&self, data: Vec<u8>) -> Result<()> {
-            let writer = self.writer.clone();
+        async fn await_detached_pty_operation(
+            &self,
+            thread_label: &str,
+            operation_name: &str,
+            timeout: Duration,
+            operation: impl FnOnce() -> Result<()> + Send + 'static,
+        ) -> Result<()> {
             let shell_session_id = self.shell_session_id.clone();
+            let thread_name = format!("gestura-pty-{thread_label}-{shell_session_id}");
             let (result_tx, result_rx) = tokio::sync::oneshot::channel();
 
-            let _ = std::thread::Builder::new()
-                .name(format!("gestura-pty-write-{shell_session_id}"))
+            std::thread::Builder::new()
+                .name(thread_name)
                 .spawn(move || {
-                    let result = (|| -> Result<()> {
-                        let mut writer = writer.lock().map_err(|_| {
-                            AppError::Session(
-                                "PTY shell writer lock poisoned unexpectedly".to_string(),
-                            )
-                        })?;
-                        writer.write_all(&data).map_err(AppError::Io)?;
-                        writer.flush().map_err(AppError::Io)
-                    })();
-
-                    let _ = result_tx.send(result);
+                    let _ = result_tx.send(operation());
                 })
                 .map_err(|error| {
-                    AppError::Session(format!("failed to spawn PTY writer task: {error}"))
+                    AppError::Session(format!(
+                        "failed to spawn PTY {operation_name} task for shell session `{shell_session_id}`: {error}"
+                    ))
                 })?;
 
-            result_rx.await.map_err(|_| {
-                AppError::Session("PTY writer task ended before reporting completion".to_string())
-            })?
+            match tokio::time::timeout(timeout, result_rx).await {
+                Ok(Ok(result)) => result,
+                Ok(Err(_)) => Err(AppError::Session(format!(
+                    "PTY {operation_name} task ended before reporting completion for shell session `{shell_session_id}`"
+                ))),
+                Err(_) => Err(AppError::Session(format!(
+                    "timed out waiting for PTY {operation_name} to finish for shell session `{shell_session_id}`"
+                ))),
+            }
+        }
+
+        async fn write_to_pty(&self, data: Vec<u8>) -> Result<()> {
+            let writer = self.writer.clone();
+            self.await_detached_pty_operation("write", "write", PTY_WRITE_TIMEOUT, move || {
+                let mut writer = writer.lock().map_err(|_| {
+                    AppError::Session("PTY shell writer lock poisoned unexpectedly".to_string())
+                })?;
+                writer.write_all(&data).map_err(AppError::Io)?;
+                writer.flush().map_err(AppError::Io)
+            })
+            .await
         }
 
         async fn send_input(&self, data: &str) -> Result<()> {
@@ -1235,15 +1253,18 @@ mod imp {
             if self.closed.swap(true, Ordering::SeqCst) {
                 return Ok(());
             }
-            let mut killer = self
-                .killer
-                .lock()
-                .map_err(|_| AppError::Session("failed to lock PTY killer".to_string()))?;
-            match killer.kill() {
-                Ok(()) => Ok(()),
-                Err(error) if error.kind() == ErrorKind::NotFound => Ok(()),
-                Err(error) => Err(AppError::Io(error)),
-            }
+            let killer = self.killer.clone();
+            self.await_detached_pty_operation("kill", "termination", PTY_KILL_TIMEOUT, move || {
+                let mut killer = killer
+                    .lock()
+                    .map_err(|_| AppError::Session("failed to lock PTY killer".to_string()))?;
+                match killer.kill() {
+                    Ok(()) => Ok(()),
+                    Err(error) if error.kind() == ErrorKind::NotFound => Ok(()),
+                    Err(error) => Err(AppError::Io(error)),
+                }
+            })
+            .await
         }
     }
 
@@ -1928,7 +1949,7 @@ mod imp {
             assert!(script.contains("printf '\\n__GESTURA_DONE__:%s\\n'"));
         }
 
-        #[tokio::test]
+        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
         async fn create_session_starts_idle_shell_without_command() {
             let (tx, mut rx) = mpsc::channel(64);
             let handle = create_session(
@@ -1952,7 +1973,7 @@ mod imp {
             stop_session_for_test(&handle.shell_session_id).await;
         }
 
-        #[tokio::test]
+        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
         async fn reuses_idle_session_within_same_pool() {
             let (tx, mut rx) = mpsc::channel(128);
             let first = execute_in_session_for_test(
@@ -1993,7 +2014,7 @@ mod imp {
             shutdown_session_for_test("pty-reuse-pool").await;
         }
 
-        #[tokio::test]
+        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
         async fn execute_in_session_emits_session_lifecycle_to_caller_stream() {
             let (tx, mut rx) = mpsc::channel(128);
             let result = execute_in_session_for_test(
@@ -2030,7 +2051,7 @@ mod imp {
             shutdown_session_for_test("pty-session-lifecycle-stream").await;
         }
 
-        #[tokio::test]
+        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
         async fn allocates_new_session_when_existing_one_is_busy() {
             let (tx_one, mut rx_one) = mpsc::channel(128);
             let (tx_two, mut rx_two) = mpsc::channel(128);
@@ -2078,7 +2099,7 @@ mod imp {
             shutdown_session_for_test("pty-busy-pool").await;
         }
 
-        #[tokio::test]
+        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
         async fn activity_aware_execution_allows_recently_active_long_running_commands() {
             let (tx, _rx) = mpsc::channel(128);
             let command = if cfg!(windows) {
@@ -2111,7 +2132,7 @@ mod imp {
             shutdown_session_for_test("pty-activity-aware-pool").await;
         }
 
-        #[tokio::test]
+        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
         async fn activity_aware_execution_reports_continue_wait_before_timing_out_when_quiet_output_has_no_indicator()
          {
             let (tx, mut rx) = mpsc::channel(128);
@@ -2158,7 +2179,7 @@ mod imp {
             assert!(saw_continue_wait_status);
         }
 
-        #[tokio::test]
+        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
         async fn activity_aware_execution_times_out_after_repeated_quiet_periods_without_signal() {
             let (tx, _rx) = mpsc::channel(128);
             let command = if cfg!(windows) {
@@ -2239,7 +2260,7 @@ mod imp {
             );
         }
 
-        #[tokio::test]
+        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
         async fn claiming_automation_session_removes_it_from_reuse_pool() {
             let (tx, mut rx) = mpsc::channel(128);
             let first = execute_in_session_for_test(
@@ -2292,7 +2313,7 @@ mod imp {
             shutdown_session_for_test("pty-claim-pool").await;
         }
 
-        #[tokio::test]
+        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
         async fn claimed_automation_session_streams_interactive_output_after_attach() {
             let (tx, mut rx) = mpsc::channel(128);
             execute_in_session_for_test(

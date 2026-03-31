@@ -8650,7 +8650,7 @@ mod tests {
         assert!(message.contains("Command timed out"));
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn shell_tool_timeout_surfaces_interactive_prompt_context() {
         let pipeline = AgentPipeline::new(AppConfig::default());
         let temp = TempDir::new().expect("temp dir");
@@ -8680,7 +8680,7 @@ mod tests {
         }
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn streaming_shell_tool_emits_keepalive_for_silent_commands() {
         use gestura_core_streaming::StreamChunk;
 
@@ -8765,7 +8765,7 @@ mod tests {
         let _ = keepalive.await;
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn streaming_shell_tool_strips_matching_leading_cd_from_command() {
         let pipeline = AgentPipeline::new(AppConfig::default());
         let temp = TempDir::new().expect("temp dir");
