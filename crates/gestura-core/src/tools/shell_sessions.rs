@@ -1593,10 +1593,13 @@ mod imp {
             let code_start = idx + done_prefix.len();
             let line_end_rel = buffer[code_start..].find('\n')?;
             let consume_end = code_start + line_end_rel + 1;
-            let exit_code = buffer[code_start..code_start + line_end_rel]
+            let Ok(exit_code) = buffer[code_start..code_start + line_end_rel]
                 .trim_end_matches('\r')
                 .parse()
-                .ok()?;
+            else {
+                search_from = idx + done_prefix.len();
+                continue;
+            };
             let output_end = if idx == 0 {
                 0
             } else if buffer.as_bytes()[idx - 1] == b'\n' {
@@ -1620,7 +1623,7 @@ mod imp {
         let mut search_from = 0;
         while let Some(rel_idx) = buffer[search_from..].find(start_marker) {
             let idx = search_from + rel_idx;
-            let before_ok = idx == 0 || buffer.as_bytes()[idx - 1] == b'\n';
+            let before_ok = idx == 0 || matches!(buffer.as_bytes()[idx - 1], b'\n' | b'\r');
             if !before_ok {
                 search_from = idx + start_marker.len();
                 continue;
@@ -1931,6 +1934,42 @@ mod imp {
 
             let second = parser.push("__GESTURA_DONE_abc__:0\r\n>");
             assert_eq!(second.output, "warmup");
+            assert_eq!(second.exit_code, Some(0));
+        }
+
+        #[test]
+        fn parser_accepts_start_marker_after_carriage_return_boundary() {
+            let mut parser = SessionOutputParser::new(
+                "__GESTURA_START_abc__".to_string(),
+                "__GESTURA_DONE_abc__:".to_string(),
+            );
+
+            let first = parser.push("noise\r__GESTURA_START_abc__\nhello");
+            assert_eq!(first.output, "");
+            assert_eq!(first.exit_code, None);
+
+            let second = parser.push("\n__GESTURA_DONE_abc__:0\r\n");
+            assert_eq!(second.output, "hello");
+            assert_eq!(second.exit_code, Some(0));
+        }
+
+        #[test]
+        fn parser_skips_malformed_done_marker_before_real_exit_code() {
+            let mut parser = SessionOutputParser::new(
+                "__GESTURA_START_abc__".to_string(),
+                "__GESTURA_DONE_abc__:".to_string(),
+            );
+
+            let first = parser.push("__GESTURA_START_abc__\r\nhello\n");
+            assert_eq!(first.output, "");
+            assert_eq!(first.exit_code, None);
+
+            let second =
+                parser.push("__GESTURA_DONE_abc__:%GESTURA_STATUS%\r\n__GESTURA_DONE_abc__:0\r\n");
+            assert_eq!(
+                second.output,
+                "hello\n__GESTURA_DONE_abc__:%GESTURA_STATUS%"
+            );
             assert_eq!(second.exit_code, Some(0));
         }
 
