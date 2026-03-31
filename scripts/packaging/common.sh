@@ -155,3 +155,38 @@ write_sha256sums() {
     fi
   )
 }
+
+# filter_feature_csv returns a comma-separated subset of requested features.
+#
+# Arguments:
+#  1) requested_csv    Comma-separated requested features.
+#  2+) supported       Supported feature names.
+filter_feature_csv() {
+  local requested_csv="$1"
+  shift
+
+  local requested_list
+  requested_list="${requested_csv//,/ }"
+
+  local filtered=()
+  local requested_feature supported_feature
+  for requested_feature in $requested_list; do
+    for supported_feature in "$@"; do
+      if [ "$requested_feature" = "$supported_feature" ]; then
+        filtered+=("$requested_feature")
+        break
+      fi
+    done
+  done
+
+  local joined=""
+  local feature
+  for feature in "${filtered[@]}"; do
+    if [ -n "$joined" ]; then
+      joined+=","
+    fi
+    joined+="$feature"
+  done
+
+  printf "%s" "$joined"
+}

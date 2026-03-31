@@ -26,7 +26,7 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
-  NODE_VERSION: '20'
+  NODE_VERSION: 'lts/*'
   RUST_VERSION: stable
 
 jobs:
@@ -39,6 +39,9 @@ jobs:
       release_sha: ${{ steps.metadata.outputs.release_sha }}
       tag: ${{ steps.metadata.outputs.tag }}
       version: ${{ steps.metadata.outputs.version }}
+      macos_features: ${{ steps.metadata.outputs.macos_features }}
+      linux_features: ${{ steps.metadata.outputs.linux_features }}
+      windows_features: ${{ steps.metadata.outputs.windows_features }}
       has_macos_signing: ${{ steps.signing.outputs.has_macos_signing }}
       has_windows_signing: ${{ steps.signing.outputs.has_windows_signing }}
     steps:
@@ -48,64 +51,15 @@ jobs:
           fetch-depth: 0
           ref: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.ref || github.ref }}
 
-      - name: Resolve version and release metadata
+      - name: Validate release definition and resolve release metadata
         id: metadata
         env:
           EVENT_NAME: ${{ github.event_name }}
           INPUT_PUBLISH: ${{ github.event.inputs.publish }}
           REF_NAME: ${{ github.ref_name }}
         run: |
-          python3 <<'PY'
-          import json
-          import os
-          import pathlib
-          import re
-          import subprocess
-          import tomllib
-
-          root = pathlib.Path('.')
-          cargo = tomllib.loads((root / 'Cargo.toml').read_text(encoding='utf-8'))
-          workspace_version = cargo['workspace']['package']['version']
-          tauri_version = json.loads((root / 'crates/gestura-gui/tauri.conf.json').read_text(encoding='utf-8'))['version']
-          frontend_version = json.loads((root / 'crates/gestura-gui/frontend/package.json').read_text(encoding='utf-8'))['version']
-
-          versions = {
-              'Cargo.toml': workspace_version,
-              'crates/gestura-gui/tauri.conf.json': tauri_version,
-              'crates/gestura-gui/frontend/package.json': frontend_version,
-          }
-          unique_versions = set(versions.values())
-          if len(unique_versions) != 1:
-              raise SystemExit(f'Version drift detected across release metadata: {versions}')
-
-          semver = re.compile(r'^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$')
-          if not semver.fullmatch(workspace_version):
-              raise SystemExit(f'Workspace version is not valid semver: {workspace_version}')
-
-          expected_tag = f'v{workspace_version}'
-          event_name = os.environ['EVENT_NAME']
-          publish = event_name == 'push' or os.environ.get('INPUT_PUBLISH', '').lower() == 'true'
-          ref_name = os.environ.get('REF_NAME', '')
-
-          if event_name == 'push' and ref_name != expected_tag:
-              raise SystemExit(
-                  f'Tag/version mismatch: workflow triggered for {ref_name}, '
-                  f'but repository version resolves to {expected_tag}'
-              )
-
-          release_sha = subprocess.check_output(
-              ['git', 'rev-parse', 'HEAD'], text=True
-          ).strip()
-          prerelease = 'true' if '-' in workspace_version else 'false'
-
-          output_path = pathlib.Path(os.environ['GITHUB_OUTPUT'])
-          with output_path.open('a', encoding='utf-8') as fh:
-              print(f'publish={str(publish).lower()}', file=fh)
-              print(f'prerelease={prerelease}', file=fh)
-              print(f'release_sha={release_sha}', file=fh)
-              print(f'tag={expected_tag}', file=fh)
-              print(f'version={workspace_version}', file=fh)
-          PY
+          python3 scripts/validate-release-definition.py metadata \
+            --github-output "$GITHUB_OUTPUT"
 
       - name: Resolve signing availability
         id: signing
@@ -133,6 +87,7 @@ jobs:
     timeout-minutes: 120
     env:
       TAG: ${{ needs.prepare.outputs.tag }}
+      PLATFORM_FEATURES: ${{ needs.prepare.outputs.macos_features }}
       APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
       APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
       APPLE_ID: ${{ secrets.APPLE_ID }}
@@ -211,7 +166,7 @@ jobs:
           ./scripts/package-mac.sh \
             --tag "$TAG" \
             --dist dist/release \
-            --features 'voice-local,macos-permissions'
+            --features "$PLATFORM_FEATURES"
 
       - name: Remove per-platform checksum manifest
         run: rm -f "dist/release/gestura-${TAG}-SHA256SUMS.txt"
@@ -223,6 +178,7 @@ jobs:
           app_path="target/universal-apple-darwin/release/bundle/macos/Gestura.app"
           pkg_path="dist/release/Gestura-${TAG}-universal.pkg"
           cli_path="target/universal-apple-darwin/release/gestura"
+          cli_archive="dist/release/gestura-cli-${TAG}-macos-universal.tar.gz"
 
           if [ ! -d "$app_path" ]; then
             app_path="crates/gestura-gui/target/universal-apple-darwin/release/bundle/macos/Gestura.app"
@@ -231,11 +187,14 @@ jobs:
           [ -d "$app_path" ]
           [ -f "$pkg_path" ]
           [ -f "$cli_path" ]
+          [ -f "$cli_archive" ]
 
           codesign --verify --deep --strict --verbose=2 "$app_path"
           spctl --assess --type exec --verbose=2 "$app_path"
           xcrun stapler validate "$app_path"
+          pkgutil --check-signature "$pkg_path"
           codesign --verify --deep --strict --verbose=2 "$cli_path"
+          tar -tzf "$cli_archive" | grep -Fx 'gestura'
           xcrun stapler validate "$pkg_path"
 
       - name: Upload macOS artifacts
@@ -252,6 +211,7 @@ jobs:
     timeout-minutes: 90
     env:
       TAG: ${{ needs.prepare.outputs.tag }}
+      PLATFORM_FEATURES: ${{ needs.prepare.outputs.linux_features }}
     steps:
       - name: Checkout release commit
         uses: actions/checkout@v4
@@ -298,10 +258,36 @@ jobs:
           ./scripts/package-linux.sh \
             --tag "$TAG" \
             --dist dist/release \
-            --features 'voice-local,linux-permissions'
+            --features "$PLATFORM_FEATURES"
 
       - name: Remove per-platform checksum manifest
         run: rm -f "dist/release/gestura-${TAG}-SHA256SUMS.txt"
+
+      - name: Validate Linux package contents
+        run: |
+          set -euo pipefail
+          deb_path="$(find dist/release -maxdepth 1 -name '*.deb' -print -quit)"
+          rpm_path="$(find dist/release -maxdepth 1 -name '*.rpm' -print -quit)"
+          cli_archive="$(find dist/release -maxdepth 1 -name 'gestura-cli-*-linux-*.tar.gz' -print -quit)"
+
+          [ -n "$deb_path" ]
+          [ -n "$rpm_path" ]
+          [ -n "$cli_archive" ]
+
+          dpkg-deb -c "$deb_path" | grep -E 'usr/bin/gestura$'
+          rpm -qlp "$rpm_path" | grep -E '^/usr/bin/gestura$'
+          tar -tzf "$cli_archive" | grep -Fx 'gestura'
+
+      - name: Validate Linux package dependency metadata
+        run: |
+          set -euo pipefail
+          deb_path="$(find dist/release -maxdepth 1 -name '*.deb' -print -quit)"
+          rpm_path="$(find dist/release -maxdepth 1 -name '*.rpm' -print -quit)"
+
+          python3 scripts/validate-release-definition.py linux-package-metadata \
+            --deb-path "$deb_path" \
+            --rpm-path "$rpm_path" \
+            --summary-file "$GITHUB_STEP_SUMMARY"
 
       - name: Upload Linux artifacts
         uses: actions/upload-artifact@v4
@@ -317,6 +303,7 @@ jobs:
     timeout-minutes: 120
     env:
       TAG: ${{ needs.prepare.outputs.tag }}
+      PLATFORM_FEATURES: ${{ needs.prepare.outputs.windows_features }}
       WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
       WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
     steps:
@@ -376,7 +363,7 @@ jobs:
           ./scripts/package-windows.sh \
             --tag "$TAG" \
             --dist dist/release \
-            --features 'voice-local,windows-permissions'
+            --features "$PLATFORM_FEATURES"
 
       - name: Remove per-platform checksum manifest
         shell: pwsh
@@ -404,6 +391,22 @@ jobs:
             if ($cliSig.Status -ne 'Valid') {
               throw "CLI executable is not validly signed: $($cliSig.StatusMessage)"
             }
+          }
+
+      - name: Validate Windows release archives
+        shell: pwsh
+        run: |
+          $zip = Get-ChildItem -Path dist/release -Filter *.zip -ErrorAction Stop | Select-Object -First 1
+          Add-Type -AssemblyName System.IO.Compression.FileSystem
+          $archive = [System.IO.Compression.ZipFile]::OpenRead($zip.FullName)
+          try {
+            $entry = $archive.Entries | Where-Object { $_.FullName -eq 'gestura.exe' } | Select-Object -First 1
+            if (-not $entry) {
+              throw "CLI archive $($zip.Name) is missing gestura.exe"
+            }
+          }
+          finally {
+            $archive.Dispose()
           }
 
       - name: Upload Windows artifacts
@@ -441,6 +444,20 @@ jobs:
           set -euo pipefail
           source scripts/packaging/common.sh
           write_sha256sums dist/release "gestura-${TAG}-SHA256SUMS.txt"
+
+      - name: Generate release manifest
+        run: |
+          python3 scripts/validate-release-definition.py manifest \
+            --tag "$TAG" \
+            --dist-dir dist/release \
+            --output "dist/release/gestura-${TAG}-release-manifest.json"
+
+      - name: Validate release artifacts against definition
+        run: |
+          python3 scripts/validate-release-definition.py artifacts \
+            --tag "$TAG" \
+            --dist-dir dist/release \
+            --summary-file "$GITHUB_STEP_SUMMARY"
 
       - name: Create or update GitHub release
         run: |

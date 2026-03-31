@@ -1,0 +1,95 @@
+{
+  "schema_version": 1,
+  "release": {
+    "name": "Gestura",
+    "tag_prefix": "v",
+    "version_sources": [
+      "Cargo.toml:workspace.package.version",
+      "crates/gestura-gui/tauri.conf.json:version",
+      "crates/gestura-gui/frontend/package.json:version"
+    ],
+    "checksum_asset": "gestura-{tag}-SHA256SUMS.txt",
+    "manifest_asset": "gestura-{tag}-release-manifest.json"
+  },
+  "platforms": {
+    "macos": {
+      "architectures": [
+        "universal"
+      ],
+      "features": [
+        "voice-local",
+        "macos-permissions"
+      ],
+      "required_assets": [
+        "Gestura-{tag}-universal.pkg",
+        "gestura-cli-{tag}-macos-universal.tar.gz"
+      ],
+      "channels": [
+        "github-release",
+        "homebrew-cli"
+      ]
+    },
+    "linux": {
+      "architectures": [
+        "x86_64"
+      ],
+      "features": [
+        "voice-local",
+        "linux-permissions"
+      ],
+      "required_assets": [
+        "gestura-{tag}-linux-x86_64.deb",
+        "gestura-{tag}-linux-x86_64.rpm",
+        "gestura-cli-{tag}-linux-x86_64.tar.gz"
+      ],
+      "channels": [
+        "github-release"
+      ]
+    },
+    "windows": {
+      "architectures": [
+        "x86_64"
+      ],
+      "features": [
+        "voice-local",
+        "windows-permissions"
+      ],
+      "required_assets": [
+        "Gestura-{tag}-windows-x86_64.msi",
+        "gestura-cli-{tag}-windows-x86_64.zip"
+      ],
+      "channels": [
+        "github-release",
+        "winget"
+      ]
+    }
+  },
+  "channels": {
+    "github-release": {
+      "status": "published",
+      "description": "Canonical GitHub Release containing all supported signed installers, companion CLI archives, and checksums.",
+      "required_assets": [
+        "gestura-{tag}-SHA256SUMS.txt",
+        "gestura-{tag}-release-manifest.json"
+      ]
+    },
+    "homebrew-cli": {
+      "status": "documented-manual",
+      "description": "Downstream Homebrew tap or formula updates consume the standalone macOS CLI archive and release checksums.",
+      "required_assets": [
+        "gestura-cli-{tag}-macos-universal.tar.gz",
+        "gestura-{tag}-SHA256SUMS.txt",
+        "gestura-{tag}-release-manifest.json"
+      ]
+    },
+    "winget": {
+      "status": "documented-manual",
+      "description": "Downstream Winget manifest updates consume the signed Windows MSI plus the release checksums and manifest.",
+      "required_assets": [
+        "Gestura-{tag}-windows-x86_64.msi",
+        "gestura-{tag}-SHA256SUMS.txt",
+        "gestura-{tag}-release-manifest.json"
+      ]
+    }
+  }
+}

@@ -153,7 +153,7 @@ stage_ffmpeg() {
 
   local tmp
   tmp="$(mktemp -d)"
-  trap 'rm -rf "$tmp"' RETURN
+  trap 'if [ -n "${tmp:-}" ]; then rm -rf -- "$tmp"; fi' RETURN
 
   # martin-riedl.de provides signed, statically-linked macOS ffmpeg for both
   # architectures via stable redirect URLs.
@@ -190,14 +190,26 @@ stage_ffmpeg() {
 build_cli_universal() {
   local arm64_target_dir="target/build-arm64"
   local x86_64_target_dir="target/build-x86"
+  local cli_features
+  cli_features="$(filter_feature_csv "$FEATURES" voice-local nats security)"
 
   log_info "Building CLI (${CLI_PACKAGE}) for ${TARGET_AARCH64}"
-  CARGO_TARGET_DIR="$arm64_target_dir" \
-    cargo build --release -p "$CLI_PACKAGE" --features "$FEATURES" --target "$TARGET_AARCH64"
+  if [ -n "$cli_features" ]; then
+    CARGO_TARGET_DIR="$arm64_target_dir" \
+      cargo build --release -p "$CLI_PACKAGE" --features "$cli_features" --target "$TARGET_AARCH64"
+  else
+    CARGO_TARGET_DIR="$arm64_target_dir" \
+      cargo build --release -p "$CLI_PACKAGE" --target "$TARGET_AARCH64"
+  fi
 
   log_info "Building CLI (${CLI_PACKAGE}) for ${TARGET_X86_64}"
-  CARGO_TARGET_DIR="$x86_64_target_dir" \
-    cargo build --release -p "$CLI_PACKAGE" --features "$FEATURES" --target "$TARGET_X86_64"
+  if [ -n "$cli_features" ]; then
+    CARGO_TARGET_DIR="$x86_64_target_dir" \
+      cargo build --release -p "$CLI_PACKAGE" --features "$cli_features" --target "$TARGET_X86_64"
+  else
+    CARGO_TARGET_DIR="$x86_64_target_dir" \
+      cargo build --release -p "$CLI_PACKAGE" --target "$TARGET_X86_64"
+  fi
 
   local out_dir="target/${TARGET_UNIVERSAL}/release"
   mkdir -p "$out_dir"

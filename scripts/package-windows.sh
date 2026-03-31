@@ -140,7 +140,14 @@ build_frontend() {
 # stage_cli builds the CLI and stages it for Tauri `bundle.externalBin`.
 stage_cli() {
   log_info "Building CLI (${CLI_PACKAGE}) for ${TARGET_TRIPLE}"
-  cargo build --release -p "$CLI_PACKAGE" --features "$FEATURES" --target "$TARGET_TRIPLE"
+  local cli_features
+  cli_features="$(filter_feature_csv "$FEATURES" voice-local nats security)"
+
+  if [ -n "$cli_features" ]; then
+    cargo build --release -p "$CLI_PACKAGE" --features "$cli_features" --target "$TARGET_TRIPLE"
+  else
+    cargo build --release -p "$CLI_PACKAGE" --target "$TARGET_TRIPLE"
+  fi
 
   local src="target/${TARGET_TRIPLE}/release/${APP_NAME}.exe"
   [ -f "$src" ] || die "CLI binary not found at ${src}"

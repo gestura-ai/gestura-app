@@ -212,3 +212,10 @@ lto = true
 codegen-units = 1
 strip = true
 
+[profile.release.package.gestura-gui]
+# Tauri patches a `__TAURI_BUNDLE_TYPE` marker into the GUI binary during
+# bundling. Full symbol stripping removes that marker and causes release-time
+# warnings even though bundles still complete. Keep debug info stripped, but
+# preserve symbols for the Tauri app package so bundle-type patching works.
+strip = "debuginfo"
+

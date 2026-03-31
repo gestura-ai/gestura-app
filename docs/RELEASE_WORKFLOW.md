@@ -2,7 +2,14 @@
 
 ## Overview
 
-Gestura’s canonical release pipeline lives in `.github/workflows/release.yml` and is now **tag-and-version validated**, **signed on macOS and Windows**, and **configurable for higher-capacity runners** when GitHub-hosted resources are not enough.
+Gestura’s canonical release pipeline lives in `.github/workflows/release.yml` and is now **definition-driven**, **tag-and-version validated**, **signed on macOS and Windows**, and **configurable for higher-capacity runners** when GitHub-hosted resources are not enough.
+
+The canonical release contract is stored in `release/release-definition.json`. It defines:
+
+- the supported platform release matrix
+- the feature set shipped per platform
+- the canonical release artifacts expected for each platform
+- the downstream channels that each release must support
 
 ## Triggers
 
@@ -34,6 +41,18 @@ The workflow fails immediately if:
 - the version is not valid semver
 - a tag-triggered run is not for `v<version>`
 
+## Release definition and feature matrix
+
+The tag workflow validates `release/release-definition.json` before any platform build starts.
+
+Current canonical public release matrix:
+
+- macOS: universal GUI + CLI with `voice-local,macos-permissions`
+- Linux: x86_64 GUI + CLI with `voice-local,linux-permissions`
+- Windows: x86_64 GUI + CLI with `voice-local,windows-permissions`
+
+If the release definition and the generated artifact set diverge, the publish job fails before a GitHub release is created or updated.
+
 ## Release job layout
 
 1. **Prepare**
@@ -48,6 +67,7 @@ The workflow fails immediately if:
    - verifies notarization and stapled tickets
 3. **Build Linux**
    - builds `.deb` / `.rpm` installers and the standalone CLI tarball
+   - validates packaged CLI placement and emitted DEB/RPM runtime dependency metadata
 4. **Build Windows**
    - imports the PFX certificate
    - injects the certificate thumbprint into `tauri.conf.json` during the build
@@ -57,6 +77,8 @@ The workflow fails immediately if:
 5. **Publish release**
    - downloads all artifacts
    - generates a unified SHA256 manifest
+   - validates the full artifact set against `release/release-definition.json`
+   - generates a machine-readable release manifest asset
    - creates or updates the GitHub release and uploads assets
 
 ## Canonical release assets
@@ -75,9 +97,21 @@ The workflow publishes these OS release packages and companion CLI archives:
   - `gestura-cli-vX.Y.Z-windows-x86_64.zip`
 - Checksums
   - `gestura-vX.Y.Z-SHA256SUMS.txt`
+- Release manifest
+  - `gestura-vX.Y.Z-release-manifest.json`
 
 The macOS standalone archive (`gestura-cli-vX.Y.Z-macos-universal.tar.gz`) is the
 canonical release asset to reference from a Homebrew formula or tap update.
+
+## Channel completeness
+
+The release definition currently treats these channels as part of release readiness:
+
+- `github-release` — published directly by the tag workflow
+- `homebrew-cli` — documented downstream update using the macOS CLI tarball + checksums + release manifest
+- `winget` — documented downstream update using the Windows MSI + checksums + release manifest
+
+The publish job validates that the assets required by those channels are present before it publishes the GitHub release.
 
 ## Required secrets for signed releases
 
@@ -142,4 +176,4 @@ gh workflow run release.yml -f ref=main -f publish=false
 
 - macOS and Windows signing are enforced for published releases.
 - Linux packages are built and checksummed but do not use platform code signing.
-- Release publication is intentionally separate from Homebrew/tap submission so unrelated downstream jobs cannot block installer creation.
+- Release publication is intentionally separate from Homebrew/Winget submission so unrelated downstream jobs cannot block installer creation.

@@ -3,7 +3,6 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
   useStreamEvents,
-  type StreamEventAction,
   type StreamEventDispatch,
 } from './useStreamEvents';
 
@@ -42,8 +41,12 @@ describe('useStreamEvents', () => {
     }
   });
 
+  function createDispatchMock() {
+    return vi.fn<StreamEventDispatch>();
+  }
+
   it('refreshes tasks when a task tool result succeeds', async () => {
-    const dispatch = vi.fn<[StreamEventAction], void>();
+    const dispatch = createDispatchMock();
     render(<HookHarness sessionId="session-123" dispatch={dispatch} />);
 
     await waitFor(() => {
@@ -63,7 +66,7 @@ describe('useStreamEvents', () => {
   });
 
   it('does not refresh tasks for failed task tool results', async () => {
-    const dispatch = vi.fn<[StreamEventAction], void>();
+    const dispatch = createDispatchMock();
     render(<HookHarness sessionId="session-123" dispatch={dispatch} />);
 
     await waitFor(() => {
@@ -88,7 +91,7 @@ describe('useStreamEvents', () => {
   });
 
   it('dispatches paused and resumed stream lifecycle events', async () => {
-    const dispatch = vi.fn<[StreamEventAction], void>();
+    const dispatch = createDispatchMock();
     render(<HookHarness sessionId="session-123" dispatch={dispatch} />);
 
     await waitFor(() => {
@@ -106,7 +109,7 @@ describe('useStreamEvents', () => {
   });
 
   it('dispatches runtime task snapshots from the stream', async () => {
-    const dispatch = vi.fn<[StreamEventAction], void>();
+    const dispatch = createDispatchMock();
     render(<HookHarness sessionId="session-123" dispatch={dispatch} />);
 
     await waitFor(() => {
@@ -151,7 +154,7 @@ describe('useStreamEvents', () => {
   });
 
   it('coalesces adjacent chunk events before dispatching', async () => {
-    const dispatch = vi.fn<[StreamEventAction], void>();
+    const dispatch = createDispatchMock();
     render(<HookHarness sessionId="session-123" dispatch={dispatch} />);
 
     await waitFor(() => {
@@ -170,7 +173,7 @@ describe('useStreamEvents', () => {
   });
 
   it('normalizes backend voice agent-message payloads into chat actions', async () => {
-    const dispatch = vi.fn<[StreamEventAction], void>();
+    const dispatch = createDispatchMock();
     render(<HookHarness sessionId="session-123" dispatch={dispatch} />);
 
     await waitFor(() => {

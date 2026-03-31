@@ -1,15 +1,16 @@
 # Gestura.app Build System Documentation
 
-This document describes the comprehensive build system for multi-platform releases and package manager publishing.
+This document describes the build system for multi-platform releases, release validation, and downstream channel publishing inputs.
 
 ## Overview
 
 The build system supports:
 - **Multi-platform builds**: macOS, Linux, Windows
-- **Multi-architecture**: x64 (Intel) and ARM64 architectures
-- **Package managers**: Homebrew, Chocolatey, Winget, Snap, Flatpak, AppImage
+- **Canonical signed release matrix**: macOS universal, Linux x86_64, Windows x86_64
+- **Downstream release channels**: GitHub Releases, Homebrew input assets, Winget input assets
 - **Automated CI/CD**: GitHub Actions workflows
-- **Icon generation**: Automated from source PNG
+- **Release validation**: definition-driven artifact checks plus platform-specific package/archive validation
+- **Linux metadata validation**: release CI confirms DEB/RPM runtime dependency metadata matches `tauri.conf.json`
 
 ## Quick Start
 
@@ -20,7 +21,7 @@ The build system supports:
 
 ### Build All Platforms
 ```bash
-./scripts/build-release.sh [version]
+gh workflow run release.yml -f ref=main -f publish=false
 ```
 
 ### Manual Build for Specific Target
@@ -29,55 +30,44 @@ The build system supports:
 cargo build --release --target x86_64-apple-darwin
 
 # GUI version (build frontend first)
-cd ui && npm run build && cd ..
-cargo build --release --target x86_64-apple-darwin --features tauri-gui
+cd crates/gestura-gui/frontend && npm ci && npm run build && cd ../../..
+cd crates/gestura-gui && cargo tauri build --target x86_64-apple-darwin
 ```
 
-## Supported Platforms and Architectures
+## Canonical Release Matrix
 
 ### macOS
-- **x64 (Intel)**: `x86_64-apple-darwin`
-- **ARM64 (Apple Silicon)**: `aarch64-apple-darwin`
+- **Public release target**: universal macOS bundle/PKG
+- **Build inputs**: `x86_64-apple-darwin` + `aarch64-apple-darwin`
+- **Release features**: `voice-local,macos-permissions`
 
 ### Linux
-- **x64 (Intel)**: `x86_64-unknown-linux-gnu`
-- **ARM64**: `aarch64-unknown-linux-gnu`
+- **Public release target**: `x86_64-unknown-linux-gnu`
+- **Release features**: `voice-local,linux-permissions`
 
 ### Windows
-- **x64 (Intel)**: `x86_64-pc-windows-msvc`
-- **ARM64**: `aarch64-pc-windows-msvc`
+- **Public release target**: `x86_64-pc-windows-msvc`
+- **Release features**: `voice-local,windows-permissions`
 
-## Package Managers
+The machine-readable source of truth for this matrix is `release/release-definition.json`.
+
+## Release Channels
 
 ### Homebrew (standalone CLI)
 - **Source asset**: GitHub release asset `gestura-cli-${TAG}-macos-universal.tar.gz`
-- **Checksum source**: `gestura-${TAG}-SHA256SUMS.txt`
+- **Validation sources**: `gestura-${TAG}-SHA256SUMS.txt`, `gestura-${TAG}-release-manifest.json`
 - **Submission model**: Homebrew tap/formula updates are downstream from the GitHub release; this repo does not currently store the tap formula
 
-### Chocolatey (Windows)
-- **Package**: Auto-generated from release
-- **Installation**: `choco install haptic-harmony-simulator`
-- **Auto-publish**: Via GitHub Actions on release
-
 ### Winget (Windows)
-- **Package**: `GesturaAI.HapticHarmonySimulator`
-- **Installation**: `winget install GesturaAI.HapticHarmonySimulator`
-- **Auto-update**: Via GitHub Actions on release
+- **Source asset**: signed GitHub release asset `Gestura-${TAG}-windows-x86_64.msi`
+- **Validation sources**: `gestura-${TAG}-SHA256SUMS.txt`, `gestura-${TAG}-release-manifest.json`
+- **Submission model**: downstream manifest updates; this repository currently validates the assets but does not submit to Winget automatically
 
-### Snap (Linux)
-- **Package**: `haptic-harmony-simulator`
-- **Installation**: `sudo snap install haptic-harmony-simulator`
-- **Config**: `snap/snapcraft.yaml`
-
-### Flatpak (Linux)
-- **App ID**: `ai.gestura.HapticHarmonySimulator`
-- **Installation**: `flatpak install ai.gestura.HapticHarmonySimulator`
-- **Config**: `ai.gestura.HapticHarmonySimulator.yml`
-
-### AppImage (Linux)
-- **Portable**: Self-contained executable
-- **Download**: From GitHub releases
-- **Auto-generated**: Via GitHub Actions
+### Direct downloads (GitHub Releases)
+- **macOS**: `Gestura-${TAG}-universal.pkg`
+- **Linux**: `gestura-${TAG}-linux-x86_64.deb`, `gestura-${TAG}-linux-x86_64.rpm`
+- **Windows**: `Gestura-${TAG}-windows-x86_64.msi`
+- **Companion metadata**: `gestura-${TAG}-SHA256SUMS.txt`, `gestura-${TAG}-release-manifest.json`
 
 ## CI/CD Workflows
 
@@ -87,9 +77,9 @@ Triggers on:
 - Manual dispatch
 
 Builds:
-- All platform/architecture combinations
-- Both CLI and GUI versions
-- Uploads to GitHub releases
+- the canonical public release matrix declared in `release/release-definition.json`
+- both GUI installers and companion CLI archives
+- uploads to GitHub releases after artifact completeness validation
 
 ### Downstream package-manager publishing
 This repository currently ships the canonical GitHub release assets used by downstream package-manager workflows/manual submissions.
@@ -123,17 +113,17 @@ Generates all required icon formats from `icons/icon.png`:
 - iconutil (macOS built-in)
 - potrace (optional, for SVG)
 
-### Release Build (`scripts/build-release.sh`)
-Comprehensive build script that:
-- Installs all Rust targets
-- Builds CLI and GUI versions
-- Creates distribution archives
-- Generates checksums
-- Supports version parameter
+### Release packaging scripts
+Canonical release packaging is performed by:
+- `scripts/package-mac.sh`
+- `scripts/package-linux.sh`
+- `scripts/package-windows.sh`
+
+These scripts are orchestrated by `.github/workflows/release.yml` for signed/tagged releases.
 
 **Usage**:
 ```bash
-./scripts/build-release.sh 1.0.0
+./scripts/package-linux.sh --tag v1.0.0 --dist dist/release --features voice-local,linux-permissions
 ```
 
 ## Development Setup
@@ -315,23 +305,22 @@ git push origin v1.0.0
 
 ### 3. Automated Publishing
 The CI/CD system will automatically:
-- Build all platform binaries
+- Validate `release/release-definition.json`
+- Build the canonical release matrix
+- Validate package/archive completeness
 - Create GitHub release
-- Upload full installers and standalone CLI archives
+- Upload full installers, standalone CLI archives, checksums, and the release manifest
 
 ### 4. Manual Package Updates (if needed)
 ```bash
 # Gather the Homebrew source inputs from the release
 # - gestura-cli-vX.Y.Z-macos-universal.tar.gz
 # - gestura-vX.Y.Z-SHA256SUMS.txt
+# - gestura-vX.Y.Z-release-manifest.json
 
 # Update the external Homebrew tap/formula with the new URL + checksum
 
-# Update Flatpak manifest
-# Edit ai.gestura.HapticHarmonySimulator.yml
-
-# Update Snap config
-# Edit snap/snapcraft.yaml
+# Update Winget manifest from the signed MSI + manifest/checksum assets
 ```
 
 ## Troubleshooting
@@ -346,8 +335,8 @@ The CI/CD system will automatically:
 - Windows: Use Windows runner or cross-compilation tools
 
 ### Package Manager Issues
-- Check API keys are set in GitHub secrets
-- Verify package configurations are valid
+- Verify downstream channel repositories/manifests are valid
+- Confirm the required release assets exist in GitHub Releases
 - Test locally before pushing
 
 ## Security Considerations
@@ -432,7 +421,7 @@ Workflows can detect when running under Act using the `ACT` environment variable
 ### Regular Tasks
 - Update dependencies monthly
 - Monitor build failures
-- Update package manager configurations
+- Review release-definition channel status and package-manager metadata
 - Review security audits
 
 ### Version Management

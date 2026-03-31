@@ -3,8 +3,8 @@ import { describe, expect, it, vi } from 'vitest';
 
 import type { AppConfig } from './types/config';
 
-const getConfigMock = vi.fn<[], Promise<AppConfig>>();
-const isFirstRunMock = vi.fn<[], Promise<boolean>>();
+const getConfigMock = vi.fn<() => Promise<AppConfig>>();
+const isFirstRunMock = vi.fn<() => Promise<boolean>>();
 
 vi.mock('./app/ThemeController', () => ({
   default: () => null,

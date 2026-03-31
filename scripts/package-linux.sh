@@ -88,10 +88,33 @@ build_frontend() {
   (cd "$FRONTEND_DIR" && npm ci && npm run build)
 }
 
+# cleanup_appledouble_metadata removes macOS AppleDouble metadata files that can
+# appear in Docker-mounted workspaces and confuse Tauri's capability scanner.
+cleanup_appledouble_metadata() {
+  local removed=0
+  while IFS= read -r metadata_path; do
+    [ -n "$metadata_path" ] || continue
+    rm -f -- "$metadata_path"
+    log_warn "Removed AppleDouble metadata file before packaging: ${metadata_path}"
+    removed=1
+  done < <(find "$GUI_DIR" -type f -name '._*' -print 2>/dev/null)
+
+  if [ "$removed" -eq 1 ]; then
+    log_info "AppleDouble metadata cleanup complete"
+  fi
+}
+
 # stage_cli builds the CLI and stages it for Tauri `bundle.externalBin`.
 stage_cli() {
   log_info "Building CLI (${CLI_PACKAGE}) for ${TARGET_TRIPLE}"
-  cargo build --release -p "$CLI_PACKAGE" --features "$FEATURES" --target "$TARGET_TRIPLE"
+  local cli_features
+  cli_features="$(filter_feature_csv "$FEATURES" voice-local nats security)"
+
+  if [ -n "$cli_features" ]; then
+    cargo build --release -p "$CLI_PACKAGE" --features "$cli_features" --target "$TARGET_TRIPLE"
+  else
+    cargo build --release -p "$CLI_PACKAGE" --target "$TARGET_TRIPLE"
+  fi
 
   local src="target/${TARGET_TRIPLE}/release/${APP_NAME}"
   [ -f "$src" ] || die "CLI binary not found at ${src}"
@@ -140,7 +163,7 @@ stage_ffmpeg() {
 
   local tmp
   tmp="$(mktemp -d)"
-  trap 'rm -rf "$tmp"' RETURN
+  trap 'if [ -n "${tmp:-}" ]; then rm -rf -- "$tmp"; fi' RETURN
 
   curl -fsSL "$url" -o "${tmp}/ffmpeg.tar.xz" --retry 3
   tar -xJf "${tmp}/ffmpeg.tar.xz" -C "$tmp" --wildcards "*/ffmpeg" --strip-components=1
@@ -155,8 +178,9 @@ stage_ffmpeg() {
 
 # build_gui runs the Tauri bundler.
 build_gui() {
+  local bundle_types="${GESTURA_TAURI_BUNDLES:-deb,rpm}"
   log_info "Building GUI bundles via cargo tauri (${TARGET_TRIPLE})"
-  (cd "$GUI_DIR" && cargo tauri build --features "$FEATURES" --target "$TARGET_TRIPLE")
+  (cd "$GUI_DIR" && cargo tauri build --features "$FEATURES" --target "$TARGET_TRIPLE" --bundles "$bundle_types")
 }
 
 # collect_artifacts copies DEB/RPM outputs and the standalone CLI archive into the
@@ -224,6 +248,7 @@ collect_artifacts() {
 # main is the entrypoint.
 main() {
   check_prerequisites
+  cleanup_appledouble_metadata
   build_frontend
   stage_cli
   stage_ffmpeg
