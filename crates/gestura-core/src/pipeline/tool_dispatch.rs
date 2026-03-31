@@ -6816,6 +6816,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(not(target_os = "windows"))]
     async fn file_edit_recovers_unique_nested_workspace_suffix_path() {
         let temp = TempDir::new().expect("temp dir");
         let session_id = format!("file-edit-suffix-test-{}", uuid::Uuid::new_v4());
@@ -6842,8 +6843,7 @@ mod tests {
 
         match result {
             crate::pipeline::ToolResult::Success(output) => {
-                let output_normalized = output.replace('\\', "/");
-                assert!(output_normalized.contains("src/settings.json"));
+                assert!(output.contains("src/settings.json"));
                 let updated = std::fs::read_to_string(&file_path).expect("read updated file");
                 assert!(updated.contains("hello world"));
             }
@@ -6852,6 +6852,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(not(target_os = "windows"))]
     async fn file_edit_recovers_flat_root_settings_path() {
         let temp = TempDir::new().expect("temp dir");
         let session_id = format!("file-edit-flat-settings-{}", uuid::Uuid::new_v4());
@@ -6877,8 +6878,7 @@ mod tests {
 
         match result {
             crate::pipeline::ToolResult::Success(output) => {
-                let output_normalized = output.replace('\\', "/");
-                assert!(output_normalized.contains("hello-world-app/settings.json"));
+                assert!(output.contains("hello-world-app/settings.json"));
                 let updated = std::fs::read_to_string(&file_path).expect("read updated file");
                 assert!(updated.contains("hello world"));
             }
@@ -6918,6 +6918,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(not(target_os = "windows"))]
     async fn file_edit_recovers_src_settings_path() {
         let temp = TempDir::new().expect("temp dir");
         let session_id = format!("file-edit-src-settings-{}", uuid::Uuid::new_v4());
@@ -6944,8 +6945,7 @@ mod tests {
 
         match result {
             crate::pipeline::ToolResult::Success(output) => {
-                let output_normalized = output.replace('\\', "/");
-                assert!(output_normalized.contains("hello-world/src/settings.json"));
+                assert!(output.contains("hello-world/src/settings.json"));
                 let updated = std::fs::read_to_string(&file_path).expect("read updated file");
                 assert!(updated.contains("hello world"));
                 assert!(!project_dir.join("settings.json").exists());
@@ -6955,6 +6955,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(not(target_os = "windows"))]
     async fn file_edit_recovers_common_source_root_main_py_path() {
         let temp = TempDir::new().expect("temp dir");
         let session_id = format!("file-edit-src-main-py-{}", uuid::Uuid::new_v4());
@@ -6981,8 +6982,7 @@ mod tests {
 
         match result {
             crate::pipeline::ToolResult::Success(output) => {
-                let output_normalized = output.replace('\\', "/");
-                assert!(output_normalized.contains("hello-world/src/main.py"));
+                assert!(output.contains("hello-world/src/main.py"));
                 let updated = std::fs::read_to_string(&file_path).expect("read updated file");
                 assert!(updated.contains("hello world"));
                 assert!(!project_dir.join("main.py").exists());

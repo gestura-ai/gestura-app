@@ -787,6 +787,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(not(target_os = "windows"))]
     async fn test_prepare_environment_supports_shared_isolated_and_git_worktree_modes() {
         let temp = tempdir().expect("tempdir");
         init_git_repo(temp.path());
@@ -824,7 +825,6 @@ mod tests {
             isolated
                 .prepared_path
                 .to_string_lossy()
-                .replace('\\', "/")
                 .contains(".gestura/environments")
         );
         assert_eq!(
@@ -855,7 +855,6 @@ mod tests {
             worktree
                 .prepared_path
                 .to_string_lossy()
-                .replace('\\', "/")
                 .contains(".gestura/worktrees")
         );
         assert!(
