@@ -1344,71 +1344,73 @@ mod imp {
             ready_tx,
         } = context;
 
-        tokio::task::spawn_blocking(move || {
-            let mut buffer = [0_u8; 4096];
-            let mut ready_marker = ready_marker;
-            let mut ready_tx = ready_tx;
-            let mut ready_buffer = String::new();
-            loop {
-                match reader.read(&mut buffer) {
-                    Ok(0) => {
-                        if let Some(ready_tx) = ready_tx.take() {
-                            let _ =
-                                ready_tx
+        let _ = std::thread::Builder::new()
+            .name(format!("gestura-pty-reader-{shell_session_id}"))
+            .spawn(move || {
+                let mut buffer = [0_u8; 4096];
+                let mut ready_marker = ready_marker;
+                let mut ready_tx = ready_tx;
+                let mut ready_buffer = String::new();
+                loop {
+                    match reader.read(&mut buffer) {
+                        Ok(0) => {
+                            if let Some(ready_tx) = ready_tx.take() {
+                                let _ = ready_tx
                                     .send(Err("PTY shell closed before initialization completed"
                                         .to_string()));
+                            }
+                            closed.store(true, Ordering::SeqCst);
+                            return;
                         }
-                        closed.store(true, Ordering::SeqCst);
-                        return;
-                    }
-                    Ok(read) => {
-                        let chunk = String::from_utf8_lossy(&buffer[..read]).into_owned();
+                        Ok(read) => {
+                            let chunk = String::from_utf8_lossy(&buffer[..read]).into_owned();
 
-                        if let Some(marker) = ready_marker.as_ref() {
-                            ready_buffer.push_str(&chunk);
-                            if ready_buffer.contains(marker) {
-                                if let Some(ready_tx) = ready_tx.take() {
-                                    let _ = ready_tx.send(Ok(()));
+                            if let Some(marker) = ready_marker.as_ref() {
+                                ready_buffer.push_str(&chunk);
+                                if ready_buffer.contains(marker) {
+                                    if let Some(ready_tx) = ready_tx.take() {
+                                        let _ = ready_tx.send(Ok(()));
+                                    }
+                                    ready_marker = None;
+                                    ready_buffer.clear();
+                                } else {
+                                    trim_to_tail(&mut ready_buffer, marker.len() + 64);
                                 }
-                                ready_marker = None;
-                                ready_buffer.clear();
-                            } else {
-                                trim_to_tail(&mut ready_buffer, marker.len() + 64);
+                            }
+
+                            let sender = active_sender.lock().ok().and_then(|guard| guard.clone());
+                            if let Some(sender) = sender {
+                                let _ = sender.blocking_send(chunk.clone());
+                            }
+                            let process_id = active_process_id
+                                .lock()
+                                .ok()
+                                .and_then(|guard| guard.clone());
+                            let should_emit_raw_output = emit_raw_output
+                                || (claimed_by_user.load(Ordering::SeqCst) && process_id.is_none());
+                            if should_emit_raw_output {
+                                let _ = event_tx.send(StreamChunk::ShellOutput {
+                                    process_id: process_id
+                                        .unwrap_or_else(|| shell_session_id.clone()),
+                                    shell_session_id: Some(shell_session_id.clone()),
+                                    stream: ShellOutputStream::Stdout,
+                                    data: chunk,
+                                });
                             }
                         }
-
-                        let sender = active_sender.lock().ok().and_then(|guard| guard.clone());
-                        if let Some(sender) = sender {
-                            let _ = sender.blocking_send(chunk.clone());
+                        Err(_) => {
+                            if let Some(ready_tx) = ready_tx.take() {
+                                let _ = ready_tx.send(Err(
+                                    "PTY shell reader failed before initialization completed"
+                                        .to_string(),
+                                ));
+                            }
+                            closed.store(true, Ordering::SeqCst);
+                            return;
                         }
-                        let process_id = active_process_id
-                            .lock()
-                            .ok()
-                            .and_then(|guard| guard.clone());
-                        let should_emit_raw_output = emit_raw_output
-                            || (claimed_by_user.load(Ordering::SeqCst) && process_id.is_none());
-                        if should_emit_raw_output {
-                            let _ = event_tx.send(StreamChunk::ShellOutput {
-                                process_id: process_id.unwrap_or_else(|| shell_session_id.clone()),
-                                shell_session_id: Some(shell_session_id.clone()),
-                                stream: ShellOutputStream::Stdout,
-                                data: chunk,
-                            });
-                        }
-                    }
-                    Err(_) => {
-                        if let Some(ready_tx) = ready_tx.take() {
-                            let _ = ready_tx.send(Err(
-                                "PTY shell reader failed before initialization completed"
-                                    .to_string(),
-                            ));
-                        }
-                        closed.store(true, Ordering::SeqCst);
-                        return;
                     }
                 }
-            }
-        });
+            });
     }
 
     fn spawn_wait_loop(
@@ -1416,12 +1418,14 @@ mod imp {
         closed: Arc<AtomicBool>,
         shell_session_id: String,
     ) {
-        tokio::task::spawn_blocking(move || {
-            if let Err(error) = child.wait() {
-                tracing::warn!(shell_session_id = %shell_session_id, error = %error, "PTY shell wait failed");
-            }
-            closed.store(true, Ordering::SeqCst);
-        });
+        let _ = std::thread::Builder::new()
+            .name(format!("gestura-pty-wait-{shell_session_id}"))
+            .spawn(move || {
+                if let Err(error) = child.wait() {
+                    tracing::warn!(shell_session_id = %shell_session_id, error = %error, "PTY shell wait failed");
+                }
+                closed.store(true, Ordering::SeqCst);
+            });
     }
 
     impl SessionOutputParser {
