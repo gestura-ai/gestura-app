@@ -5409,6 +5409,45 @@ mod tests {
     use serde_json::json;
     use tempfile::TempDir;
 
+    const STREAMING_SHELL_TOOL_TEST_TIMEOUT: tokio::time::Duration =
+        tokio::time::Duration::from_secs(20);
+    const STREAMING_SHELL_TOOL_SHUTDOWN_TIMEOUT: tokio::time::Duration =
+        tokio::time::Duration::from_secs(5);
+
+    fn silent_shell_test_command() -> &'static str {
+        #[cfg(target_os = "windows")]
+        {
+            "ping -n 3 127.0.0.1 >nul"
+        }
+
+        #[cfg(not(target_os = "windows"))]
+        {
+            "sleep 1"
+        }
+    }
+
+    fn cwd_echo_command(relative_dir: &str) -> String {
+        #[cfg(target_os = "windows")]
+        {
+            format!("cd {relative_dir} && cd")
+        }
+
+        #[cfg(not(target_os = "windows"))]
+        {
+            format!("cd {relative_dir} && pwd")
+        }
+    }
+
+    async fn shutdown_shell_session_for_test(pool_key: &str) {
+        tokio::time::timeout(
+            STREAMING_SHELL_TOOL_SHUTDOWN_TIMEOUT,
+            crate::tools::shell_sessions::shutdown_session(pool_key),
+        )
+        .await
+        .expect("timed out shutting down PTY session pool")
+        .expect("shutdown PTY session pool");
+    }
+
     #[test]
     fn normalize_task_tool_arguments_recovers_embedded_parameter_fragments() {
         let normalized = AgentPipeline::normalize_task_tool_arguments(json!({
@@ -8651,11 +8690,7 @@ mod tests {
             SessionWorkspace::from_directory("shell-keepalive-test", temp.path().to_path_buf())
                 .expect("workspace");
         let (tx, mut rx) = tokio::sync::mpsc::channel(256);
-        let silent_command = if cfg!(target_os = "windows") {
-            "powershell -NoProfile -Command \"Start-Sleep -Seconds 1\""
-        } else {
-            "sleep 1"
-        };
+        let silent_command = silent_shell_test_command();
 
         let result = tokio::spawn({
             let tx = tx.clone();
@@ -8690,16 +8725,17 @@ mod tests {
             }
         }
 
-        let tool_result = result.await.expect("shell execution task should join");
+        let tool_result = tokio::time::timeout(STREAMING_SHELL_TOOL_TEST_TIMEOUT, result)
+            .await
+            .expect("streaming shell keepalive test timed out")
+            .expect("shell execution task should join");
         assert!(matches!(tool_result, ToolResult::Success(_)));
         assert!(
             saw_keepalive,
             "expected a keepalive status for silent shell work"
         );
 
-        crate::tools::shell_sessions::shutdown_session("shell-keepalive-test")
-            .await
-            .expect("shell session should shut down cleanly");
+        shutdown_shell_session_for_test("shell-keepalive-test").await;
     }
 
     #[tokio::test]
@@ -8740,13 +8776,14 @@ mod tests {
         std::fs::create_dir_all(&app_dir).expect("create app dir");
         let (tx, mut rx) = tokio::sync::mpsc::channel(256);
         let drain = tokio::spawn(async move { while rx.recv().await.is_some() {} });
+        let command = cwd_echo_command("sample-app");
 
         let result = tokio::time::timeout(
-            tokio::time::Duration::from_secs(15),
+            STREAMING_SHELL_TOOL_TEST_TIMEOUT,
             pipeline.execute_tool(
                 "shell",
                 &json!({
-                    "command": "cd sample-app && pwd",
+                    "command": command,
                     "cwd": "sample-app",
                     "timeout_secs": 10,
                 })
@@ -8758,11 +8795,12 @@ mod tests {
         .await
         .expect("streaming shell tool should complete");
 
-        crate::tools::shell_sessions::shutdown_session(&workspace.session_id)
-            .await
-            .expect("shutdown PTY session pool");
+        shutdown_shell_session_for_test(&workspace.session_id).await;
         drop(tx);
-        drain.await.expect("join stream drain task");
+        tokio::time::timeout(STREAMING_SHELL_TOOL_SHUTDOWN_TIMEOUT, drain)
+            .await
+            .expect("timed out draining shell stream")
+            .expect("join stream drain task");
 
         match result {
             ToolResult::Success(stdout) => {
