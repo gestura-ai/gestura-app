@@ -151,12 +151,14 @@ mod imp {
         state: Mutex<ManagerState>,
     }
 
+    type SharedWriter = Arc<StdMutex<Box<dyn Write + Send>>>;
+
     struct ShellSession {
         shell_session_id: String,
         pool_key: String,
         mode: SessionMode,
         master: Mutex<Box<dyn MasterPty + Send>>,
-        writer: Mutex<Box<dyn Write + Send>>,
+        writer: SharedWriter,
         command_lock: Mutex<()>,
         active_sender: Arc<StdMutex<Option<mpsc::Sender<String>>>>,
         event_tx: broadcast::Sender<StreamChunk>,
@@ -575,7 +577,7 @@ mod imp {
                 pool_key: pool_key.to_string(),
                 mode,
                 master: Mutex::new(pair.master),
-                writer: Mutex::new(writer),
+                writer: Arc::new(StdMutex::new(writer)),
                 command_lock: Mutex::new(()),
                 active_sender,
                 event_tx,
@@ -773,6 +775,35 @@ mod imp {
             let _ = tx.send(chunk).await;
         }
 
+        async fn write_to_pty(&self, data: Vec<u8>) -> Result<()> {
+            let writer = self.writer.clone();
+            let shell_session_id = self.shell_session_id.clone();
+            let (result_tx, result_rx) = tokio::sync::oneshot::channel();
+
+            let _ = std::thread::Builder::new()
+                .name(format!("gestura-pty-write-{shell_session_id}"))
+                .spawn(move || {
+                    let result = (|| -> Result<()> {
+                        let mut writer = writer.lock().map_err(|_| {
+                            AppError::Session(
+                                "PTY shell writer lock poisoned unexpectedly".to_string(),
+                            )
+                        })?;
+                        writer.write_all(&data).map_err(AppError::Io)?;
+                        writer.flush().map_err(AppError::Io)
+                    })();
+
+                    let _ = result_tx.send(result);
+                })
+                .map_err(|error| {
+                    AppError::Session(format!("failed to spawn PTY writer task: {error}"))
+                })?;
+
+            result_rx.await.map_err(|_| {
+                AppError::Session("PTY writer task ended before reporting completion".to_string())
+            })?
+        }
+
         async fn send_input(&self, data: &str) -> Result<()> {
             if self.is_closed() {
                 return Err(AppError::Session(
@@ -787,9 +818,7 @@ mod imp {
                 return Ok(());
             }
 
-            let mut writer = self.writer.lock().await;
-            writer.write_all(data.as_bytes()).map_err(AppError::Io)?;
-            writer.flush().map_err(AppError::Io)
+            self.write_to_pty(data.as_bytes().to_vec()).await
         }
 
         async fn resize(&self, cols: u16, rows: u16) -> Result<()> {
@@ -846,17 +875,13 @@ mod imp {
                 .await;
             self.emit_session_lifecycle_to(&tx).await;
 
-            {
-                let mut writer = self.writer.lock().await;
-                if let Err(error) = writer.write_all(wrapped.as_bytes()) {
-                    self.set_state(ShellSessionState::Failed)?;
-                    self.set_active_sender(None)?;
-                    self.set_active_command(None, None)?;
-                    manager().unregister_process(&process_id).await;
-                    self.emit_session_lifecycle_to(&tx).await;
-                    return Err(AppError::Io(error));
-                }
-                writer.flush().map_err(AppError::Io)?;
+            if let Err(error) = self.write_to_pty(wrapped.into_bytes()).await {
+                self.set_state(ShellSessionState::Failed)?;
+                self.set_active_sender(None)?;
+                self.set_active_command(None, None)?;
+                manager().unregister_process(&process_id).await;
+                self.emit_session_lifecycle_to(&tx).await;
+                return Err(error);
             }
 
             let start_chunk = StreamChunk::ShellLifecycle {
@@ -1203,10 +1228,7 @@ mod imp {
         }
 
         async fn interrupt(&self) -> Result<()> {
-            let mut writer = self.writer.lock().await;
-            writer.write_all(&[3]).map_err(AppError::Io)?;
-            writer.flush().map_err(AppError::Io)?;
-            Ok(())
+            self.write_to_pty(vec![3]).await
         }
 
         async fn terminate(&self) -> Result<()> {
