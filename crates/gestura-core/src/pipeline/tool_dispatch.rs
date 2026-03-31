@@ -6842,7 +6842,8 @@ mod tests {
 
         match result {
             crate::pipeline::ToolResult::Success(output) => {
-                assert!(output.contains("src/settings.json"));
+                let output_normalized = output.replace('\\', "/");
+                assert!(output_normalized.contains("src/settings.json"));
                 let updated = std::fs::read_to_string(&file_path).expect("read updated file");
                 assert!(updated.contains("hello world"));
             }
@@ -6876,7 +6877,8 @@ mod tests {
 
         match result {
             crate::pipeline::ToolResult::Success(output) => {
-                assert!(output.contains("hello-world-app/settings.json"));
+                let output_normalized = output.replace('\\', "/");
+                assert!(output_normalized.contains("hello-world-app/settings.json"));
                 let updated = std::fs::read_to_string(&file_path).expect("read updated file");
                 assert!(updated.contains("hello world"));
             }
@@ -6942,7 +6944,8 @@ mod tests {
 
         match result {
             crate::pipeline::ToolResult::Success(output) => {
-                assert!(output.contains("hello-world/src/settings.json"));
+                let output_normalized = output.replace('\\', "/");
+                assert!(output_normalized.contains("hello-world/src/settings.json"));
                 let updated = std::fs::read_to_string(&file_path).expect("read updated file");
                 assert!(updated.contains("hello world"));
                 assert!(!project_dir.join("settings.json").exists());
@@ -6978,7 +6981,8 @@ mod tests {
 
         match result {
             crate::pipeline::ToolResult::Success(output) => {
-                assert!(output.contains("hello-world/src/main.py"));
+                let output_normalized = output.replace('\\', "/");
+                assert!(output_normalized.contains("hello-world/src/main.py"));
                 let updated = std::fs::read_to_string(&file_path).expect("read updated file");
                 assert!(updated.contains("hello world"));
                 assert!(!project_dir.join("main.py").exists());

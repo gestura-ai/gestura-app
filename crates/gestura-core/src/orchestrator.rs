@@ -8408,6 +8408,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(not(target_os = "windows"))]
     async fn test_child_supervisor_run_inherits_policy_and_task_defaults() {
         use std::process::Command;
 

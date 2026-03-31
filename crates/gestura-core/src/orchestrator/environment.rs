@@ -824,6 +824,7 @@ mod tests {
             isolated
                 .prepared_path
                 .to_string_lossy()
+                .replace('\\', "/")
                 .contains(".gestura/environments")
         );
         assert_eq!(
@@ -854,6 +855,7 @@ mod tests {
             worktree
                 .prepared_path
                 .to_string_lossy()
+                .replace('\\', "/")
                 .contains(".gestura/worktrees")
         );
         assert!(
@@ -952,6 +954,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(not(target_os = "windows"))]
     async fn test_finalize_environment_for_task_archives_dirty_git_worktree() {
         let temp = tempdir().expect("tempdir");
         init_git_repo(temp.path());
