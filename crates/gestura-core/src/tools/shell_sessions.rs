@@ -1677,8 +1677,106 @@ mod imp {
     mod tests {
         use super::*;
 
+        const PTY_TEST_COMMAND_TIMEOUT: Duration = Duration::from_secs(15);
+        const PTY_TEST_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
+
+        fn shell_echo_command(text: &str) -> String {
+            #[cfg(windows)]
+            {
+                format!("echo {text}")
+            }
+
+            #[cfg(not(windows))]
+            {
+                format!("printf {text}")
+            }
+        }
+
+        fn shell_delayed_echo_command(delay_secs: u64, text: &str) -> String {
+            #[cfg(windows)]
+            {
+                format!(
+                    "ping -n {} 127.0.0.1 >nul && echo {text}",
+                    delay_secs.saturating_add(1)
+                )
+            }
+
+            #[cfg(not(windows))]
+            {
+                format!("sleep {delay_secs} && printf {text}")
+            }
+        }
+
+        fn interactive_echo_input(text: &str) -> String {
+            #[cfg(windows)]
+            {
+                format!("echo {text}\r\n")
+            }
+
+            #[cfg(not(windows))]
+            {
+                format!("printf {text}\n")
+            }
+        }
+
+        async fn execute_in_session_for_test(
+            pool_key: &str,
+            initial_cwd: Option<&str>,
+            command: &str,
+            command_cwd: Option<&str>,
+            timeout_secs: Option<u64>,
+            tx: mpsc::Sender<StreamChunk>,
+        ) -> Result<StreamingCommandResult> {
+            tokio::time::timeout(
+                PTY_TEST_COMMAND_TIMEOUT,
+                execute_in_session(
+                    pool_key,
+                    initial_cwd,
+                    command,
+                    command_cwd,
+                    timeout_secs,
+                    tx,
+                ),
+            )
+            .await
+            .expect("timed out waiting for PTY test command")
+        }
+
+        async fn execute_in_session_with_options_for_test(
+            pool_key: &str,
+            initial_cwd: Option<&str>,
+            command: &str,
+            command_cwd: Option<&str>,
+            options: ShellExecutionOptions,
+            tx: mpsc::Sender<StreamChunk>,
+        ) -> Result<StreamingCommandResult> {
+            tokio::time::timeout(
+                PTY_TEST_COMMAND_TIMEOUT,
+                execute_in_session_with_options(
+                    pool_key,
+                    initial_cwd,
+                    command,
+                    command_cwd,
+                    options,
+                    tx,
+                ),
+            )
+            .await
+            .expect("timed out waiting for PTY test command with custom options")
+        }
+
+        async fn stop_session_for_test(shell_session_id: &str) {
+            let _ = tokio::time::timeout(PTY_TEST_SHUTDOWN_TIMEOUT, stop_session(shell_session_id))
+                .await
+                .expect("timed out stopping PTY session")
+                .expect("stop PTY session");
+        }
+
         async fn shutdown_session_for_test(pool_key: &str) {
-            let _ = tokio::time::timeout(Duration::from_secs(2), shutdown_session(pool_key)).await;
+            tokio::time::timeout(PTY_TEST_SHUTDOWN_TIMEOUT, shutdown_session(pool_key))
+                .await
+                .expect("timed out shutting down PTY session pool")
+                .expect("shutdown PTY session pool");
         }
 
         async fn recv_session_lifecycle(
@@ -1774,21 +1872,19 @@ mod imp {
             assert!(interactive);
             assert!(user_managed);
 
-            stop_session(&handle.shell_session_id)
-                .await
-                .expect("stop PTY session");
+            stop_session_for_test(&handle.shell_session_id).await;
         }
 
         #[tokio::test]
         async fn reuses_idle_session_within_same_pool() {
             let (tx, mut rx) = mpsc::channel(128);
-            let first = execute_in_session(
+            let first = execute_in_session_for_test(
                 "pty-reuse-pool",
                 std::env::current_dir()
                     .ok()
                     .and_then(|p| p.to_str().map(ToOwned::to_owned))
                     .as_deref(),
-                "printf first",
+                &shell_echo_command("first"),
                 None,
                 Some(10),
                 tx.clone(),
@@ -1799,13 +1895,13 @@ mod imp {
 
             let (_, first_session_id) = recv_command_started(&mut rx).await;
 
-            let second = execute_in_session(
+            let second = execute_in_session_for_test(
                 "pty-reuse-pool",
                 std::env::current_dir()
                     .ok()
                     .and_then(|p| p.to_str().map(ToOwned::to_owned))
                     .as_deref(),
-                "printf second",
+                &shell_echo_command("second"),
                 None,
                 Some(10),
                 tx,
@@ -1817,21 +1913,19 @@ mod imp {
             let (_, second_session_id) = recv_command_started(&mut rx).await;
             assert_eq!(first_session_id, second_session_id);
 
-            shutdown_session("pty-reuse-pool")
-                .await
-                .expect("shutdown PTY session pool");
+            shutdown_session_for_test("pty-reuse-pool").await;
         }
 
         #[tokio::test]
         async fn execute_in_session_emits_session_lifecycle_to_caller_stream() {
             let (tx, mut rx) = mpsc::channel(128);
-            let result = execute_in_session(
+            let result = execute_in_session_for_test(
                 "pty-session-lifecycle-stream",
                 std::env::current_dir()
                     .ok()
                     .and_then(|p| p.to_str().map(ToOwned::to_owned))
                     .as_deref(),
-                "printf streamed",
+                &shell_echo_command("streamed"),
                 None,
                 Some(10),
                 tx,
@@ -1856,24 +1950,24 @@ mod imp {
             assert!(!interactive);
             assert!(!user_managed);
 
-            shutdown_session("pty-session-lifecycle-stream")
-                .await
-                .expect("shutdown PTY session pool");
+            shutdown_session_for_test("pty-session-lifecycle-stream").await;
         }
 
         #[tokio::test]
         async fn allocates_new_session_when_existing_one_is_busy() {
             let (tx_one, mut rx_one) = mpsc::channel(128);
             let (tx_two, mut rx_two) = mpsc::channel(128);
+            let first_command = shell_delayed_echo_command(1, "one");
+            let second_command = shell_echo_command("two");
 
             let first = tokio::spawn(async move {
-                execute_in_session(
+                execute_in_session_for_test(
                     "pty-busy-pool",
                     std::env::current_dir()
                         .ok()
                         .and_then(|p| p.to_str().map(ToOwned::to_owned))
                         .as_deref(),
-                    "sleep 1; printf one",
+                    &first_command,
                     None,
                     Some(10),
                     tx_one,
@@ -1884,13 +1978,13 @@ mod imp {
             let (_, first_session_id) = recv_command_started(&mut rx_one).await;
 
             let second = tokio::spawn(async move {
-                execute_in_session(
+                execute_in_session_for_test(
                     "pty-busy-pool",
                     std::env::current_dir()
                         .ok()
                         .and_then(|p| p.to_str().map(ToOwned::to_owned))
                         .as_deref(),
-                    "printf two",
+                    &second_command,
                     None,
                     Some(10),
                     tx_two,
@@ -1904,9 +1998,7 @@ mod imp {
             first.await.expect("first join").expect("first result");
             second.await.expect("second join").expect("second result");
 
-            shutdown_session("pty-busy-pool")
-                .await
-                .expect("shutdown PTY session pool");
+            shutdown_session_for_test("pty-busy-pool").await;
         }
 
         #[tokio::test]
@@ -1918,7 +2010,7 @@ mod imp {
                 "printf warmup && sleep 2 && printf progress && sleep 2 && printf done"
             };
 
-            let result = execute_in_session_with_options(
+            let result = execute_in_session_with_options_for_test(
                 "pty-activity-aware-pool",
                 std::env::current_dir()
                     .ok()
@@ -1939,9 +2031,7 @@ mod imp {
             assert!(result.success);
             assert!(result.stdout.contains("done"));
 
-            shutdown_session("pty-activity-aware-pool")
-                .await
-                .expect("shutdown activity-aware PTY session pool");
+            shutdown_session_for_test("pty-activity-aware-pool").await;
         }
 
         #[tokio::test]
@@ -1954,7 +2044,7 @@ mod imp {
                 "sleep 4 && printf done"
             };
 
-            let result = execute_in_session_with_options(
+            let result = execute_in_session_with_options_for_test(
                 "pty-quiet-activity-aware-pool",
                 std::env::current_dir()
                     .ok()
@@ -2075,13 +2165,13 @@ mod imp {
         #[tokio::test]
         async fn claiming_automation_session_removes_it_from_reuse_pool() {
             let (tx, mut rx) = mpsc::channel(128);
-            let first = execute_in_session(
+            let first = execute_in_session_for_test(
                 "pty-claim-pool",
                 std::env::current_dir()
                     .ok()
                     .and_then(|p| p.to_str().map(ToOwned::to_owned))
                     .as_deref(),
-                "printf first",
+                &shell_echo_command("first"),
                 None,
                 Some(10),
                 tx.clone(),
@@ -2104,13 +2194,13 @@ mod imp {
             assert!(metadata.user_managed);
             assert!(!metadata.available_for_reuse);
 
-            let second = execute_in_session(
+            let second = execute_in_session_for_test(
                 "pty-claim-pool",
                 std::env::current_dir()
                     .ok()
                     .and_then(|p| p.to_str().map(ToOwned::to_owned))
                     .as_deref(),
-                "printf second",
+                &shell_echo_command("second"),
                 None,
                 Some(10),
                 tx,
@@ -2122,21 +2212,19 @@ mod imp {
             let (_, second_session_id) = recv_command_started(&mut rx).await;
             assert_ne!(first_session_id, second_session_id);
 
-            shutdown_session("pty-claim-pool")
-                .await
-                .expect("shutdown PTY session pool");
+            shutdown_session_for_test("pty-claim-pool").await;
         }
 
         #[tokio::test]
         async fn claimed_automation_session_streams_interactive_output_after_attach() {
             let (tx, mut rx) = mpsc::channel(128);
-            execute_in_session(
+            execute_in_session_for_test(
                 "pty-attach-pool",
                 std::env::current_dir()
                     .ok()
                     .and_then(|p| p.to_str().map(ToOwned::to_owned))
                     .as_deref(),
-                "printf base",
+                &shell_echo_command("base"),
                 None,
                 Some(10),
                 tx,
@@ -2157,7 +2245,7 @@ mod imp {
                 .expect("claim session")
                 .expect("claimed session metadata");
 
-            send_input(&shell_session_id, "printf attached\n")
+            send_input(&shell_session_id, &interactive_echo_input("attached"))
                 .await
                 .expect("send interactive input");
 
@@ -2181,9 +2269,7 @@ mod imp {
                 "claimed automation session did not stream attached shell output"
             );
 
-            shutdown_session("pty-attach-pool")
-                .await
-                .expect("shutdown attached PTY session pool");
+            shutdown_session_for_test("pty-attach-pool").await;
         }
     }
 }
