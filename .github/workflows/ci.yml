@@ -9,6 +9,7 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
+  NODE_VERSION: 'lts/*'
   # Pin Rust version for reproducible builds
   RUST_VERSION: stable
 
@@ -168,7 +169,7 @@ jobs:
     - name: Setup Node.js
       uses: actions/setup-node@v4
       with:
-        node-version: '18'
+        node-version: ${{ env.NODE_VERSION }}
         cache: 'npm'
         cache-dependency-path: 'crates/gestura-gui/frontend/package-lock.json'
 
@@ -282,7 +283,7 @@ jobs:
     - name: Setup Node.js
       uses: actions/setup-node@v4
       with:
-        node-version: '18'
+        node-version: ${{ env.NODE_VERSION }}
         cache: 'npm'
         cache-dependency-path: 'crates/gestura-gui/frontend/package-lock.json'
 
