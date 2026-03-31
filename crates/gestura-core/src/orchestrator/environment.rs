@@ -761,6 +761,7 @@ mod tests {
         }
     }
 
+    #[cfg(not(target_os = "windows"))]
     fn run_git(repo_root: &Path, args: &[&str]) {
         let status = Command::new("git")
             .current_dir(repo_root)
@@ -774,6 +775,7 @@ mod tests {
         );
     }
 
+    #[cfg(not(target_os = "windows"))]
     fn init_git_repo(repo_root: &Path) {
         run_git(repo_root, &["init", "--initial-branch=main"]);
         run_git(
