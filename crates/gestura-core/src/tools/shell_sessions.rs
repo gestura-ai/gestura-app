@@ -1560,21 +1560,39 @@ mod imp {
     }
 
     fn find_done_marker(buffer: &str, done_prefix: &str) -> Option<(usize, usize, i32)> {
-        let marker = format!("\n{done_prefix}");
-        let idx = buffer.find(&marker)?;
-        let code_start = idx + marker.len();
-        let line_end_rel = buffer[code_start..].find('\n')?;
-        let consume_end = code_start + line_end_rel + 1;
-        let exit_code = buffer[code_start..code_start + line_end_rel]
-            .trim_end_matches('\r')
-            .parse()
-            .ok()?;
-        let output_end = if idx > 0 && buffer.as_bytes()[idx - 1] == b'\r' {
-            idx - 1
-        } else {
-            idx
-        };
-        Some((output_end, consume_end, exit_code))
+        let mut search_from = 0;
+        while let Some(rel_idx) = buffer[search_from..].find(done_prefix) {
+            let idx = search_from + rel_idx;
+            let before_ok = idx == 0 || matches!(buffer.as_bytes()[idx - 1], b'\n' | b'\r');
+            if !before_ok {
+                search_from = idx + done_prefix.len();
+                continue;
+            }
+
+            let code_start = idx + done_prefix.len();
+            let line_end_rel = buffer[code_start..].find('\n')?;
+            let consume_end = code_start + line_end_rel + 1;
+            let exit_code = buffer[code_start..code_start + line_end_rel]
+                .trim_end_matches('\r')
+                .parse()
+                .ok()?;
+            let output_end = if idx == 0 {
+                0
+            } else if buffer.as_bytes()[idx - 1] == b'\n' {
+                if idx > 1 && buffer.as_bytes()[idx - 2] == b'\r' {
+                    idx - 2
+                } else {
+                    idx - 1
+                }
+            } else if buffer.as_bytes()[idx - 1] == b'\r' {
+                idx - 1
+            } else {
+                idx
+            };
+            return Some((output_end, consume_end, exit_code));
+        }
+
+        None
     }
 
     fn find_start_marker(buffer: &str, start_marker: &str) -> Option<usize> {
@@ -1859,6 +1877,39 @@ mod imp {
 
             let second = parser.push(" world\n__GESTURA_DONE_abc__:0\r\n");
             assert_eq!(second.output, "hello world");
+            assert_eq!(second.exit_code, Some(0));
+        }
+
+        #[test]
+        fn parser_extracts_done_marker_when_it_starts_a_new_chunk() {
+            let mut parser = SessionOutputParser::new(
+                "__GESTURA_START_abc__".to_string(),
+                "__GESTURA_DONE_abc__:".to_string(),
+            );
+
+            let first = parser.push("__GESTURA_START_abc__\r\n");
+            assert_eq!(first.output, "");
+            assert_eq!(first.exit_code, None);
+
+            let second = parser.push("__GESTURA_DONE_abc__:0\r\n>");
+            assert_eq!(second.output, "");
+            assert_eq!(second.exit_code, Some(0));
+        }
+
+        #[test]
+        fn parser_extracts_done_marker_after_windows_prompt_echo() {
+            let mut parser = SessionOutputParser::new(
+                "__GESTURA_START_abc__".to_string(),
+                "__GESTURA_DONE_abc__:".to_string(),
+            );
+
+            let first =
+                parser.push(">echo __GESTURA_START_abc__\r\n__GESTURA_START_abc__\r\nwarmup\r\n");
+            assert_eq!(first.output, "");
+            assert_eq!(first.exit_code, None);
+
+            let second = parser.push("__GESTURA_DONE_abc__:0\r\n>");
+            assert_eq!(second.output, "warmup");
             assert_eq!(second.exit_code, Some(0));
         }
 
