@@ -64,18 +64,20 @@ jobs:
       - name: Resolve signing availability
         id: signing
         env:
+          # Credentials (secrets) — checked for presence
           _APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
           _APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
           _APPLE_INSTALLER_CERTIFICATE: ${{ secrets.APPLE_INSTALLER_CERTIFICATE }}
           _APPLE_INSTALLER_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_INSTALLER_CERTIFICATE_PASSWORD }}
-          _APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
-          _APPLE_INSTALLER_IDENTITY: ${{ secrets.APPLE_INSTALLER_IDENTITY }}
-          _APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-          _APPLE_ID: ${{ secrets.APPLE_ID }}
           _APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
           _KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
           _WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
           _WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
+          # Non-sensitive identifiers (repository variables) — checked for presence
+          _APPLE_SIGNING_IDENTITY: ${{ vars.APPLE_SIGNING_IDENTITY }}
+          _APPLE_INSTALLER_IDENTITY: ${{ vars.APPLE_INSTALLER_IDENTITY }}
+          _APPLE_TEAM_ID: ${{ vars.APPLE_TEAM_ID }}
+          _APPLE_ID: ${{ vars.APPLE_ID }}
         run: |
           macos_ok=true
           for v in \
@@ -122,14 +124,14 @@ jobs:
       PLATFORM_FEATURES: ${{ needs.prepare.outputs.macos_features }}
       APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
       APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-      APPLE_ID: ${{ secrets.APPLE_ID }}
       APPLE_INSTALLER_CERTIFICATE: ${{ secrets.APPLE_INSTALLER_CERTIFICATE }}
       APPLE_INSTALLER_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_INSTALLER_CERTIFICATE_PASSWORD }}
-      APPLE_INSTALLER_IDENTITY: ${{ secrets.APPLE_INSTALLER_IDENTITY }}
       APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
-      APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
-      APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
       KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
+      APPLE_ID: ${{ vars.APPLE_ID }}
+      APPLE_INSTALLER_IDENTITY: ${{ vars.APPLE_INSTALLER_IDENTITY }}
+      APPLE_SIGNING_IDENTITY: ${{ vars.APPLE_SIGNING_IDENTITY }}
+      APPLE_TEAM_ID: ${{ vars.APPLE_TEAM_ID }}
       MACOSX_DEPLOYMENT_TARGET: '10.15'
     steps:
       - name: Checkout release commit
