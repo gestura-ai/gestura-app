@@ -1,21 +1,20 @@
 name: Publish Rustdoc
 
 on:
-  push:
-    branches: [main]
-    paths:
-      - ".github/workflows/rustdoc-pages.yml"
-      - "Cargo.toml"
-      - "Cargo.lock"
-      - "README.md"
-      - "crates/**"
+  # Deploy only after a successful Release workflow run.
+  workflow_run:
+    workflows: ["Release"]
+    types: [completed]
+  # Allow manual re-deploys (e.g. after a Pages outage).
   workflow_dispatch:
 
 permissions:
   contents: read
+  pages: write      # required to deploy to GitHub Pages
+  id-token: write   # required by the OIDC token used by actions/deploy-pages
 
 concurrency:
-  group: rustdoc-build
+  group: rustdoc-deploy
   cancel-in-progress: true
 
 env:
@@ -26,10 +25,17 @@ jobs:
   build:
     name: Build Rustdoc artifact
     runs-on: ubuntu-22.04
+    # For workflow_run: only proceed when the Release workflow succeeded.
+    # For workflow_dispatch: always run (manual re-deploy).
+    if: github.event.workflow_run.conclusion == 'success' || github.event_name == 'workflow_dispatch'
 
     steps:
-      - name: Checkout repository
+      - name: Checkout release commit
         uses: actions/checkout@v4
+        with:
+          # Use the exact SHA that the release workflow built from.
+          # Falls back to HEAD when triggered manually.
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -127,10 +133,19 @@ jobs:
             sed "s/^/- /" rustdoc-packages.txt
           } >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Upload Rustdoc artifact
-        uses: actions/upload-artifact@v4
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
         with:
-          name: rustdoc-site
           path: target/doc
-          if-no-files-found: error
-          retention-days: 14
+
+  deploy:
+    name: Deploy to GitHub Pages
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy
+        id: deployment
+        uses: actions/deploy-pages@v4
