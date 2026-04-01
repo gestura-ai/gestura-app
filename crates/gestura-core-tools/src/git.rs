@@ -544,6 +544,7 @@ mod tests {
     use std::fs;
     use tempfile::tempdir;
 
+    #[cfg(not(target_os = "windows"))]
     fn init_test_repo() -> tempfile::TempDir {
         let temp = tempdir().unwrap();
         let repo = temp.path();
@@ -623,6 +624,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(target_os = "windows"))]
     fn test_worktree_lifecycle() {
         let temp = init_test_repo();
         let worktree_parent = tempdir().unwrap();
