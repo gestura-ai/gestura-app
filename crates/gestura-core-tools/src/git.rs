@@ -541,7 +541,9 @@ fn parse_worktree_list(output: &str) -> Result<Vec<GitWorktreeInfo>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(not(target_os = "windows"))]
     use std::fs;
+    #[cfg(not(target_os = "windows"))]
     use tempfile::tempdir;
 
     #[cfg(not(target_os = "windows"))]
