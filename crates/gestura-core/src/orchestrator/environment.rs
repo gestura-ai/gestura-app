@@ -655,6 +655,7 @@ mod tests {
     use super::*;
     use crate::AppConfig;
     use gestura_core_agents::{AgentManager, AgentRole};
+    #[cfg(not(target_os = "windows"))]
     use std::process::Command;
     use tempfile::tempdir;
 
