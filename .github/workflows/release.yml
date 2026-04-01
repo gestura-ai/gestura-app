@@ -63,9 +63,41 @@ jobs:
 
       - name: Resolve signing availability
         id: signing
+        env:
+          _APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          _APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          _APPLE_INSTALLER_CERTIFICATE: ${{ secrets.APPLE_INSTALLER_CERTIFICATE }}
+          _APPLE_INSTALLER_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_INSTALLER_CERTIFICATE_PASSWORD }}
+          _APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          _APPLE_INSTALLER_IDENTITY: ${{ secrets.APPLE_INSTALLER_IDENTITY }}
+          _APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          _APPLE_ID: ${{ secrets.APPLE_ID }}
+          _APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          _KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
+          _WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
+          _WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
         run: |
-          echo "has_macos_signing=${{ secrets.APPLE_CERTIFICATE != '' && secrets.APPLE_CERTIFICATE_PASSWORD != '' && secrets.APPLE_INSTALLER_CERTIFICATE != '' && secrets.APPLE_INSTALLER_CERTIFICATE_PASSWORD != '' && secrets.APPLE_SIGNING_IDENTITY != '' && secrets.APPLE_INSTALLER_IDENTITY != '' && secrets.APPLE_TEAM_ID != '' && secrets.APPLE_ID != '' && secrets.APPLE_PASSWORD != '' && secrets.KEYCHAIN_PASSWORD != '' }}" >> "$GITHUB_OUTPUT"
-          echo "has_windows_signing=${{ secrets.WINDOWS_CERTIFICATE != '' && secrets.WINDOWS_CERTIFICATE_PASSWORD != '' }}" >> "$GITHUB_OUTPUT"
+          macos_ok=true
+          for v in \
+            "$_APPLE_CERTIFICATE" \
+            "$_APPLE_CERTIFICATE_PASSWORD" \
+            "$_APPLE_INSTALLER_CERTIFICATE" \
+            "$_APPLE_INSTALLER_CERTIFICATE_PASSWORD" \
+            "$_APPLE_SIGNING_IDENTITY" \
+            "$_APPLE_INSTALLER_IDENTITY" \
+            "$_APPLE_TEAM_ID" \
+            "$_APPLE_ID" \
+            "$_APPLE_PASSWORD" \
+            "$_KEYCHAIN_PASSWORD"; do
+            [ -n "$v" ] || { macos_ok=false; break; }
+          done
+          echo "has_macos_signing=${macos_ok}" >> "$GITHUB_OUTPUT"
+
+          windows_ok=true
+          for v in "$_WINDOWS_CERTIFICATE" "$_WINDOWS_CERTIFICATE_PASSWORD"; do
+            [ -n "$v" ] || { windows_ok=false; break; }
+          done
+          echo "has_windows_signing=${windows_ok}" >> "$GITHUB_OUTPUT"
 
       - name: Enforce release signing prerequisites
         if: steps.metadata.outputs.publish == 'true'
