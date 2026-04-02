@@ -150,6 +150,9 @@ jobs:
           prefix-key: v2-release-macos
           cache-targets: true
 
+      - name: Install tauri-cli
+        run: cargo install tauri-cli --version "^2" --locked
+
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
@@ -263,6 +266,9 @@ jobs:
           prefix-key: v2-release-linux
           cache-targets: true
 
+      - name: Install tauri-cli
+        run: cargo install tauri-cli --version "^2" --locked
+
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
@@ -356,6 +362,9 @@ jobs:
         with:
           prefix-key: v2-release-windows
           cache-targets: true
+
+      - name: Install tauri-cli
+        run: cargo install tauri-cli --version "^2" --locked
 
       - name: Setup Node.js
         uses: actions/setup-node@v4

@@ -198,7 +198,9 @@ stage_ffmpeg() {
 
   mkdir -p "$dst_dir"
 
-  # BtbN provides static "essentials" Windows builds (~30 MB) at a stable URL.
+  # BtbN provides GPL static Windows builds at a stable "latest" URL.
+  # Filename format (as of 2025): ffmpeg-master-latest-<arch>-gpl.zip
+  # Previously was ffmpeg-latest-<arch>-static.zip (no longer exists).
   local FFMPEG_TAG="${GESTURA_FFMPEG_VERSION:-latest}"
   # Map Rust triples to BtbN arch labels.
   local btbn_arch
@@ -209,7 +211,7 @@ stage_ffmpeg() {
     *) die "No BtbN ffmpeg build known for triple: ${TARGET_TRIPLE}" ;;
   esac
 
-  local url="https://github.com/BtbN/FFmpeg-Builds/releases/download/${FFMPEG_TAG}/ffmpeg-${FFMPEG_TAG}-${btbn_arch}-static.zip"
+  local url="https://github.com/BtbN/FFmpeg-Builds/releases/download/${FFMPEG_TAG}/ffmpeg-master-${FFMPEG_TAG}-${btbn_arch}-gpl.zip"
 
   log_info "Downloading static ffmpeg (${btbn_arch}) from BtbN/FFmpeg-Builds …"
 
