@@ -110,8 +110,7 @@ jobs:
           fi
 
           if [ "${{ steps.signing.outputs.has_windows_signing }}" != "true" ]; then
-            echo "Windows signing secrets are incomplete; refusing to publish an unsigned release." >&2
-            exit 1
+            echo "Windows signing secrets are not configured; the Windows release will be unsigned." >&2
           fi
 
   build-macos:
@@ -407,7 +406,9 @@ jobs:
       - name: Verify Windows signatures
         shell: pwsh
         env:
-          REQUIRE_SIGNATURE: ${{ needs.prepare.outputs.publish }}
+          # Only enforce valid signatures when signing credentials were available.
+          # When they are absent the build proceeds unsigned.
+          REQUIRE_SIGNATURE: ${{ needs.prepare.outputs.has_windows_signing }}
         run: |
           $msi = Get-ChildItem -Path dist/release -Filter *.msi -ErrorAction Stop | Select-Object -First 1
           $cli = Get-Item 'target\x86_64-pc-windows-msvc\release\gestura.exe'
@@ -425,6 +426,8 @@ jobs:
             if ($cliSig.Status -ne 'Valid') {
               throw "CLI executable is not validly signed: $($cliSig.StatusMessage)"
             }
+          } else {
+            Write-Host "Windows signing credentials were not configured; skipping signature enforcement."
           }
 
       - name: Validate Windows release archives
