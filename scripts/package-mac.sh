@@ -267,6 +267,28 @@ stage_cli() {
   log_info "Staged CLI binaries for bundling: ${dst_dir}"
 }
 
+# sign_sidecars explicitly signs all binaries staged for Tauri bundling.
+# This prevents Apple notarization rejections due to missing timestamps on sidecars.
+sign_sidecars() {
+  if [ -z "$SIGNING_IDENTITY" ]; then
+    log_info "APPLE_SIGNING_IDENTITY not set; skipping sidecar codesigning"
+    return 0
+  fi
+
+  local bin_dir="${GUI_DIR}/binaries"
+  if [ -d "$bin_dir" ]; then
+    for bin in "$bin_dir"/*; do
+      if [ -f "$bin" ]; then
+        log_info "Codesigning sidecar: $bin"
+        codesign --force --options runtime --timestamp \
+          --entitlements "${CLI_DIR}/entitlements.plist" \
+          --sign "$SIGNING_IDENTITY" \
+          "$bin"
+      fi
+    done
+  fi
+}
+
 # build_gui runs the Tauri bundler to produce the .app.
 build_gui() {
   log_info "Building GUI bundle via cargo tauri (${TARGET_UNIVERSAL})"
@@ -424,6 +446,7 @@ main() {
   sign_cli_universal
   stage_cli
   stage_ffmpeg
+  sign_sidecars
   build_gui
   verify_app_bundle
 
