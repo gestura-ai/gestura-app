@@ -170,34 +170,23 @@ sign_app() {
             codesign --force --options runtime --timestamp \
             --sign "${APPLE_SIGNING_IDENTITY}" {} \; 2>/dev/null || true
     fi
-    
-    # Sign the main executable (do not assume it matches the app bundle name).
-    # Tauri sets CFBundleExecutable in Info.plist (often something like "gestura-gui").
-    local bundle_executable=""
-    if [ -f "${APP_PATH}/Contents/Info.plist" ]; then
-        bundle_executable=$(/usr/libexec/PlistBuddy -c "Print :CFBundleExecutable" "${APP_PATH}/Contents/Info.plist" 2>/dev/null || true)
+
+    # Sign every regular file in Contents/MacOS/ individually (innermost binaries
+    # before the outer bundle). This covers the main executable AND any sidecar
+    # binaries (e.g. the `gestura` CLI) that Tauri copies in during bundling.
+    # Signing only CFBundleExecutable leaves sidecars with Tauri's auto-signing
+    # which omits the secure timestamp required by Apple's notarization service.
+    if [ -d "${APP_PATH}/Contents/MacOS" ]; then
+        while IFS= read -r -d '' bin; do
+            echo "   Signing: $(basename "${bin}")"
+            codesign --force --options runtime --timestamp \
+                --entitlements "${GUI_DIR}/entitlements.plist" \
+                --sign "${APPLE_SIGNING_IDENTITY}" \
+                "${bin}"
+        done < <(find "${APP_PATH}/Contents/MacOS" -maxdepth 1 -type f -print0)
     fi
 
-    if [ -z "${bundle_executable}" ] && [ -d "${APP_PATH}/Contents/MacOS" ]; then
-        # Fallback: pick the first executable file in Contents/MacOS.
-        bundle_executable=$(find "${APP_PATH}/Contents/MacOS" -maxdepth 1 -type f -perm -111 -print | head -n 1 | xargs -I{} basename "{}" 2>/dev/null || true)
-    fi
-
-    if [ -z "${bundle_executable}" ] || [ ! -f "${APP_PATH}/Contents/MacOS/${bundle_executable}" ]; then
-        echo -e "${RED}❌ Could not determine main executable inside app bundle${NC}"
-        echo "Expected to find CFBundleExecutable in: ${APP_PATH}/Contents/Info.plist"
-        echo "Contents/MacOS directory listing:"
-        ls -la "${APP_PATH}/Contents/MacOS" || true
-        exit 1
-    fi
-
-    echo "   Signing main executable: ${bundle_executable}"
-    codesign --force --options runtime --timestamp \
-        --entitlements "${GUI_DIR}/entitlements.plist" \
-        --sign "${APPLE_SIGNING_IDENTITY}" \
-        "${APP_PATH}/Contents/MacOS/${bundle_executable}"
-
-    # Sign the app bundle
+    # Sign the app bundle (outer container, must be last)
     echo "   Signing app bundle..."
     codesign --force --options runtime --timestamp \
         --entitlements "${GUI_DIR}/entitlements.plist" \
@@ -294,13 +283,36 @@ notarize_app() {
     echo -e "${GREEN}✅ Notarization submitted${NC}"
 }
 
-# Staple the notarization ticket
+# Staple the notarization ticket, retrying with backoff to allow time for
+# Apple's CloudKit CDN to propagate the ticket after notarytool returns.
+# Error 65 ("Record not found") means the ticket hasn't arrived yet — not that
+# notarization failed.
 staple_app() {
     echo -e "${YELLOW}📎 Stapling notarization ticket...${NC}"
 
-    xcrun stapler staple "${APP_PATH}"
+    local max_attempts=10
+    local attempt=1
+    local delay=30
 
-    echo -e "${GREEN}✅ Notarization ticket stapled${NC}"
+    while [ $attempt -le $max_attempts ]; do
+        echo "   Staple attempt ${attempt}/${max_attempts}..."
+        if xcrun stapler staple "${APP_PATH}"; then
+            echo -e "${GREEN}✅ Notarization ticket stapled${NC}"
+            return 0
+        fi
+
+        local exit_code=$?
+        if [ $attempt -lt $max_attempts ]; then
+            echo "   Staple failed (exit ${exit_code}) — waiting ${delay}s for CloudKit CDN propagation..."
+            sleep $delay
+            # Cap delay at 60s
+            delay=$(( delay < 60 ? delay + 15 : 60 ))
+        fi
+        attempt=$(( attempt + 1 ))
+    done
+
+    echo -e "${RED}❌ Stapling failed after ${max_attempts} attempts. The notarization ticket may not have propagated yet.${NC}"
+    exit 1
 }
 
 # Verify notarization
