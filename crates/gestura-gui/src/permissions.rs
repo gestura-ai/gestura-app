@@ -989,7 +989,9 @@ pub fn request_microphone_permission() -> bool {
                 }
             }
         }
-        SystemPermissionStatus::Unknown | SystemPermissionStatus::NotDetermined | SystemPermissionStatus::Restricted => {
+        SystemPermissionStatus::Unknown
+        | SystemPermissionStatus::NotDetermined
+        | SystemPermissionStatus::Restricted => {
             // Permission not yet requested - the system will prompt automatically
             // when we try to access the microphone
             tracing::debug!("Windows microphone permission will be requested on first use");
