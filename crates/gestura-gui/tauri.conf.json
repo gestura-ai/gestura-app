@@ -4,8 +4,8 @@
   "identifier": "ai.gestura.desktop",
   "version": "0.5.0",
   "build": {
-    "beforeDevCommand": "npm --prefix frontend run dev",
-    "beforeBuildCommand": "npm --prefix frontend run build",
+    "beforeDevCommand": "npm --prefix frontend run dev || npm --prefix crates/gestura-gui/frontend run dev || npm run dev",
+    "beforeBuildCommand": "npm --prefix frontend run build || npm --prefix crates/gestura-gui/frontend run build || npm run build",
     "devUrl": "http://localhost:1420",
     "frontendDist": "frontend/dist"
   },
