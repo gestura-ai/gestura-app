@@ -290,29 +290,27 @@ sign_sidecars() {
 }
 
 # build_gui runs the Tauri bundler to produce the .app.
+# APPLE_ID / APPLE_PASSWORD / APPLE_TEAM_ID are suppressed so Tauri skips its
+# own (incomplete) notarization pass. notarize-mac.sh handles the full
+# sign → notarize → staple cycle after the bundle is produced.
 build_gui() {
-  log_info "Building GUI bundle via cargo tauri (${TARGET_UNIVERSAL})"
-  (cd "$GUI_DIR" && cargo tauri build --features "$FEATURES" --target "$TARGET_UNIVERSAL")
+  log_info "Building GUI bundle via cargo tauri (${TARGET_UNIVERSAL}) — notarization deferred to notarize-mac.sh"
+  (cd "$GUI_DIR" && env -u APPLE_ID -u APPLE_PASSWORD -u APPLE_TEAM_ID \
+    MACOSX_DEPLOYMENT_TARGET=10.15 \
+    cargo tauri build --features "$FEATURES" --target "$TARGET_UNIVERSAL")
 }
 
-# sign_app_bundle manually signs the entire generated Gestura.app bundle
-# to enforce the inclusion of a secure timestamp and the runtime option.
-sign_app_bundle() {
-  if [ -z "$SIGNING_IDENTITY" ]; then
-    log_info "APPLE_SIGNING_IDENTITY not set; skipping manual app bundle codesigning"
+# sign_and_notarize delegates the full code-sign → notarize → staple pipeline
+# to notarize-mac.sh — the same battle-tested script used by `just release-macos`
+# locally. This ensures CI and local builds use identical signing logic.
+sign_and_notarize() {
+  if [ -z "${SIGNING_IDENTITY:-}" ]; then
+    log_info "APPLE_SIGNING_IDENTITY not set; skipping signing and notarization"
     return 0
   fi
 
-  local app_path
-  app_path="$(find_app_bundle)"
-  [ -d "$app_path" ] || die "App bundle not found at ${app_path}"
-  
-  log_info "Manually deep-signing app bundle with secure timestamp: ${app_path}"
-
-  codesign --force --deep --options runtime --timestamp \
-    --entitlements "${CLI_DIR}/entitlements.plist" \
-    --sign "$SIGNING_IDENTITY" \
-    "$app_path"
+  log_info "Delegating sign + notarize + staple to notarize-mac.sh"
+  "${SCRIPT_DIR}/notarize-mac.sh"
 }
 
 # notarization_credentials_configured returns success when either direct Apple
@@ -468,8 +466,7 @@ main() {
   stage_ffmpeg
   sign_sidecars
   build_gui
-  sign_app_bundle
-  verify_app_bundle
+  sign_and_notarize
 
   local out_dir
   out_dir="$(ensure_fresh_dist_dir "$DIST_DIR")"

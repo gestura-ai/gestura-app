@@ -8,7 +8,7 @@ authors.workspace = true
 
 
 # Tauri binary name
-default-run = "gestura-app"
+default-run = "gestura-gui"
 
 [lib]
 name = "gestura_gui"
@@ -16,7 +16,7 @@ path = "src/lib.rs"
 crate-type = ["lib", "cdylib"]
 
 [[bin]]
-name = "gestura-app"
+name = "gestura-gui"
 path = "src/main.rs"
 
 [build-dependencies]
