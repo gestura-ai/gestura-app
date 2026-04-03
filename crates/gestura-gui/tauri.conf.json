@@ -5,7 +5,7 @@
   "version": "0.5.0",
   "build": {
     "beforeDevCommand": "npm --prefix frontend run dev",
-    "beforeBuildCommand": "npm --prefix frontend run build",
+    "beforeBuildCommand": "",
     "devUrl": "http://localhost:1420",
     "frontendDist": "frontend/dist"
   },

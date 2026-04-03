@@ -9,7 +9,7 @@
     "preview": "vite preview",
     "tauri": "cd .. && cargo tauri",
     "tauri:dev": "cd .. && cargo tauri dev --features voice-local",
-    "tauri:build": "cd .. && cargo tauri build --features voice-local",
+    "tauri:build": "npm run build && cd .. && cargo tauri build --features voice-local",
     "test:unit": "vitest run",
     "test:unit:watch": "vitest",
     "test:e2e": "node ./scripts/playwright.mjs test --config ../../../tests/e2e/playwright.config.ts",
