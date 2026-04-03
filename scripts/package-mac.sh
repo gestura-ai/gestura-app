@@ -295,6 +295,26 @@ build_gui() {
   (cd "$GUI_DIR" && cargo tauri build --features "$FEATURES" --target "$TARGET_UNIVERSAL")
 }
 
+# sign_app_bundle manually signs the entire generated Gestura.app bundle
+# to enforce the inclusion of a secure timestamp and the runtime option.
+sign_app_bundle() {
+  if [ -z "$SIGNING_IDENTITY" ]; then
+    log_info "APPLE_SIGNING_IDENTITY not set; skipping manual app bundle codesigning"
+    return 0
+  fi
+
+  local app_path
+  app_path="$(find_app_bundle)"
+  [ -d "$app_path" ] || die "App bundle not found at ${app_path}"
+  
+  log_info "Manually deep-signing app bundle with secure timestamp: ${app_path}"
+
+  codesign --force --deep --options runtime --timestamp \
+    --entitlements "${CLI_DIR}/entitlements.plist" \
+    --sign "$SIGNING_IDENTITY" \
+    "$app_path"
+}
+
 # notarization_credentials_configured returns success when either direct Apple
 # credentials or a notarytool keychain profile is available.
 notarization_credentials_configured() {
@@ -448,6 +468,7 @@ main() {
   stage_ffmpeg
   sign_sidecars
   build_gui
+  sign_app_bundle
   verify_app_bundle
 
   local out_dir

@@ -217,7 +217,7 @@ stage_ffmpeg() {
 
   local tmp
   tmp="$(mktemp -d)"
-  trap 'rm -rf "$tmp"' RETURN
+  trap 'if [ -n "${tmp:-}" ]; then rm -rf -- "$tmp"; fi' RETURN
 
   curl -fsSL "$url" -L -o "${tmp}/ffmpeg.zip" --retry 3
   unzip -q "${tmp}/ffmpeg.zip" -d "${tmp}/extracted"
