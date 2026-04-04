@@ -16,6 +16,7 @@ This document defines the **canonical release asset names** and **selection rule
 
 | Platform | Format | Asset name |
 |---|---|---|
+| macOS | DMG | `Gestura-${TAG}-universal.dmg` |
 | macOS | PKG | `Gestura-${TAG}-universal.pkg` |
 | Linux | DEB | `gestura-${TAG}-linux-x86_64.deb` |
 | Linux | RPM | `gestura-${TAG}-linux-x86_64.rpm` |
@@ -23,6 +24,7 @@ This document defines the **canonical release asset names** and **selection rule
 
 Notes:
 
+- The homepage should prefer the macOS DMG for interactive end-user installs and expose the PKG as the managed-deployment alternative.
 - The macOS PKG installer should install:
   - `/Applications/Gestura.app`
   - `/usr/local/bin/gestura` (CLI)
