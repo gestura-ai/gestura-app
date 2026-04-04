@@ -519,11 +519,24 @@ jobs:
             prerelease_flag+=(--prerelease)
           fi
 
+          while IFS= read -r skipped_dir; do
+            echo "Skipping non-file release artifact: ${skipped_dir}"
+          done < <(find dist/release -maxdepth 1 -mindepth 1 -type d -print | sort)
+
+          release_files=()
+          while IFS= read -r -d '' release_file; do
+            release_files+=("$release_file")
+          done < <(find dist/release -maxdepth 1 -type f -print0 | sort -z)
+          [ ${#release_files[@]} -gt 0 ] || {
+            echo "No release files found under dist/release" >&2
+            exit 1
+          }
+
           if gh release view "$TAG" >/dev/null 2>&1; then
-            gh release upload "$TAG" dist/release/* --clobber
+            gh release upload "$TAG" "${release_files[@]}" --clobber
             gh release edit "$TAG" --title "$title" --draft=false "${prerelease_flag[@]}"
           else
-            gh release create "$TAG" dist/release/* \
+            gh release create "$TAG" "${release_files[@]}" \
               --target "$RELEASE_SHA" \
               --title "$title" \
               --generate-notes \
