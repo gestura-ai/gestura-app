@@ -1,6 +1,6 @@
 # gestura.app
 
-An always‑ready, local‑first companion app for the Gestura Haptic Harmony ring. Built in Rust with a **Core-First Architecture**, it integrates voice (local ASR), MCP agents, NATS MQ, and haptic/gesture tooling with a focus on privacy, performance, and extensibility.
+An always‑ready, local‑first, intent-first AI assistant for desktop workflows. Built in Rust with a **Core-First Architecture**, Gestura.app accepts intent from voice, chat, Haptic Harmony ring gestures, and future inputs, then turns those inputs into unified actions with a focus on privacy, performance, and extensibility.
 
 ## Architecture
 
@@ -43,6 +43,23 @@ gestura-app/
 - **Thin Presentation Layers**: CLI and GUI delegate to core
 - **Re-export Pattern**: `gestura-core` re-exports domain crates as stable public API paths
 - **Feature Gates**: Optional functionality via Cargo features (`voice-local`, `nats`, `security`, etc.)
+
+## Intent-First Architecture
+
+Gestura.app treats user requests as intent rather than as modality-specific commands. Voice, chat, Haptic Harmony ring gestures, and future input adapters all feed a shared normalization path before entering the core loop.
+
+- **Unified intent normalization**: Input adapters translate modality-specific events into a single `Intent` representation with shared context, confidence, and action metadata.
+- **One execution model**: Normalized intents flow through the same policy, context, tool, streaming, and observability layers across GUI, CLI, and automation surfaces.
+- **Thin modality adapters**: Capture remains specific to voice, chat, or ring gesture sources, while business logic stays centralized in `gestura-core`.
+- **Optional advanced primitives**: `gestura-core-tasks` can attach richer coordination only when an intent becomes complex or multi-step, preserving the direct path for straightforward requests.
+
+### Roadmap to 1.0
+
+1. **Intent unification** — Voice, chat, and ring gesture entry points emit the same normalized intent shape and shared execution metadata.
+2. **Full ring integration** — Haptic Harmony ring pairing, gesture capture, mapping, and response feedback work as first-class flows across the product.
+3. **Advanced primitives in `gestura-core-tasks`** — TaskRegistry, verification loops, and semantic client flows are available behind conditional middleware for complex intents.
+4. **Comprehensive end-to-end tests** — End-to-end coverage validates modality intake, intent routing, execution, and recovery behavior across desktop and CLI surfaces.
+5. **Final security/community beta review** — Security validation, privacy review, and community beta feedback are completed before production-stability sign-off.
 
 ## Documentation Strategy
 
@@ -111,7 +128,13 @@ High-signal generated-doc crate entry points:
 - `gestura-core-security`
 - other `gestura-core-*` crates as their public docs mature
 
-## Features
+## Core Features
+
+### Multimodal Input
+- **Intent-first input layer**: Voice, chat, Haptic Harmony ring gestures, and future input adapters converge on the same core execution path
+- **Voice as a first-class modality**: Local-first speech capture with cloud fallback where configured
+- **Chat as a first-class modality**: Text conversations flow through the same agent pipeline and tool policies as spoken requests
+- **Haptic Harmony ring gestures as a first-class modality**: Gesture-driven intents can trigger the same unified actions and feedback flows as voice and chat
 
 ### Voice & LLM
 - **Local‑first voice**: Whisper via whisper-rs with OpenAI Whisper HTTP fallback
@@ -122,13 +145,14 @@ High-signal generated-doc crate entry points:
 - **Prompt enhancement**: Auto-enhance prompts with configurable styles (concise/detailed/technical)
 
 ### Agent Pipeline
-- **Agentic loop**: Multi-turn tool-use pipeline with streaming
+- **Agentic loop**: Multi-turn tool-use pipeline with streaming and shared execution for normalized intents
 - **Context compaction**: Automatic history trimming and summarization within token limits
 - **Checkpoints**: Session state snapshots for safe "rewind" with retention policies
 - **Guardrails**: Project-specific instruction files (`.gestura/guardrails`, `AGENTS.md`)
 - **Orchestrator**: Subagent coordination with task delegation across agents
 - **Knowledge system**: Built-in expert knowledge (Rust, Tauri, MCP, A2A, CLI, Voice)
 - **Smart context**: Request analysis, entity extraction, context caching and resolution
+- **Conditional advanced primitives**: Optional `gestura-core-tasks` middleware can activate richer task coordination only for complex multi-step intents
 
 ### CLI (gestura-cli)
 - **Modern TUI**: Professional ratatui-based terminal interface

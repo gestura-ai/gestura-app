@@ -5,6 +5,18 @@ All notable changes to Gestura.app will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased / Approaching 1.0
+
+### Changed
+
+- Gestura.app is now documented as an **intent-first AI assistant**: voice, chat, Haptic Harmony ring gestures, and future input adapters are treated as sources of the same normalized intent flow rather than as separate product paths.
+- The current implementation continues to preserve the Core-First workflow while clarifying that modality capture feeds one shared execution model across GUI, CLI, and automation surfaces.
+
+### Planned
+
+- `gestura-core-tasks` is being positioned as the home for optional advanced primitives that activate only for complex multi-step intents.
+- Upcoming work focuses on TaskRegistry-backed coordination, bounded verification loops, and semantic client flows that remain general-purpose and reusable across domains.
+
 ## [Unreleased]
 
 ### Core-First Architecture Migration (Complete)
@@ -215,3 +227,11 @@ A comprehensive refactoring to consolidate all business logic in `gestura-core`,
 
 ### Breaking Changes
 All breaking changes must be documented with migration guides and deprecated features should be supported for at least one major version before removal.
+
+## 1.0 Release Criteria
+
+- **Intent unification** — Voice, chat, and ring gesture entry points resolve into a shared normalized intent contract.
+- **Full ring integration** — Haptic Harmony ring pairing, gesture capture, action mapping, and feedback flows operate as first-class product capabilities.
+- **Advanced primitives in `gestura-core-tasks`** — TaskRegistry, verification loops, and semantic client enhancements are available for complex multi-step intents.
+- **Comprehensive end-to-end tests** — End-to-end validation covers modality intake, intent routing, execution, and recovery behavior.
+- **Final security/community beta review** — Security validation, privacy review, and community beta feedback are completed before release sign-off.
