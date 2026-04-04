@@ -8,7 +8,7 @@ default: help
 help:
 	@echo "just targets:"
 	@echo ""
-	@echo "🔧 Development:"
+	@echo " Development:"
 	@echo "  help                 # show the standardized workflow commands"
 	@echo "  doctor               # print environment and release readiness info"
 	@echo "  dev                  # run frontend dev server with hot reload"
@@ -19,7 +19,7 @@ help:
 	@echo "  test                 # cargo test"
 	@echo "  clean                # cargo clean"
 	@echo ""
-	@echo "🏗️ Platform Builds:"
+	@echo " Platform Builds:"
 	@echo "  build-macos          # build macOS app bundle"
 	@echo "  build-macos-signed   # build and sign macOS app + CLI bundle"
 	@echo "  build-macos-universal # build universal macOS binary"
@@ -29,7 +29,7 @@ help:
 	@echo "  build-linux-deb      # build Linux deb package"
 	@echo "  build-linux-appimage # build Linux AppImage"
 	@echo ""
-	@echo "📦 Packaging & Release:"
+	@echo " Packaging & Release:"
 	@echo "  package              # package the app for the current native platform"
 	@echo "  package-macos        # create macOS DMG and PKG"
 	@echo "  package-windows      # create Windows installer"
@@ -44,7 +44,7 @@ help:
 	@echo "  create-linux-deb     # create Linux deb"
 	@echo "  create-linux-appimage # create Linux AppImage"
 	@echo ""
-	@echo "🔐 Code Signing:"
+	@echo " Code Signing:"
 	@echo "  check-macos-signing  # check macOS signing setup"
 	@echo "  check-windows-signing # check Windows signing setup"
 	@echo "  check-linux-signing # check Linux signing setup"
@@ -56,7 +56,7 @@ help:
 	@echo "  verify-macos         # verify macOS app signature"
 	@echo "  verify-windows       # verify Windows signature"
 	@echo ""
-	@echo "🧪 Validation:"
+	@echo " Validation:"
 	@echo "  validate             # run the full production validation pipeline"
 	@echo "  validate-quick       # run the fast local validation subset"
 	@echo "  test-ui              # run UI tests"
@@ -66,35 +66,35 @@ help:
 	@echo "  test-linux-app       # test Linux packages"
 	@echo "  test-all-platforms   # test all platform builds"
 	@echo ""
-	@echo "🏷️ Versioning:"
+	@echo " Versioning:"
 	@echo "  show-version         # show versions from Cargo, Tauri, and frontend"
 	@echo "  sync-versions        # sync Tauri/frontend versions to Cargo.toml"
-	@echo "  set-version X.Y.Z    # update Cargo.toml, tauri.conf.json, and package.json"
+	@echo "  set-version X.Y.Z    # update workspace version and verify all workspace packages resolve to it"
 	@echo ""
-	@echo "🛠️ Utilities:"
+	@echo " Utilities:"
 	@echo "  clean-all            # clean all build artifacts"
 	@echo "  icons                # generate app icons"
 	@echo "  quick-dev            # quick development build"
 	@echo "  full-build           # full build and test"
 	@echo "  generate-man-pages   # generate CLI man pages"
 	@echo ""
-	@echo "ℹ️ Use 'just show-version' before tagging a release."
+	@echo " Use 'just show-version' before tagging a release."
 
 # Production validation - run all checks that CI will run
 validate:
-	@echo "🔍 Running production validation..."
+	@echo "Running production validation..."
 	bash ./scripts/validate-production.sh --ci
 
 # Quick validation - essential checks only
 validate-quick:
-	@echo "⚡ Running quick validation..."
+	@echo "Running quick validation..."
 	@echo "Checking formatting..."
 	cargo fmt --manifest-path {{app_dir}}/Cargo.toml -- --check
 	@echo "Running clippy..."
 	cargo clippy --manifest-path {{app_dir}}/Cargo.toml -- -D warnings
 	@echo "Running tests..."
 	cargo test --manifest-path {{app_dir}}/Cargo.toml
-	@echo "✅ Quick validation complete!"
+	@echo "Quick validation complete!"
 
 # Root paths
 gui_dir := "crates/gestura-gui"
@@ -122,14 +122,14 @@ clean:
 	cargo clean --manifest-path {{app_dir}}/Cargo.toml
 
 clean-all:
-	@echo "🧹 Cleaning all build artifacts..."
+	@echo "Cleaning all build artifacts..."
 	cargo clean --manifest-path {{app_dir}}/Cargo.toml
 	rm -rf dist/
 	rm -rf {{frontend_dir}}/dist/
 	rm -rf {{frontend_dir}}/node_modules/
 	rm -rf target/
 	rm -f *.dmg *.pkg *.exe *.deb *.AppImage
-	@echo "✅ All build artifacts cleaned"
+	@echo "All build artifacts cleaned"
 
 # UI Testing commands
 test-ui:
@@ -154,7 +154,7 @@ check-nats:
 	cargo check --manifest-path {{app_dir}}/Cargo.toml --features nats
 
 dev:
-	@echo "🚀 Starting development server with hot reload..."
+	@echo "Starting development server with hot reload..."
 	cd {{frontend_dir}} && npm install
 	cd {{gui_dir}} && cargo tauri dev --features voice-local
 
@@ -163,13 +163,13 @@ dev:
 
 # Build CLI binary (release)
 build-cli:
-	@echo "🔧 Building CLI binary..."
+	@echo "Building CLI binary..."
 	cargo build --release -p gestura-cli --features voice-local,security
 
 # Build CLI binary for universal macOS (Intel + Apple Silicon)
 #   Separate CARGO_TARGET_DIR per arch avoids a known rustc ICE with fat LTO.
 build-cli-universal:
-	@echo "🔧 Building universal CLI binary..."
+	@echo "Building universal CLI binary..."
 	CARGO_TARGET_DIR=target/build-arm64 cargo build --release -p gestura-cli --features voice-local,security --target aarch64-apple-darwin
 	CARGO_TARGET_DIR=target/build-x86   cargo build --release -p gestura-cli --features voice-local,security --target x86_64-apple-darwin
 	@mkdir -p target/universal-apple-darwin/release
@@ -177,11 +177,11 @@ build-cli-universal:
 		target/build-arm64/aarch64-apple-darwin/release/gestura \
 		target/build-x86/x86_64-apple-darwin/release/gestura \
 		-output target/universal-apple-darwin/release/gestura
-	@echo "✅ Universal CLI binary created at target/universal-apple-darwin/release/gestura"
+	@echo "Universal CLI binary created at target/universal-apple-darwin/release/gestura"
 
 # Build macOS app bundle (unsigned)
 build-macos:
-	@echo "🍎 Building macOS app bundle (unsigned)..."
+	@echo "Building macOS app bundle (unsigned)..."
 	cd {{frontend_dir}} && npm install
 	cd {{frontend_dir}} && npm run build
 	cd {{gui_dir}} && cargo tauri build --features voice-local
@@ -211,10 +211,10 @@ stage-ffmpeg-macos:
     UNIV_DST="${DST_DIR}/ffmpeg-universal-apple-darwin"
     if [ "${GESTURA_FFMPEG_SKIP_DOWNLOAD:-0}" = "1" ] \
          && [ -f "${ARM64_DST}" ] && [ -f "${X86_DST}" ]; then
-        echo "⏭️  Skipping ffmpeg download — pre-staged binaries found"
+        echo "Skipping ffmpeg download — pre-staged binaries found"
         exit 0
     fi
-    echo "📥 Downloading static ffmpeg for macOS (arm64 + x86_64)..."
+    echo "downloading static ffmpeg for macOS (arm64 + x86_64)..."
     mkdir -p "${DST_DIR}"
     TMP="$(mktemp -d)"
     trap 'rm -rf "${TMP}"' EXIT
@@ -227,7 +227,7 @@ stage-ffmpeg-macos:
     cp "${TMP}/arm64/ffmpeg"  "${ARM64_DST}" && chmod +x "${ARM64_DST}"
     cp "${TMP}/x86_64/ffmpeg" "${X86_DST}"   && chmod +x "${X86_DST}"
     lipo -create "${ARM64_DST}" "${X86_DST}" -output "${UNIV_DST}" && chmod +x "${UNIV_DST}"
-    echo "✅ ffmpeg staged: aarch64, x86_64, universal"
+    echo "ffmpeg staged: aarch64, x86_64, universal"
 
 # Build and sign macOS app bundle (for local development)
 # This uses certificates already installed in your Keychain.
@@ -245,9 +245,9 @@ stage-ffmpeg-macos:
 #   export APPLE_ID="your@email.com"
 #   export APPLE_PASSWORD="@keychain:notarytool-password"
 build-macos-signed:
-	@echo "🍎🔐 Building and signing macOS app bundle + CLI..."
+	@echo "Building and signing macOS app bundle + CLI..."
 	@if [ -z "${APPLE_SIGNING_IDENTITY:-}" ]; then \
-		echo "❌ APPLE_SIGNING_IDENTITY environment variable not set"; \
+		echo "APPLE_SIGNING_IDENTITY environment variable not set"; \
 		echo "Set it to your Developer ID Application certificate name"; \
 		echo "Example: Developer ID Application: Your Name (TEAMID)"; \
 		echo ""; \
@@ -256,7 +256,7 @@ build-macos-signed:
 		exit 1; \
 	fi
 	@if [ -z "${APPLE_TEAM_ID:-}" ]; then \
-		echo "❌ APPLE_TEAM_ID environment variable not set"; \
+		echo "APPLE_TEAM_ID environment variable not set"; \
 		echo "Set it to your 10-character Apple Developer Team ID"; \
 		exit 1; \
 	fi
@@ -294,7 +294,7 @@ build-macos-signed:
 	  {{gui_dir}}/binaries/gestura-aarch64-apple-darwin \
 	  {{gui_dir}}/binaries/gestura-x86_64-apple-darwin \
 	  {{gui_dir}}/binaries/gestura-universal-apple-darwin
-	@echo "✅ Universal CLI binary created"
+	@echo "Universal CLI binary created"
 	# 2c. Stage the ffmpeg sidecar for Tauri `bundle.externalBin`.
 	#
 	# Tauri's universal build compiles two separate cargo invocations (aarch64
@@ -312,12 +312,12 @@ build-macos-signed:
 	#    Set MACOSX_DEPLOYMENT_TARGET=10.15 for whisper.cpp std::filesystem support
 	cd {{gui_dir}} && MACOSX_DEPLOYMENT_TARGET=10.15 env -u APPLE_ID -u APPLE_PASSWORD -u APPLE_TEAM_ID \
 		cargo tauri build --target universal-apple-darwin --features voice-local
-	echo "✅ GUI build complete. Running notarization script..."
+	echo "GUI build complete. Running notarization script..."
 	./scripts/notarize-mac.sh
 
 # Build universal macOS binary (Intel + Apple Silicon)
 build-macos-universal:
-	@echo "🍎🔄 Building universal macOS binary..."
+	@echo "Building universal macOS binary..."
 	cd {{frontend_dir}} && npm install
 	cd {{frontend_dir}} && npm run build
 	cd {{gui_dir}} && cargo tauri build --target universal-apple-darwin --features voice-local
@@ -331,9 +331,9 @@ build-windows:
 
 # Build and sign Windows executable
 build-windows-signed:
-	@echo "🪟🔐 Building and signing Windows executable..."
+	@echo " Building and signing Windows executable..."
 	@if [ -z "$$WINDOWS_SIGNING_CERT" ]; then \
-		echo "❌ WINDOWS_SIGNING_CERT environment variable not set"; \
+		echo "WINDOWS_SIGNING_CERT environment variable not set"; \
 		echo "Set it to your Windows code signing certificate path"; \
 		exit 1; \
 	fi
@@ -346,73 +346,73 @@ build-windows-signed:
 
 # Build Linux binary
 build-linux:
-	@echo "🐧 Building Linux binary..."
+	@echo "Building Linux binary..."
 	cd {{frontend_dir}} && npm install
 	cd {{frontend_dir}} && npm run build
 	cd {{gui_dir}} && cargo tauri build --features voice-local -- --target x86_64-unknown-linux-gnu
 
 # Build Linux AppImage
 build-linux-appimage:
-	@echo "🐧📦 Building Linux AppImage..."
+	@echo "Building Linux AppImage..."
 	cd {{frontend_dir}} && npm install
 	cd {{frontend_dir}} && npm run build
 	cd {{gui_dir}} && cargo tauri build --features voice-local -- --target x86_64-unknown-linux-gnu --bundles appimage
 
 # Build Linux deb package
 build-linux-deb:
-	@echo "🐧📦 Building Linux deb package..."
+	@echo "Building Linux deb package..."
 	cd {{frontend_dir}} && npm install
 	cd {{frontend_dir}} && npm run build
 	cd {{gui_dir}} && cargo tauri build --features voice-local -- --target x86_64-unknown-linux-gnu --bundles deb
 
 package:
-	@echo "📦 Building production app for current platform..."
+	@echo "Building production app for current platform..."
 	cd {{frontend_dir}} && npm install
 	cd {{gui_dir}} && cargo tauri build --features voice-local
 
 doctor:
-	@echo "🩺 Gestura.app Development Environment"
+	@echo "Gestura.app Development Environment"
 	@echo "====================================="
 	@echo ""
-	@echo "🦀 Rust Toolchain:"
+	@echo "Rust Toolchain:"
 	@echo "  Rustc: $(rustc --version)"
 	@echo "  Cargo: $(cargo --version)"
 	@echo "  Just:  $(just --version 2>/dev/null || echo '❌ not found')"
 	@echo ""
-	@echo "🌐 Node.js Environment:"
+	@echo "Node.js Environment:"
 	@echo "  Node: $(node --version 2>/dev/null || echo '❌ not found')"
 	@echo "  npm: $(npm --version 2>/dev/null || echo '❌ not found')"
 	@echo ""
-	@echo "🛠️ Build Tools:"
+	@echo "Build Tools:"
 	@echo "  cmake: $(cmake --version 2>/dev/null | head -1 || echo '❌ not found')"
 	@echo "  make: $(make --version 2>/dev/null | head -1 || echo '❌ not found')"
 	@echo ""
-	@echo "📦 Project Versions:"
+	@echo "Project Versions:"
 	@just --quiet show-version
 	@echo ""
-	@echo "📁 Release Inputs:"
+	@echo "Release Inputs:"
 	@echo "  Cargo.toml: $([ -f 'Cargo.toml' ] && echo '✅ present' || echo '❌ missing')"
 	@echo "  tauri.conf.json: $([ -f '{{gui_dir}}/tauri.conf.json' ] && echo '✅ present' || echo '❌ missing')"
 	@echo "  package.json: $([ -f '{{frontend_dir}}/package.json' ] && echo '✅ present' || echo '❌ missing')"
 	@echo "  release workflow: $([ -f '.github/workflows/release.yml' ] && echo '✅ present' || echo '❌ missing')"
 	@echo ""
-	@echo "🍎 macOS Tools:"
+	@echo "macOS Tools:"
 	@echo "  Xcode: $(xcodebuild -version 2>/dev/null | head -1 || echo '❌ not found')"
 	@echo "  codesign: $(codesign --version 2>/dev/null || echo '❌ not found')"
 	@echo "  hdiutil: $(which hdiutil >/dev/null && echo '✅ available' || echo '❌ not found')"
 	@echo ""
-	@echo "🔐 Code Signing:"
+	@echo "Code Signing:"
 	@if [ -n "$$APPLE_SIGNING_IDENTITY" ]; then echo "  APPLE_SIGNING_IDENTITY: ✅ $$APPLE_SIGNING_IDENTITY"; else echo "  APPLE_SIGNING_IDENTITY: ❌ not set"; fi
 	@if [ -n "$$APPLE_INSTALLER_IDENTITY" ]; then echo "  APPLE_INSTALLER_IDENTITY: ✅ $$APPLE_INSTALLER_IDENTITY"; else echo "  APPLE_INSTALLER_IDENTITY: ❌ not set (PKG signing)"; fi
 	@if [ -n "$$APPLE_TEAM_ID" ]; then echo "  APPLE_TEAM_ID: ✅ $$APPLE_TEAM_ID"; else echo "  APPLE_TEAM_ID: ❌ not set"; fi
 	@echo "  Developer ID Application certs: $(security find-identity -v -p codesigning | grep -c "Developer ID Application" || echo '0')"
 	@echo "  Developer ID Installer certs: $(security find-identity -v -p codesigning | grep -c "Developer ID Installer" || echo '0')"
 	@echo ""
-	@echo "💻 System:"
+	@echo "System:"
 	@echo "  OS: $(uname -a)"
 	@echo "  Architecture: $(uname -m)"
 	@echo ""
-	@echo "📁 Project Status:"
+	@echo "Project Status:"
 	@echo "  Frontend built: $([ -d '{{frontend_dir}}/dist' ] && echo '✅ yes' || echo '❌ no')"
 	@echo "  CLI binary: $([ -f 'target/release/gestura' ] && echo '✅ yes' || echo '❌ no')"
 	@echo "  CLI universal: $([ -f 'target/universal-apple-darwin/release/gestura' ] && echo '✅ yes' || echo '❌ no')"
@@ -421,79 +421,79 @@ doctor:
 
 # Quick development workflow
 quick-dev: clean build-release test
-	@echo "🚀 Quick development build complete!"
+	@echo "Quick development build complete!"
 
 # Full build and test workflow
 full-build: clean build-macos test-macos-app
-	@echo "🎉 Full build and test complete!"
+	@echo "Full build and test complete!"
 
 # Generate CLI man pages using clap_mangen
 generate-man-pages:
-	@echo "📖 Generating CLI man pages..."
+	@echo "Generating CLI man pages..."
 	@mkdir -p dist/man/man1
 	cargo run -p gestura-cli -- completion --generate-man dist/man/man1
-	@echo "📖 Man pages generated in dist/man/man1/"
+	@echo "Man pages generated in dist/man/man1/"
 
 # Release workflow for macOS (signed .app, .pkg, .dmg with CLI in /usr/local/bin)
 release-macos: clean build-macos-signed verify-macos package-macos-signed
-	@echo "🎉 macOS release build complete!"
+	@echo "macOS release build complete!"
 	@echo ""
-	@echo "📁 Release artifacts in dist/macos/:"
+	@echo "Release artifacts in dist/macos/:"
 	@ls -la dist/macos/*.dmg dist/macos/*.pkg 2>/dev/null || echo "  (check dist/macos-* for timestamped directory)"
 	@echo ""
-	@echo "📦 Package contents:"
+	@echo "Package contents:"
 	@echo "  • Gestura.app → /Applications/Gestura.app"
 	@echo "  • gestura CLI → /usr/local/bin/gestura"
 	@echo ""
-	@echo "🔐 Signing status:"
+	@echo "Signing status:"
 	@echo "  • .app: Signed and notarized"
 	@echo "  • .pkg: Signed (if APPLE_INSTALLER_IDENTITY set)"
 	@echo "  • CLI:  Signed"
 
 # Release workflow for Windows
 release-windows: clean build-windows-signed create-windows-msi
-	@echo "🎉 Windows release build complete!"
-	@echo "📁 Check target/x86_64-pc-windows-msvc/release/bundle/msi/ for installer"
+	@echo "Windows release build complete!"
+	@echo "Check target/x86_64-pc-windows-msvc/release/bundle/msi/ for installer"
 
 # Release workflow for Linux
 release-linux: clean build-linux-deb build-linux-appimage
-	@echo "🎉 Linux release build complete!"
-	@echo "📁 Check target/x86_64-unknown-linux-gnu/release/bundle/ for packages"
+	@echo "Linux release build complete!"
+	@echo "Check target/x86_64-unknown-linux-gnu/release/bundle/ for packages"
 
 # Release workflow for all platforms
 release-all: clean
-	@echo "🌍 Building releases for all platforms..."
+	@echo "Building releases for all platforms..."
 	@echo "This will take a while..."
 	just release-macos
 	just release-windows
 	just release-linux
-	@echo "🎉 All platform releases complete!"
+	@echo "All platform releases complete!"
 
 # Test all platforms
 test-all-platforms:
-	@echo "🧪🌍 Testing all platform builds..."
+	@echo "Testing all platform builds..."
 	@if [ -d "target/release/bundle/macos/Gestura.app" ]; then \
 		echo "Testing macOS..."; \
 		just test-macos-app; \
 	else \
-		echo "⚠️ macOS build not found"; \
+		echo "macOS build not found"; \
 	fi
 	@if [ -f "target/x86_64-pc-windows-msvc/release/gestura-gui.exe" ]; then \
 		echo "Testing Windows..."; \
 		just test-windows-app; \
 	else \
-		echo "⚠️ Windows build not found"; \
+		echo "Windows build not found"; \
 	fi
 	@if [ -f "target/x86_64-unknown-linux-gnu/release/gestura-gui" ]; then \
 		echo "Testing Linux..."; \
 		just test-linux-app; \
 	else \
-		echo "⚠️ Linux build not found"; \
+		echo "Linux build not found"; \
 	fi
 
 # Check signing setup for all platforms
 check-all-signing:
-	@echo "🔍🌍 Checking code signing setup for all platforms..."
+	@echo "Checking code signing setup for all platforms..."
 	@echo ""
 	just check-macos-signing
 	@echo ""
@@ -506,14 +506,14 @@ check-all-signing:
 
 # Create macOS DMG and PKG
 package-macos: build-macos
-	@echo "📦🍎 Creating macOS packages (DMG + PKG)..."
+	@echo "Creating macOS packages (DMG + PKG)..."
 	./scripts/package-mac.sh
 
 # Create Windows installer
 package-windows: build-windows
 	@echo "📦🪟 Creating Windows installer..."
 	@if [ ! -f "scripts/package-windows.sh" ]; then \
-		echo "⚠️ Windows packaging script not found, using basic build"; \
+		echo "Windows packaging script not found, using basic build"; \
 		just build-windows; \
 	else \
 		./scripts/package-windows.sh; \
@@ -525,11 +525,11 @@ package-macos-signed:
 	#!/usr/bin/env bash
 	set -euo pipefail
 
-	echo "📦🍎🔐 Creating signed macOS packages (DMG + PKG)..."
+	echo "Creating signed macOS packages (DMG + PKG)..."
 
 	# Version from workspace Cargo.toml (single source of truth)
 	VERSION="{{version}}"
-	echo "📋 Version: ${VERSION}"
+	echo "Version: ${VERSION}"
 
 	# Paths
 	APP_BUNDLE="target/universal-apple-darwin/release/bundle/macos/Gestura.app"
@@ -544,13 +544,13 @@ package-macos-signed:
 
 	# Verify artifacts exist
 	if [ ! -d "${APP_BUNDLE}" ]; then
-		echo "❌ App bundle not found at ${APP_BUNDLE}"
+		echo "App bundle not found at ${APP_BUNDLE}"
 		echo "   Run 'just build-macos-signed' first"
 		exit 1
 	fi
 
 	if [ ! -f "${CLI_BIN}" ]; then
-		echo "❌ CLI binary not found at ${CLI_BIN}"
+		echo "CLI binary not found at ${CLI_BIN}"
 		echo "   Run 'just build-macos-signed' first"
 		exit 1
 	fi
@@ -891,31 +891,31 @@ sign-windows:
 
 # Verify Windows executable signature
 verify-windows:
-	@echo "🔍🪟 Verifying Windows executable signature..."
+	@echo " Verifying Windows executable signature..."
 	@if [ ! -f "target/x86_64-pc-windows-msvc/release/gestura-gui.exe" ]; then \
-		echo "❌ Windows executable not found. Run 'just build-windows' first"; \
+		echo " Windows executable not found. Run 'just build-windows' first"; \
 		exit 1; \
 	fi
-	@echo "⚠️ Windows signature verification requires running on Windows"
+	@echo " Windows signature verification requires running on Windows"
 	@echo "Use: Get-AuthenticodeSignature -FilePath gestura-gui.exe"
 
 # Check Linux signing setup (for AppImage)
 check-linux-signing:
-	@echo "🔍🐧 Checking Linux signing setup..."
+	@echo " Checking Linux signing setup..."
 	@echo "Linux packages typically don't require code signing"
 	@echo "For AppImage signing, you would need:"
 	@echo "  - GPG key for signing"
 	@echo "  - appimagetool with --sign option"
 	@if command -v gpg >/dev/null 2>&1; then \
-		echo "GPG: ✅ available"; \
+		echo "GPG:  available"; \
 		gpg --list-secret-keys --keyid-format LONG | head -5; \
 	else \
-		echo "GPG: ❌ not found"; \
+		echo "GPG:  not found"; \
 	fi
 
 # Distribution
 upload-releases:
-	@echo "☁️ Uploading releases..."
+	@echo " Uploading releases..."
 	./scripts/upload-releases.sh
 
 # Automated UI testing
@@ -927,14 +927,14 @@ test-ui-full:
 
 # Test tray functionality
 test-tray:
-	@echo "🧪📱 Testing system tray functionality..."
+	@echo " Testing system tray functionality..."
 	node scripts/test-tray.js
 
 # Test macOS app bundle (auto-detects universal or regular build)
 test-macos-app:
 	#!/bin/bash
 	set -e
-	echo "🧪🍎 Testing macOS app bundle..."
+	echo " Testing macOS app bundle..."
 	UNIVERSAL_PATH="target/universal-apple-darwin/release/bundle/macos/Gestura.app"
 	REGULAR_PATH="target/release/bundle/macos/Gestura.app"
 	if [ -d "$UNIVERSAL_PATH" ]; then
@@ -944,80 +944,80 @@ test-macos-app:
 	    APP_PATH="$REGULAR_PATH"
 	    echo "Testing regular build"
 	else
-	    echo "❌ App bundle not found. Run 'just build-macos' or 'just build-macos-signed' first"
+	    echo " App bundle not found. Run 'just build-macos' or 'just build-macos-signed' first"
 	    exit 1
 	fi
-	echo "📋 App bundle info:"
+	echo " App bundle info:"
 	ls -la "$APP_PATH/Contents/"
 	echo ""
-	echo "📄 Info.plist:"
+	echo " Info.plist:"
 	plutil -p "$APP_PATH/Contents/Info.plist"
 	echo ""
-	echo "🔐 Signature status:"
-	codesign -dv "$APP_PATH" 2>&1 || echo "❌ App is not signed"
+	echo " Signature status:"
+	codesign -dv "$APP_PATH" 2>&1 || echo " App is not signed"
 	echo ""
-	echo "🚀 Launching app for testing..."
+	echo " Launching app for testing..."
 	open "$APP_PATH"
-	echo "✅ App launched. Check system tray for Gestura icon."
+	echo " App launched. Check system tray for Gestura icon."
 
 # Test Windows executable
 test-windows-app:
-	@echo "🧪🪟 Testing Windows executable..."
+	@echo " Testing Windows executable..."
 	@if [ ! -f "target/x86_64-pc-windows-msvc/release/gestura-gui.exe" ]; then \
-		echo "❌ Windows executable not found. Run 'just build-windows' first"; \
+		echo " Windows executable not found. Run 'just build-windows' first"; \
 		exit 1; \
 	fi
-	@echo "📋 Windows executable info:"
+	@echo " Windows executable info:"
 	@ls -la "target/x86_64-pc-windows-msvc/release/gestura-gui.exe"
 	@echo ""
-	@echo "📦 Available installers:"
+	@echo " Available installers:"
 	@if [ -d "target/x86_64-pc-windows-msvc/release/bundle/msi" ]; then \
-		echo "✅ MSI installer:"; \
+		echo " MSI installer:"; \
 		ls -la "target/x86_64-pc-windows-msvc/release/bundle/msi/"; \
 	else \
-		echo "❌ No MSI installer found"; \
+		echo "No MSI installer found"; \
 	fi
 	@echo ""
-	@echo "⚠️ To test on Windows, copy the executable to a Windows machine"
+	@echo "To test on Windows, copy the executable to a Windows machine"
 
 # Test Linux packages
 test-linux-app:
-	@echo "🧪🐧 Testing Linux packages..."
+	@echo "Testing Linux packages..."
 	@if [ ! -f "target/x86_64-unknown-linux-gnu/release/gestura-gui" ]; then \
-		echo "❌ Linux binary not found. Run 'just build-linux' first"; \
+		echo "Linux binary not found. Run 'just build-linux' first"; \
 		exit 1; \
 	fi
-	@echo "📋 Linux binary info:"
+	@echo "Linux binary info:"
 	@ls -la "target/x86_64-unknown-linux-gnu/release/gestura-gui"
 	@file "target/x86_64-unknown-linux-gnu/release/gestura-gui"
 	@echo ""
-	@echo "📦 Available packages:"
-	@if ls target/x86_64-unknown-linux-gnu/release/bundle/deb/gestura_*_amd64.deb >/dev/null 2>&1; then \
-		echo "✅ DEB package:"; \
+	@echo "Available packages:"
+	@if ls targ/x86_64-unknown-linux-gnu/release/bundle/deb/gestura_*_amd64.deb >/dev/null 2>&1; then \
+		echo "DEB package:"; \
 		ls -la "target/x86_64-unknown-linux-gnu/release/bundle/deb/"; \
 	else \
-		echo "❌ No DEB package found"; \
+		echo " No DEB package found"; \
 	fi
 	@if ls target/x86_64-unknown-linux-gnu/release/bundle/appimage/gestura_*_amd64.AppImage >/dev/null 2>&1; then \
-		echo "✅ AppImage:"; \
+		echo " AppImage:"; \
 		ls -la "target/x86_64-unknown-linux-gnu/release/bundle/appimage/"; \
 	else \
-		echo "❌ No AppImage found"; \
+		echo " No AppImage found"; \
 	fi
 	@echo ""
-	@echo "🚀 Testing binary (if on Linux)..."
+	@echo " Testing binary (if on Linux)..."
 	@if [ "$$(uname)" = "Linux" ]; then \
 		echo "Running quick test..."; \
 		"target/x86_64-unknown-linux-gnu/release/gestura-gui" --version || echo "Binary test failed"; \
 	else \
-		echo "⚠️ Not on Linux - cannot test binary directly"; \
+		echo " Not on Linux - cannot test binary directly"; \
 	fi
 
 # Create DMG for distribution (auto-detects universal or regular build)
 create-dmg:
 	#!/bin/bash
 	set -euo pipefail
-	echo "💿 Creating DMG for distribution..."
+	echo "Creating DMG for distribution..."
 	UNIVERSAL_PATH="target/universal-apple-darwin/release/bundle/macos/Gestura.app"
 	REGULAR_PATH="target/release/bundle/macos/Gestura.app"
 	DMG_FILE_ICON_SOURCE="crates/gestura-gui/icons/icon.png"
@@ -1031,7 +1031,7 @@ create-dmg:
 	    APP_PATH="$REGULAR_PATH"
 	    echo "Using regular build"
 	else
-	    echo "❌ App bundle not found. Run 'just build-macos' or 'just build-macos-signed' first"
+	    echo "App bundle not found. Run 'just build-macos' or 'just build-macos-signed' first"
 	    exit 1
 	fi
 	DMG_NAME="Gestura-{{version}}-macos.dmg"
@@ -1052,7 +1052,7 @@ create-dmg:
 	hdiutil detach "$MOUNT_DIR" >/dev/null
 	hdiutil convert "$TMP_RW_DMG" -ov -format UDZO -o "${DMG_NAME}" >/dev/null
 	"${DMG_FILE_ICON_HELPER}" "${DMG_FILE_ICON_SOURCE}" "${DMG_NAME}"
-	echo "✅ DMG created: ${DMG_NAME}"
+	echo "DMG created: ${DMG_NAME}"
 	ls -lh "${DMG_NAME}"
 
 # Utility Commands
@@ -1060,25 +1060,28 @@ create-dmg:
 
 # Generate app icons from source
 icons:
-	@echo "🎨 Generating app icons..."
+	@echo " Generating app icons..."
 	@if [ ! -f "assets/icon.png" ]; then \
-		echo "❌ Source icon not found at assets/icon.png"; \
+		echo " Source icon not found at assets/icon.png"; \
 		exit 1; \
 	fi
 	./scripts/generate-icons.sh
-	@echo "✅ Icons generated"
+	@echo "Icons generated"
 
 # Versioning Commands
 # ===================
 
-# Set version across the entire workspace (Cargo.toml → tauri.conf.json → package.json)
+# Set version across the entire workspace.
+#
+# Rust crates inherit from [workspace.package].version via `version.workspace = true`,
+# so the crate manifests do not need to be rewritten individually.
 set-version new_version:
 	#!/usr/bin/env bash
 	set -euo pipefail
 
 	V="{{new_version}}"
 	if ! [[ "$V" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9.]+)?$ ]]; then
-		echo "❌ Invalid semver: $V  (expected X.Y.Z or X.Y.Z-pre.N)"
+		echo "Invalid semver: $V  (expected X.Y.Z or X.Y.Z-pre.N)"
 		exit 1
 	fi
 
@@ -1087,19 +1090,24 @@ set-version new_version:
 	# 1) Workspace Cargo.toml (single source of truth)
 	sed -i.bak "s/^version = \".*\"/version = \"${V}\"/" Cargo.toml
 	rm -f Cargo.toml.bak
-	echo "  ✅ Cargo.toml [workspace.package] version = \"${V}\""
+	echo "  Cargo.toml [workspace.package] version = \"${V}\""
+
+	# Verify all Rust workspace packages resolve to the inherited version.
+	WORKSPACE_PACKAGE_COUNT=$(TARGET_VERSION="${V}" python3 -c "import json, os, subprocess, sys; target = os.environ['TARGET_VERSION']; meta = json.loads(subprocess.check_output(['cargo', 'metadata', '--no-deps', '--format-version', '1'], text=True)); workspace = set(meta['workspace_members']); packages = [pkg for pkg in meta['packages'] if pkg['id'] in workspace]; mismatches = [pkg['name'] + '=' + pkg['version'] for pkg in packages if pkg['version'] != target]; mismatches and sys.exit('Workspace version mismatch: ' + ', '.join(sorted(mismatches))); print(len(packages))")
+	echo "  Verified ${WORKSPACE_PACKAGE_COUNT} workspace Cargo packages resolve to \"${V}\""
+	echo "  Rust crates inherit this via version.workspace = true; their manifests are not rewritten individually"
 
 	# 2) tauri.conf.json
 	TAURI_CONF="{{gui_dir}}/tauri.conf.json"
 	sed -i.bak "s/\"version\": \".*\"/\"version\": \"${V}\"/" "$TAURI_CONF"
 	rm -f "${TAURI_CONF}.bak"
-	echo "  ✅ tauri.conf.json version = \"${V}\""
+	echo "  tauri.conf.json version = \"${V}\""
 
 	# 3) Frontend package.json (npm handles this nicely)
 	(cd "{{frontend_dir}}" && npm version "${V}" --no-git-tag-version --allow-same-version >/dev/null 2>&1)
-	echo "  ✅ package.json version = \"${V}\""
+	echo "  package.json / package-lock.json version = \"${V}\""
 
-	echo "🎉 All version sources updated to ${V}"
+	echo " All version sources updated to ${V}"
 
 # Sync tauri.conf.json and package.json to match workspace Cargo.toml version
 sync-versions:
@@ -1107,29 +1115,37 @@ sync-versions:
 	set -euo pipefail
 
 	V="{{version}}"
-	echo "🔄 Syncing versions to workspace value: ${V}"
+	echo " Syncing versions to workspace value: ${V}"
 
 	# tauri.conf.json
 	TAURI_CONF="{{gui_dir}}/tauri.conf.json"
 	sed -i.bak "s/\"version\": \".*\"/\"version\": \"${V}\"/" "$TAURI_CONF"
 	rm -f "${TAURI_CONF}.bak"
-	echo "  ✅ tauri.conf.json → ${V}"
+	echo "   tauri.conf.json → ${V}"
 
 	# Frontend package.json
 	(cd "{{frontend_dir}}" && npm version "${V}" --no-git-tag-version --allow-same-version >/dev/null 2>&1)
-	echo "  ✅ package.json → ${V}"
+	echo "   package.json / package-lock.json → ${V}"
 
-	echo "🎉 All versions in sync"
+	WORKSPACE_PACKAGE_COUNT=$(TARGET_VERSION="${V}" python3 -c "import json, os, subprocess, sys; target = os.environ['TARGET_VERSION']; meta = json.loads(subprocess.check_output(['cargo', 'metadata', '--no-deps', '--format-version', '1'], text=True)); workspace = set(meta['workspace_members']); packages = [pkg for pkg in meta['packages'] if pkg['id'] in workspace]; mismatches = [pkg['name'] + '=' + pkg['version'] for pkg in packages if pkg['version'] != target]; mismatches and sys.exit('Workspace version mismatch: ' + ', '.join(sorted(mismatches))); print(len(packages))")
+	echo "   Verified ${WORKSPACE_PACKAGE_COUNT} workspace Cargo packages resolve to ${V}"
+
+	echo " All versions in sync"
 
 # Show current version from all sources
 show-version:
 	#!/usr/bin/env bash
 	set -euo pipefail
 
-	echo "📋 Version sources:"
+	echo " Version sources:"
 
 	CARGO_V="{{version}}"
 	echo "  Cargo.toml (workspace):   ${CARGO_V}"
+	WORKSPACE_PACKAGE_REPORT=$(TARGET_VERSION="${CARGO_V}" python3 -c "import json, os, subprocess, sys; target = os.environ['TARGET_VERSION']; meta = json.loads(subprocess.check_output(['cargo', 'metadata', '--no-deps', '--format-version', '1'], text=True)); workspace = set(meta['workspace_members']); packages = sorted((pkg['name'], pkg['version']) for pkg in meta['packages'] if pkg['id'] in workspace); mismatches = [name + '=' + version for name, version in packages if version != target]; mismatches and sys.exit('Workspace version mismatch: ' + ', '.join(sorted(mismatches))); print('\n'.join('    - ' + name + ': ' + version for name, version in packages)); print('COUNT=' + str(len(packages)))")
+	WORKSPACE_CRATE_LINES=$(printf '%s\n' "${WORKSPACE_PACKAGE_REPORT}" | sed '/^COUNT=/d')
+	WORKSPACE_PACKAGE_TOTAL=$(printf '%s\n' "${WORKSPACE_PACKAGE_REPORT}" | awk -F= '/^COUNT=/{print $2}')
+	echo "  Workspace Cargo crates:   ${WORKSPACE_PACKAGE_TOTAL} packages inherit ${CARGO_V}"
+	printf '%s\n' "${WORKSPACE_CRATE_LINES}"
 
 	TAURI_V=$(python3 -c "import json; print(json.load(open('{{gui_dir}}/tauri.conf.json'))['version'])")
 	echo "  tauri.conf.json:          ${TAURI_V}"
@@ -1138,9 +1154,9 @@ show-version:
 	echo "  package.json:             ${PKG_V}"
 
 	if [ "$CARGO_V" = "$TAURI_V" ] && [ "$CARGO_V" = "$PKG_V" ]; then
-		echo "  ✅ All versions match"
+		echo "   All versions match"
 	else
-		echo "  ⚠️  Version drift detected! Run 'just sync-versions' to fix."
+		echo "    Version drift detected! Run 'just sync-versions' to fix."
 		exit 1
 	fi
 
