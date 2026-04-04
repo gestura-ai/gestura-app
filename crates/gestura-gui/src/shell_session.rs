@@ -9,14 +9,17 @@ use std::fs;
 use std::path::Path;
 use std::path::PathBuf;
 use std::process::Command;
-use std::sync::OnceLock;
+use std::sync::{LazyLock, Mutex};
 use uuid::Uuid;
 
 /// Cached result of the CLI presence check.
 ///
-/// Populated on first access via [`is_cli_installed_cached`]. Subsequent calls
-/// return immediately without spawning any child processes.
-static CLI_INSTALLED_CACHE: OnceLock<bool> = OnceLock::new();
+/// Populated on first access via [`is_cli_installed_cached`]. The cache can be
+/// refreshed or invalidated after a tray-triggered install so the UI can react
+/// without requiring a full app restart.
+static CLI_INSTALLED_CACHE: LazyLock<Mutex<Option<bool>>> = LazyLock::new(|| Mutex::new(None));
+
+const RELEASE_REPO: &str = "gestura-ai/gestura-app";
 
 /// Result type for shell session operations
 pub type ShellResult<T> = Result<T, ShellSessionError>;
@@ -289,23 +292,82 @@ pub fn is_cli_installed() -> bool {
     find_gestura_cli().is_some()
 }
 
+fn cache_cli_installed_result(result: bool, reason: &str) -> bool {
+    *CLI_INSTALLED_CACHE.lock().unwrap() = Some(result);
+    tracing::info!(
+        cli_installed = result,
+        reason,
+        "Gestura CLI presence check cached"
+    );
+    result
+}
+
 /// Check if the Gestura CLI is installed, using a process-lifetime cache.
 ///
 /// The first call performs the filesystem / PATH probe and stores the result in
-/// a [`OnceLock`]. All subsequent calls return the cached value instantly with
-/// no I/O or process spawning.
+/// a process-global cache. Subsequent calls return the cached value instantly
+/// with no I/O or process spawning until the cache is explicitly refreshed.
 ///
 /// Use this at startup and in the tray / UI to decide whether to surface
 /// CLI-dependent features.
 pub fn is_cli_installed_cached() -> bool {
-    *CLI_INSTALLED_CACHE.get_or_init(|| {
-        let result = is_cli_installed();
-        tracing::info!(
-            cli_installed = result,
-            "Gestura CLI presence check (cached for process lifetime)"
-        );
-        result
-    })
+    if let Some(result) = *CLI_INSTALLED_CACHE.lock().unwrap() {
+        return result;
+    }
+
+    cache_cli_installed_result(is_cli_installed(), "initial")
+}
+
+/// Re-run the CLI presence probe and overwrite the cached result.
+pub fn refresh_cli_installed_cache() -> bool {
+    cache_cli_installed_result(is_cli_installed(), "refresh")
+}
+
+/// Clear the cached CLI presence result.
+pub fn invalidate_cli_installed_cache() {
+    *CLI_INSTALLED_CACHE.lock().unwrap() = None;
+    tracing::info!("Invalidated Gestura CLI presence cache");
+}
+
+fn release_install_script_url(tag: &str, script_name: &str) -> String {
+    format!("https://raw.githubusercontent.com/{RELEASE_REPO}/{tag}/install/{script_name}")
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+fn build_cli_installer_command(tag: &str) -> String {
+    let script_url = release_install_script_url(tag, "install.sh");
+    let quoted_url = sh_escape_single_quotes(&script_url);
+    let quoted_tag = sh_escape_single_quotes(tag);
+
+    format!(
+        "(command -v curl >/dev/null 2>&1 && curl -fsSL '{quoted_url}' || wget -qO- '{quoted_url}') | bash -s -- --mode cli --tag '{quoted_tag}' --require-verify"
+    )
+}
+
+#[cfg(target_os = "windows")]
+fn build_cli_installer_command(tag: &str) -> String {
+    let script_url = release_install_script_url(tag, "install.ps1");
+    let quoted_url = script_url.replace('"', "\"\"");
+    let quoted_tag = tag.replace('"', "\"\"");
+
+    format!(
+        "powershell.exe -NoExit -ExecutionPolicy Bypass -Command \"$ProgressPreference = 'SilentlyContinue'; $script = Invoke-WebRequest -UseBasicParsing '{quoted_url}'; Invoke-Expression $script.Content; Install-Gestura -Mode cli -Tag '{quoted_tag}' -RequireVerify\""
+    )
+}
+
+/// Open a platform-native terminal that downloads and installs the Gestura CLI.
+///
+/// The install flow is pinned to the provided release tag so GUI-only installs
+/// can fetch the matching CLI version from the same GitHub Release.
+pub fn open_cli_installer_session_for_tag(tag: &str) -> ShellResult<()> {
+    let mut config =
+        ShellSessionConfig::default().with_initial_command(build_cli_installer_command(tag));
+
+    if let Some(home) = dirs::home_dir() {
+        config = config.with_working_directory(home);
+    }
+
+    open_shell_session(config)
 }
 
 /// Open a shell session in the platform's default terminal
@@ -747,5 +809,27 @@ mod tests {
             format_gestura_resume_command(&cli_path, "00000000-0000-0000-0000-000000000000");
 
         assert!(command.starts_with("'/tmp/Gestura Dev/gestura' agent --resume --session "));
+    }
+
+    #[test]
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    fn test_build_cli_installer_command_uses_tagged_unix_install_script() {
+        let command = build_cli_installer_command("v0.5.0");
+
+        assert!(command.contains(
+            "raw.githubusercontent.com/gestura-ai/gestura-app/v0.5.0/install/install.sh"
+        ));
+        assert!(command.contains("--mode cli --tag 'v0.5.0' --require-verify"));
+    }
+
+    #[test]
+    #[cfg(target_os = "windows")]
+    fn test_build_cli_installer_command_uses_tagged_windows_install_script() {
+        let command = build_cli_installer_command("v0.5.0");
+
+        assert!(command.contains(
+            "raw.githubusercontent.com/gestura-ai/gestura-app/v0.5.0/install/install.ps1"
+        ));
+        assert!(command.contains("Install-Gestura -Mode cli -Tag 'v0.5.0' -RequireVerify"));
     }
 }

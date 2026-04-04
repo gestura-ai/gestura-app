@@ -328,21 +328,21 @@ fn build_tray_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
     )?;
     let config = MenuItem::with_id(app, "config", "Configuration", true, Option::<&str>::None)?;
 
-    // "Agent Shell" creates a new session and opens a terminal for it.
-    // Only shown when the Gestura CLI binary is present on this machine — users
-    // who install the GUI only won't have the CLI available.
+    // Keep the shell section visible even on GUI-only installs.
+    // When the CLI is missing, we surface a same-version installer entry instead
+    // of hiding the capability entirely.
     let cli_installed = crate::shell_session::is_cli_installed_cached();
-    let new_shell = if cli_installed {
-        Some(MenuItem::with_id(
+    let shell_action = if cli_installed {
+        MenuItem::with_id(app, "new_shell", "Agent Shell", true, Option::<&str>::None)
+    } else {
+        MenuItem::with_id(
             app,
-            "new_shell",
-            "Agent Shell",
+            "download_cli",
+            "Download CLI",
             true,
             Option::<&str>::None,
-        )?)
-    } else {
-        None
-    };
+        )
+    }?;
 
     // DevTools entries are debug-only so release builds don't surface internal tooling.
     #[cfg(debug_assertions)]
@@ -368,11 +368,7 @@ fn build_tray_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
     // Separators
     let separator1 = PredefinedMenuItem::separator(app)?;
     let separator2 = PredefinedMenuItem::separator(app)?;
-    let shell_separator = if cli_installed {
-        Some(PredefinedMenuItem::separator(app)?)
-    } else {
-        None
-    };
+    let shell_separator = PredefinedMenuItem::separator(app)?;
     #[cfg(debug_assertions)]
     let separator3 = PredefinedMenuItem::separator(app)?;
 
@@ -385,12 +381,8 @@ fn build_tray_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
     menu.append(&new_agent)?;
     menu.append(&open_agent_project)?;
     menu.append(&sessions_menu)?;
-    if let Some(ref separator) = shell_separator {
-        menu.append(separator)?;
-    }
-    if let Some(ref shell_item) = new_shell {
-        menu.append(shell_item)?;
-    }
+    menu.append(&shell_separator)?;
+    menu.append(&shell_action)?;
     menu.append(&separator2)?;
     menu.append(&config)?;
 
@@ -646,6 +638,9 @@ fn handle_menu_event(app: &AppHandle, event: tauri::menu::MenuEvent) {
                 }
             }
         }
+        "download_cli" => {
+            launch_cli_installer(app);
+        }
         #[cfg(debug_assertions)]
         "devtools_config" => {
             tracing::info!("Opening DevTools for config window from tray menu");
@@ -676,6 +671,66 @@ fn handle_menu_event(app: &AppHandle, event: tauri::menu::MenuEvent) {
             tracing::debug!("Unhandled menu event: {:?}", event.id());
         }
     }
+}
+
+fn launch_cli_installer(app: &AppHandle) {
+    let release_tag = format!("v{}", app.package_info().version);
+    tracing::info!(release_tag = %release_tag, "Launching tray CLI installer");
+
+    match crate::shell_session::open_cli_installer_session_for_tag(&release_tag) {
+        Ok(()) => {
+            show_system_notification(
+                app,
+                "CLI Installer Started",
+                &format!(
+                    "Downloading and installing Gestura CLI {} in a new terminal window.",
+                    release_tag
+                ),
+            );
+            monitor_cli_installation(app.clone());
+        }
+        Err(error) => {
+            tracing::error!(release_tag = %release_tag, error = %error, "Failed to launch CLI installer");
+            show_system_notification(
+                app,
+                "CLI Installer Error",
+                &format!("Failed to start CLI installer: {}", error),
+            );
+        }
+    }
+}
+
+fn monitor_cli_installation(app: AppHandle) {
+    crate::shell_session::invalidate_cli_installed_cache();
+
+    tauri::async_runtime::spawn(async move {
+        for attempt in 1..=24 {
+            tokio::time::sleep(Duration::from_secs(5)).await;
+
+            if crate::shell_session::refresh_cli_installed_cache() {
+                tracing::info!(
+                    attempt,
+                    "Detected Gestura CLI installation after tray-triggered install"
+                );
+                if let Err(error) = rebuild_tray_menu(&app) {
+                    tracing::error!(error = %error, "Failed to rebuild tray menu after CLI install");
+                }
+
+                let _ = app.emit(
+                    "cli-installed-changed",
+                    serde_json::json!({ "installed": true }),
+                );
+                show_system_notification(
+                    &app,
+                    "CLI Ready",
+                    "Gestura CLI is installed. Agent Shell is now available from the tray.",
+                );
+                return;
+            }
+        }
+
+        tracing::info!("CLI installer monitor timed out before detecting a new CLI binary");
+    });
 }
 
 fn open_agent_project_picker(app: &AppHandle) {
