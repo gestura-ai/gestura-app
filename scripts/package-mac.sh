@@ -448,7 +448,6 @@ create_dmg() {
   hdiutil detach "$mount_dir" >/dev/null
 
   hdiutil convert "$tmp_rw_dmg" -ov -format UDZO -o "$final_dmg" >/dev/null
-  "$DMG_FILE_ICON_HELPER" "$DMG_FILE_ICON_SOURCE" "$final_dmg"
 
   if [ -n "$SIGNING_IDENTITY" ]; then
     codesign --force --options runtime --timestamp \
@@ -459,6 +458,11 @@ create_dmg() {
     xcrun stapler staple "$final_dmg"
     xcrun stapler validate "$final_dmg"
   fi
+
+  # Finder custom icons are stored in macOS metadata. Apply the final DMG file
+  # icon after any codesign/notarization/stapling steps so they cannot rewrite
+  # the container and discard the branded Finder icon.
+  "$DMG_FILE_ICON_HELPER" "$DMG_FILE_ICON_SOURCE" "$final_dmg"
 
   log_info "Wrote ${final_dmg}"
 }

@@ -244,6 +244,51 @@ jobs:
           path: dist/release/*
           if-no-files-found: error
 
+      # Finder custom icons on DMG/PKG files are stored in macOS metadata.
+      # Upload the published macOS assets directly from the macOS runner so the
+      # later artifact round-trip through Ubuntu does not become the source of
+      # truth for release uploads.
+      - name: Upload macOS artifacts directly to GitHub release
+        if: needs.prepare.outputs.publish == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_SHA: ${{ needs.prepare.outputs.release_sha }}
+          PRERELEASE: ${{ needs.prepare.outputs.prerelease }}
+        run: |
+          set -euo pipefail
+
+          title="Gestura ${TAG}"
+          prerelease_flag=()
+          if [ "$PRERELEASE" = "true" ]; then
+            prerelease_flag+=(--prerelease)
+          fi
+
+          mac_release_files=()
+          while IFS= read -r -d '' release_file; do
+            mac_release_files+=("$release_file")
+          done < <(find dist/release -maxdepth 1 -type f \( \
+            -name '*.dmg' -o \
+            -name '*.pkg' -o \
+            -name 'gestura-cli-*-macos-*.tar.gz' \
+          \) -print0 | sort -z)
+
+          [ ${#mac_release_files[@]} -gt 0 ] || {
+            echo "No macOS release files found under dist/release" >&2
+            exit 1
+          }
+
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" "${mac_release_files[@]}" --clobber
+          else
+            gh release create "$TAG" \
+              --target "$RELEASE_SHA" \
+              --title "$title" \
+              --generate-notes \
+              --draft \
+              "${prerelease_flag[@]}"
+            gh release upload "$TAG" "${mac_release_files[@]}" --clobber
+          fi
+
   build-linux:
     name: Build Linux release artifacts
     needs: prepare
@@ -525,6 +570,14 @@ jobs:
 
           release_files=()
           while IFS= read -r -d '' release_file; do
+            case "$(basename "$release_file")" in
+              *.dmg|*.pkg|gestura-cli-*-macos-*.tar.gz)
+                # These are uploaded from the macOS runner above to avoid
+                # overwriting them with artifact-round-tripped copies.
+                echo "Skipping macOS release artifact already uploaded from the macOS runner: $(basename "$release_file")"
+                continue
+                ;;
+            esac
             release_files+=("$release_file")
           done < <(find dist/release -maxdepth 1 -type f -print0 | sort -z)
           [ ${#release_files[@]} -gt 0 ] || {
