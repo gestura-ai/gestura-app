@@ -212,6 +212,7 @@ jobs:
         run: |
           set -euo pipefail
           app_path="target/universal-apple-darwin/release/bundle/macos/Gestura.app"
+          dmg_path="dist/release/Gestura-${TAG}-universal.dmg"
           pkg_path="dist/release/Gestura-${TAG}-universal.pkg"
           cli_path="target/universal-apple-darwin/release/gestura"
           cli_archive="dist/release/gestura-cli-${TAG}-macos-universal.tar.gz"
@@ -221,13 +222,16 @@ jobs:
           fi
 
           [ -d "$app_path" ]
+          [ -f "$dmg_path" ]
           [ -f "$pkg_path" ]
           [ -f "$cli_path" ]
           [ -f "$cli_archive" ]
 
           codesign --verify --deep --strict --verbose=2 "$app_path"
           spctl --assess --type exec --verbose=2 "$app_path"
+          hdiutil verify "$dmg_path"
           xcrun stapler validate "$app_path"
+          xcrun stapler validate "$dmg_path"
           pkgutil --check-signature "$pkg_path"
           codesign --verify --deep --strict --verbose=2 "$cli_path"
           tar -tzf "$cli_archive" | grep -Fx 'gestura'

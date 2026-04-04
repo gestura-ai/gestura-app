@@ -7,7 +7,8 @@
 #  - Build GUI frontend (Vite)
 #  - Build a universal CLI binary and stage it under crates/gestura-gui/binaries/
 #    so Tauri can bundle it
-#  - Run `cargo tauri build` to produce the app bundle
+#  - Run `cargo tauri build` to produce the signed app bundle
+#  - Create a DMG for drag-and-drop installation
 #  - Create a PKG that installs:
 #      - Gestura.app to /Applications
 #      - gestura CLI to /usr/local/bin/gestura
@@ -17,7 +18,6 @@
 # Notes:
 #  - This script does NOT auto-install dependencies (no brew install). It will
 #    detect missing commands and fail with an actionable message.
-#  - DMG output is optional and not part of the canonical "full installer" set.
 
 set -euo pipefail
 
@@ -32,6 +32,10 @@ CLI_PACKAGE="gestura-cli"
 CLI_DIR="crates/gestura-cli"
 PKG_ICON_SOURCE="${GUI_DIR}/icons/icon.png"
 PKG_ICON_HELPER="${SCRIPT_DIR}/packaging/set-macos-custom-icon.sh"
+DMG_FILE_ICON_SOURCE="${GUI_DIR}/icons/icon.png"
+DMG_FILE_ICON_HELPER="${SCRIPT_DIR}/packaging/set-macos-custom-icon.sh"
+DMG_VOLUME_ICON_SOURCE="${GUI_DIR}/icons/icon.icns"
+DMG_VOLUME_ICON_HELPER="${SCRIPT_DIR}/packaging/set-macos-volume-icon.sh"
 
 DIST_DIR_DEFAULT="dist/macos"
 FEATURES_DEFAULT="voice-local"
@@ -86,6 +90,8 @@ log_info "Starting macOS packaging for ${APP_DISPLAY_NAME} (${TAG})"
 # check_prerequisites verifies required tools are installed.
 check_prerequisites() {
   require_cmd cargo
+  require_cmd ditto
+  require_cmd hdiutil
   require_cmd npm
   require_cmd lipo
   require_cmd pkgbuild
@@ -97,6 +103,10 @@ check_prerequisites() {
 
   [ -f "$PKG_ICON_SOURCE" ] || die "PKG icon source not found at ${PKG_ICON_SOURCE}"
   [ -x "$PKG_ICON_HELPER" ] || die "PKG icon helper is missing or not executable: ${PKG_ICON_HELPER}"
+  [ -f "$DMG_FILE_ICON_SOURCE" ] || die "DMG file icon source not found at ${DMG_FILE_ICON_SOURCE}"
+  [ -f "$DMG_VOLUME_ICON_SOURCE" ] || die "DMG volume icon source not found at ${DMG_VOLUME_ICON_SOURCE}"
+  [ -x "$DMG_FILE_ICON_HELPER" ] || die "DMG file icon helper is missing or not executable: ${DMG_FILE_ICON_HELPER}"
+  [ -x "$DMG_VOLUME_ICON_HELPER" ] || die "DMG volume icon helper is missing or not executable: ${DMG_VOLUME_ICON_HELPER}"
 
   if [ -n "$SIGNING_IDENTITY" ]; then
     require_cmd codesign
@@ -402,6 +412,57 @@ apply_pkg_icon() {
   "$PKG_ICON_HELPER" "$PKG_ICON_SOURCE" "$pkg_path"
 }
 
+# create_dmg builds a branded DMG that contains Gestura.app and an Applications symlink.
+create_dmg() {
+  local out_dir="$1"
+  local app_path
+  app_path="$(find_app_bundle)"
+
+  local final_dmg="${out_dir}/${APP_DISPLAY_NAME}-${TAG}-universal.dmg"
+  local staging_dir
+  local tmp_rw_dmg
+  local mount_dir
+
+  staging_dir="$(mktemp -d "${TMPDIR:-/tmp}/gestura-dmg-stage.XXXXXX")"
+  tmp_rw_dmg="$(mktemp "${TMPDIR:-/tmp}/gestura-dmg.XXXXXX.dmg")"
+  mount_dir="$(mktemp -d "${TMPDIR:-/tmp}/gestura-dmg-mount.XXXXXX")"
+
+  cleanup_dmg_artifacts() {
+    hdiutil detach "$mount_dir" >/dev/null 2>&1 || true
+    rm -rf -- "$mount_dir" "$tmp_rw_dmg" "$staging_dir"
+  }
+  trap cleanup_dmg_artifacts RETURN
+
+  ditto "$app_path" "${staging_dir}/${APP_DISPLAY_NAME}.app"
+  ln -s /Applications "${staging_dir}/Applications"
+
+  rm -f "$final_dmg"
+
+  hdiutil create \
+    -volname "$APP_DISPLAY_NAME" \
+    -srcfolder "$staging_dir" \
+    -ov -format UDRW "$tmp_rw_dmg" >/dev/null
+
+  hdiutil attach "$tmp_rw_dmg" -mountpoint "$mount_dir" -noverify -noautoopen >/dev/null
+  "$DMG_VOLUME_ICON_HELPER" "$DMG_VOLUME_ICON_SOURCE" "$mount_dir"
+  hdiutil detach "$mount_dir" >/dev/null
+
+  hdiutil convert "$tmp_rw_dmg" -ov -format UDZO -o "$final_dmg" >/dev/null
+  "$DMG_FILE_ICON_HELPER" "$DMG_FILE_ICON_SOURCE" "$final_dmg"
+
+  if [ -n "$SIGNING_IDENTITY" ]; then
+    codesign --force --options runtime --timestamp \
+      --sign "$SIGNING_IDENTITY" \
+      "$final_dmg"
+
+    submit_for_notarization "$final_dmg"
+    xcrun stapler staple "$final_dmg"
+    xcrun stapler validate "$final_dmg"
+  fi
+
+  log_info "Wrote ${final_dmg}"
+}
+
 # create_pkg builds a PKG that installs the GUI + CLI.
 create_pkg() {
   local out_dir="$1"
@@ -475,6 +536,7 @@ main() {
 
   local out_dir
   out_dir="$(ensure_fresh_dist_dir "$DIST_DIR")"
+  create_dmg "$out_dir"
   create_pkg "$out_dir"
   package_cli_archive "$out_dir"
 

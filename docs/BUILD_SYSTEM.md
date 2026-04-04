@@ -37,7 +37,7 @@ cd crates/gestura-gui && cargo tauri build --target x86_64-apple-darwin
 ## Canonical Release Matrix
 
 ### macOS
-- **Public release target**: universal macOS bundle/PKG
+- **Public release target**: universal macOS DMG + PKG
 - **Build inputs**: `x86_64-apple-darwin` + `aarch64-apple-darwin`
 - **Release features**: `voice-local,macos-permissions`
 
@@ -64,7 +64,7 @@ The machine-readable source of truth for this matrix is `release/release-definit
 - **Submission model**: downstream manifest updates; this repository currently validates the assets but does not submit to Winget automatically
 
 ### Direct downloads (GitHub Releases)
-- **macOS**: `Gestura-${TAG}-universal.pkg`
+- **macOS**: `Gestura-${TAG}-universal.dmg`, `Gestura-${TAG}-universal.pkg`
 - **Linux**: `gestura-${TAG}-linux-x86_64.deb`, `gestura-${TAG}-linux-x86_64.rpm`
 - **Windows**: `Gestura-${TAG}-windows-x86_64.msi`
 - **Companion metadata**: `gestura-${TAG}-SHA256SUMS.txt`, `gestura-${TAG}-release-manifest.json`

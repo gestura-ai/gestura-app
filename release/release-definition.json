@@ -21,6 +21,7 @@
         "macos-permissions"
       ],
       "required_assets": [
+        "Gestura-{tag}-universal.dmg",
         "Gestura-{tag}-universal.pkg",
         "gestura-cli-{tag}-macos-universal.tar.gz"
       ],
