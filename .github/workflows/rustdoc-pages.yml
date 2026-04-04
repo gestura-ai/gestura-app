@@ -101,24 +101,78 @@ jobs:
       - name: Prepare Rustdoc artifact
         run: |
           touch target/doc/.nojekyll
-          if [ -f target/doc/index.html ]; then
-            mv target/doc/index.html target/doc/workspace-index.html
-          fi
-          cat > target/doc/index.html <<'HTML'
-          <!doctype html>
+          python3 <<'PYTHON'
+          from pathlib import Path
+
+          doc_dir = Path("target/doc")
+          packages_path = Path("rustdoc-packages.txt")
+          packages = [
+              line.strip()
+              for line in packages_path.read_text(encoding="utf-8").splitlines()
+              if line.strip()
+          ]
+
+          crate_rows = []
+          for package in packages:
+              crate_name = package.replace("-", "_")
+              crate_index = doc_dir / crate_name / "index.html"
+              if crate_index.is_file():
+                  crate_rows.append(
+                      f'<li><a href="./{crate_name}/index.html">{crate_name}</a></li>'
+                  )
+
+          workspace_index_html = f"""<!doctype html>
           <html lang="en">
             <head>
               <meta charset="utf-8" />
-              <meta http-equiv="refresh" content="0; url=./gestura_core/index.html" />
               <meta name="viewport" content="width=device-width, initial-scale=1" />
-              <title>Gestura Rustdoc</title>
+              <title>Gestura Rustdoc Workspace Index</title>
+              <style>
+                :root {{ color-scheme: light dark; }}
+                body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; margin: 2rem auto; max-width: 52rem; line-height: 1.6; padding: 0 1rem; }}
+                h1, h2 {{ line-height: 1.25; }}
+                code {{ font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }}
+              </style>
             </head>
             <body>
-              <p>Redirecting to <a href="./gestura_core/index.html">gestura_core/index.html</a>…</p>
-              <p>Need the full crate list? Open <a href="./workspace-index.html">workspace-index.html</a>.</p>
+              <h1>Gestura Rustdoc Workspace Index</h1>
+              <p>Published crate docs for the Gestura core workspace.</p>
+              <p><a href="./index.html">Back to landing page</a></p>
+              <h2>Published crates</h2>
+              <ul>
+                {''.join(crate_rows) or '<li>No crate docs were found in this artifact.</li>'}
+              </ul>
             </body>
           </html>
-          HTML
+          """
+
+          landing_html = """<!doctype html>
+          <html lang="en">
+            <head>
+              <meta charset="utf-8" />
+              <meta name="viewport" content="width=device-width, initial-scale=1" />
+              <title>Gestura Rustdoc</title>
+              <style>
+                :root { color-scheme: light dark; }
+                body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; margin: 2rem auto; max-width: 52rem; line-height: 1.6; padding: 0 1rem; }
+                h1, h2 { line-height: 1.25; }
+                code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+              </style>
+            </head>
+            <body>
+              <h1>Gestura Rustdoc</h1>
+              <p>The published API docs for Gestura’s core Rust workspace are available below.</p>
+              <ul>
+                <li><a href="./gestura_core/index.html">Open <code>gestura_core</code></a></li>
+                <li><a href="./workspace-index.html">Open the full workspace crate index</a></li>
+              </ul>
+            </body>
+          </html>
+          """
+
+          (doc_dir / "workspace-index.html").write_text(workspace_index_html, encoding="utf-8")
+          (doc_dir / "index.html").write_text(landing_html, encoding="utf-8")
+          PYTHON
 
       - name: Write build summary
         run: |
