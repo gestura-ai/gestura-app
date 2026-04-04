@@ -427,6 +427,11 @@ create_pkg() {
     --install-location "/" \
     "$unsigned_pkg"
 
+  # pkgroot is no longer needed after pkgbuild; remove it so the dist dir
+  # only contains releasable files and the GitHub upload step doesn't choke
+  # on trying to upload a directory as a release asset.
+  rm -rf "$pkgroot"
+
   local final_pkg="${out_dir}/${APP_DISPLAY_NAME}-${TAG}-universal.pkg"
   if [ -n "$INSTALLER_IDENTITY" ]; then
     productsign --sign "$INSTALLER_IDENTITY" "$unsigned_pkg" "$final_pkg"
