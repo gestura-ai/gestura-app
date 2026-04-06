@@ -12,8 +12,6 @@ Current development on the `dev` branch is tracking the `0.8.0` release line as 
 ### Changed
 
 - Updated the changelog to reflect `0.8.0` as the current `dev` branch release line.
-- Gestura.app is now documented as an **intent-first AI assistant**: voice, chat, Haptic Harmony ring gestures, and future input adapters are treated as sources of the same normalized intent flow rather than as separate product paths.
-- The current implementation continues to preserve the Core-First workflow while clarifying that modality capture feeds one shared execution model across GUI, CLI, and automation surfaces.
 
 ### Fixed
 
