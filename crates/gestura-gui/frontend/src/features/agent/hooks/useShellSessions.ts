@@ -272,29 +272,29 @@ export function useShellSessions(
     }
 
     async function setup(): Promise<void> {
-      await safeListen('agent-stream-shell-session-lifecycle', (event) => {
-        const payload = accept<Record<string, unknown>>(event.payload);
-        if (!payload) return;
-        const activityAt = markActivity();
+      await Promise.all([
+        safeListen('agent-stream-shell-session-lifecycle', (event) => {
+          const payload = accept<Record<string, unknown>>(event.payload);
+          if (!payload) return;
+          const activityAt = markActivity();
 
-        updateShells((current) => applyShellSessionLifecyclePayload(current, payload, activityAt));
-      });
+          updateShells((current) => applyShellSessionLifecyclePayload(current, payload, activityAt));
+        }),
+        safeListen('agent-stream-shell-lifecycle', (event) => {
+          const payload = accept<Record<string, unknown>>(event.payload);
+          if (!payload) return;
+          const activityAt = markActivity();
 
-      await safeListen('agent-stream-shell-lifecycle', (event) => {
-        const payload = accept<Record<string, unknown>>(event.payload);
-        if (!payload) return;
-        const activityAt = markActivity();
+          updateShells((current) => applyShellLifecyclePayload(current, payload, activityAt));
+        }),
+        safeListen('agent-stream-shell-output', (event) => {
+          const payload = accept<Record<string, unknown>>(event.payload);
+          if (!payload) return;
+          const activityAt = markActivity();
 
-        updateShells((current) => applyShellLifecyclePayload(current, payload, activityAt));
-      });
-
-      await safeListen('agent-stream-shell-output', (event) => {
-        const payload = accept<Record<string, unknown>>(event.payload);
-        if (!payload) return;
-        const activityAt = markActivity();
-
-        updateShells((current) => applyShellOutputPayload(current, payload, activityAt));
-      });
+          updateShells((current) => applyShellOutputPayload(current, payload, activityAt));
+        }),
+      ]);
     }
 
     void setup();

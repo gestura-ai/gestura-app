@@ -36,11 +36,12 @@ function renderMessageList(
   tasks: TaskHierarchy = [],
   onRevealShellSession = vi.fn(),
   userScrolledUp = false,
+  streamingMessage: AgentMessage | null = null,
 ) {
   render(
     <MessageList
       messages={messages}
-      streamingMessage={null}
+      streamingMessage={streamingMessage}
       tasks={tasks}
       userScrolledUp={userScrolledUp}
       onScrollChange={vi.fn()}
@@ -52,6 +53,23 @@ function renderMessageList(
 }
 
 describe('MessageList', () => {
+  it('renders a neutral streaming placeholder instead of a fake thought block', () => {
+    const streamingMessage: AgentMessage = {
+      id: 'streaming-placeholder',
+      role: 'assistant',
+      rawMarkdown: '',
+      isStreaming: true,
+      timestamp: Date.now(),
+      blocks: [],
+    };
+
+    renderMessageList([], [], vi.fn(), false, streamingMessage);
+
+    expect(screen.getByTestId('message-streaming-placeholder')).toBeInTheDocument();
+    expect(screen.queryByText('Thought Process')).not.toBeInTheDocument();
+    expect(screen.queryByText('Thinking Process…')).not.toBeInTheDocument();
+  });
+
   it('scrolls to the latest content with a single click on the new-messages badge', () => {
     const message: AgentMessage = {
       id: 'message-scroll',

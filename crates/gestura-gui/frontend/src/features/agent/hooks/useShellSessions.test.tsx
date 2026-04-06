@@ -85,4 +85,20 @@ describe('useShellSessions', () => {
 
     await waitFor(() => expect(getSessionActivityLogMock).toHaveBeenCalledWith('session-1'));
   });
+
+  it('registers shell output listeners even if the first shell listener is still pending', async () => {
+    let resolveFirstListener: (() => void) | null = null;
+    listenMock.mockImplementationOnce(() => new Promise((resolve) => {
+      resolveFirstListener = () => resolve(() => undefined);
+    }));
+
+    renderHook(() => useShellSessions('session-1'));
+
+    await waitFor(() => {
+      expect((listeners.get('agent-stream-shell-output') ?? []).length).toBeGreaterThan(0);
+    });
+
+    resolveFirstListener?.();
+    await Promise.resolve();
+  });
 });

@@ -63,6 +63,18 @@ const TextBlockView: React.FC<{
   />
 );
 
+const StreamingPlaceholderView: React.FC = () => (
+  <div
+    className="message-streaming-placeholder"
+    data-testid="message-streaming-placeholder"
+    aria-label="Agent is responding"
+  >
+    <span className="message-streaming-placeholder-dot" />
+    <span className="message-streaming-placeholder-dot" />
+    <span className="message-streaming-placeholder-dot" />
+  </div>
+);
+
 function toolStatusLabel(block: ToolBlock): string {
   if (block.status === 'running') return 'Running…';
   if (block.status === 'executing') return 'Executing…';
@@ -383,10 +395,11 @@ const MessageView: React.FC<{
 
   return (
     <div
-      className={`message ${message.role}${message.isStreaming ? ' streaming' : ''}`}
+      className={`message ${message.role}${message.isStreaming ? ' streaming' : ''}${message.isStreaming && message.blocks.length === 0 ? ' empty-streaming' : ''}`}
       data-raw-markdown={message.rawMarkdown}
     >
       <div className="message-content">
+        {message.isStreaming && message.blocks.length === 0 && <StreamingPlaceholderView />}
         {message.blocks.map((block: MsgBlock, index) => {
           const previousBlock = message.blocks[index - 1];
           const nextBlock = message.blocks[index + 1];

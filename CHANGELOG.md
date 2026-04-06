@@ -14,6 +14,7 @@ Current development on the `dev` branch is tracking the `0.8.0` release line as 
 - Updated the changelog to reflect `0.8.0` as the current `dev` branch release line.
 - Inline chat shell cards now render through the same xterm-based terminal surface used by Shell Manager, so redraw-heavy output keeps terminal formatting instead of degrading into a plain ANSI transcript.
 - Agent chat now prioritizes shell lifecycle/output delivery and materializes the streaming shell card on the first lifecycle event instead of waiting for later message-state commits.
+- Agent chat now paints a neutral streaming placeholder before starting shell-backed streaming work, so the conversation responds immediately without showing a fake `Thought Process` block while the first shell session initializes.
 
 ### Fixed
 
@@ -21,6 +22,7 @@ Current development on the `dev` branch is tracking the `0.8.0` release line as 
 - Agent chat scrolling no longer feels sticky when users try to scroll up during active streaming output.
 - Shell tool executions now preserve session routing metadata across normal runs, confirmed follow-up execution, and reflection retries so PTY-backed sessions keep their `shell_session_id` and remain linkable in Shell Manager.
 - Inline chat shell output now shows the executed command, strips leaked control-sequence artifacts more reliably, and surfaces the Shell Manager link as soon as the shell session starts instead of after the stream finishes.
+- First shell requests now register shell stream listeners in parallel, preserve `shell_session_id` on output-first events, and keep the chat timeline synchronized with live shell activity instead of showing the session only after the process is already underway.
 
 ### Planned
 

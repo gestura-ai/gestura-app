@@ -105,6 +105,7 @@ function Harness() {
           blocks: blocksToText(message.blocks),
         })))}
       </div>
+      <div data-testid="streaming-present">{String(Boolean(state.streamingMessage))}</div>
       <div data-testid="streaming">{state.streamingMessage ? blocksToText(state.streamingMessage.blocks) : ''}</div>
       <div data-testid="streaming-blocks">{state.streamingMessage ? JSON.stringify(state.streamingMessage.blocks) : '[]'}</div>
       <div data-testid="streaming-narration-titles">
@@ -260,6 +261,63 @@ describe('useChatSession', () => {
     );
   });
 
+  it('materializes shell output immediately when output arrives before lifecycle', async () => {
+    render(<Harness />);
+
+    await waitFor(() => {
+      expect(streamDispatch).not.toBeNull();
+    });
+
+    await act(async () => {
+      streamDispatch?.({
+        type: 'shell-output',
+        processId: 'proc-out-first',
+        shellSessionId: 'shell-session-out-first',
+        stream: 'Stdout',
+        data: 'compiling...\n',
+      });
+    });
+
+    let blocks = JSON.parse(screen.getByTestId('streaming-blocks').textContent ?? '[]') as Array<Record<string, unknown>>;
+    let shellBlock = blocks.find((block) => block.kind === 'shell');
+
+    expect(shellBlock).toEqual(expect.objectContaining({
+      processId: 'proc-out-first',
+      shellSessionId: 'shell-session-out-first',
+      state: 'Running',
+    }));
+    expect(shellBlock?.lines).toEqual(expect.arrayContaining([
+      expect.objectContaining({ data: 'compiling...\n' }),
+    ]));
+
+    await act(async () => {
+      streamDispatch?.({
+        type: 'shell-lifecycle',
+        processId: 'proc-out-first',
+        payload: {
+          process_id: 'proc-out-first',
+          shell_session_id: 'shell-session-out-first',
+          state: 'Started',
+          command: 'cargo check',
+          cwd: '/workspace',
+        },
+      });
+    });
+
+    blocks = JSON.parse(screen.getByTestId('streaming-blocks').textContent ?? '[]');
+    shellBlock = blocks.find((block) => block.kind === 'shell');
+    const lines = Array.isArray(shellBlock?.lines) ? shellBlock.lines as Array<Record<string, unknown>> : [];
+
+    expect(shellBlock).toEqual(expect.objectContaining({
+      processId: 'proc-out-first',
+      shellSessionId: 'shell-session-out-first',
+      command: 'cargo check',
+      cwd: '/workspace',
+    }));
+    expect(String(lines[0]?.data ?? '')).toContain('cargo check');
+    expect(String(lines[1]?.data ?? '')).toContain('compiling...');
+  });
+
   it('marks stop as in progress on the first click and ignores repeated clicks', async () => {
     pauseStreamingMock.mockResolvedValue(undefined);
 
@@ -370,6 +428,13 @@ describe('useChatSession', () => {
   });
 
   it('does not await the full streaming invoke before marking the send as active', async () => {
+    const originalRequestAnimationFrame = window.requestAnimationFrame;
+    let paintCallback: FrameRequestCallback | null = null;
+    window.requestAnimationFrame = vi.fn((cb: FrameRequestCallback) => {
+      paintCallback = cb;
+      return 1;
+    });
+
     let rejectStreaming: ((reason?: unknown) => void) | null = null;
     sendMessageStreamingMock.mockImplementation(
       () => new Promise((_, reject: (reason?: unknown) => void) => { rejectStreaming = reject; }),
@@ -385,14 +450,23 @@ describe('useChatSession', () => {
       fireEvent.click(screen.getByRole('button', { name: 'Send' }));
     });
 
+    expect(screen.getByTestId('is-processing')).toHaveTextContent('true');
+    expect(screen.getByTestId('status')).toHaveTextContent('Thinking…');
+    expect(screen.getByTestId('messages')).toHaveTextContent('Run the tool workflow');
+    expect(screen.getByTestId('streaming-present')).toHaveTextContent('true');
+    expect(screen.getByTestId('streaming-blocks')).toHaveTextContent('[]');
+    expect(sendMessageStreamingMock).not.toHaveBeenCalled();
+
+    await act(async () => {
+      paintCallback?.(performance.now());
+      await Promise.resolve();
+    });
+
     expect(sendMessageStreamingMock).toHaveBeenCalledWith({
       session_id: 'session-123',
       message: 'Run the tool workflow',
       task_id: null,
     });
-    expect(screen.getByTestId('is-processing')).toHaveTextContent('true');
-    expect(screen.getByTestId('status')).toHaveTextContent('Thinking…');
-    expect(screen.getByTestId('messages')).toHaveTextContent('Run the tool workflow');
 
     await act(async () => {
       rejectStreaming?.(new Error('invoke failed'));
@@ -401,7 +475,29 @@ describe('useChatSession', () => {
     await waitFor(() => {
       expect(screen.getByTestId('is-processing')).toHaveTextContent('false');
       expect(screen.getByTestId('status')).toHaveTextContent('Error: Error: invoke failed');
+      expect(screen.getByTestId('streaming-blocks')).toHaveTextContent('[]');
+      expect(screen.getByTestId('streaming-present')).toHaveTextContent('false');
     });
+
+    window.requestAnimationFrame = originalRequestAnimationFrame;
+  });
+
+  it('shows a streaming placeholder immediately when a message is sent', async () => {
+    sendMessageStreamingMock.mockResolvedValue(undefined);
+
+    render(<Harness />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('status')).toHaveTextContent('Ready');
+    });
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Send' }));
+    });
+
+    expect(screen.getByTestId('is-processing')).toHaveTextContent('true');
+    expect(screen.getByTestId('streaming-present')).toHaveTextContent('true');
+    expect(screen.getByTestId('streaming-blocks')).toHaveTextContent('[]');
   });
 
   it('restores the active status after a retry succeeds and streaming resumes', async () => {
