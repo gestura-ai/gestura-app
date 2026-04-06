@@ -686,6 +686,11 @@ async fn confirmed_shell_followup_preserves_shell_session_id_without_workspace()
     let (tx, mut rx) = mpsc::channel(128);
     let cancel = CancellationToken::new();
 
+    // This test is only validating shell-session routing metadata. Pre-cancel the
+    // follow-up synthesis stream so we do not depend on an LLM provider stream
+    // finishing in CI after the shell tool has already run.
+    cancel.cancel();
+
     let response = pipeline
         .try_execute_confirmed_tool_from_history(
             &request,
