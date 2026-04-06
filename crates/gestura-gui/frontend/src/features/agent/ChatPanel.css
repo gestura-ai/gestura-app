@@ -78,7 +78,6 @@
   display: flex;
   flex-direction: column;
   gap: 4px;
-  scroll-behavior: smooth;
 }
 
 .messages-container::-webkit-scrollbar {

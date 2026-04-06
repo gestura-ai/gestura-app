@@ -16,6 +16,7 @@ Current development on the `dev` branch is tracking the `0.8.0` release line as 
 ### Fixed
 
 - User chat bubbles now preserve white body text in light mode while keeping user-authored links black for contrast.
+- Agent chat scrolling no longer feels sticky when users try to scroll up during active streaming output.
 
 ### Planned
 
