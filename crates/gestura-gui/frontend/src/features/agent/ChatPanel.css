@@ -115,6 +115,25 @@
   word-break: break-word;
 }
 
+.message.user .text-content.markdown-body {
+  color: var(--user-text);
+}
+
+.message.user .message-content a,
+.message.user .message-content a:visited {
+  color: var(--user-link-text);
+  font-weight: 700;
+  text-decoration: underline;
+  text-decoration-color: currentColor;
+  text-underline-offset: 0.12em;
+}
+
+.message.user .message-content a:hover,
+.message.user .message-content a:focus-visible {
+  color: var(--user-link-text);
+  text-decoration-thickness: 2px;
+}
+
 .message.assistant,
 .message.agent {
   align-items: flex-start;

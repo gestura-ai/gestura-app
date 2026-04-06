@@ -146,6 +146,7 @@ A comprehensive refactoring to consolidate all business logic in `gestura-core`,
 - Synchronized versions across all configuration files (currently 0.2.0)
 
 ### Fixed
+- User chat bubbles now preserve white body text in light mode while keeping user-authored links black for contrast.
 - Duplicate system tray icons issue resolved through configuration cleanup
 - Listening functionality working correctly with proper error handling
 - System permissions monitoring and validation implemented
