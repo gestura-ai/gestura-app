@@ -36,6 +36,7 @@
   --accent-glow: rgba(var(--accent-primary-rgb), 0.3);
   --user-bubble: rgb(37, 99, 235);
   --user-text: #ffffff;
+  --user-link-text: var(--user-text);
   --agent-bubble: rgba(0, 0, 0, 0.04);
   --agent-text: #1d1d1f;
   --warning: #ff9f0a;
@@ -66,6 +67,7 @@
     --accent-glow: rgba(var(--accent-primary-rgb), 0.3);
     --user-bubble: rgb(96, 165, 250);
     --user-text: #000000;
+    --user-link-text: var(--user-text);
     --agent-bubble: rgba(255, 255, 255, 0.08);
     --agent-text: #f5f5f7;
     --tool-bg: rgba(48, 209, 88, 0.15);
@@ -92,6 +94,7 @@ html[data-theme="light"] {
   --accent-glow: rgba(var(--accent-primary-rgb), 0.3);
   --user-bubble: rgb(37, 99, 235);
   --user-text: #ffffff;
+  --user-link-text: #000000;
   --agent-bubble: rgba(0, 0, 0, 0.04);
   --agent-text: #1d1d1f;
   --tool-bg: rgba(52, 199, 89, 0.1);
@@ -117,6 +120,7 @@ html[data-theme="dark"] {
   --accent-glow: rgba(var(--accent-primary-rgb), 0.3);
   --user-bubble: rgb(96, 165, 250);
   --user-text: #000000;
+  --user-link-text: var(--user-text);
   --agent-bubble: rgba(255, 255, 255, 0.08);
   --agent-text: #f5f5f7;
   --tool-bg: rgba(48, 209, 88, 0.15);

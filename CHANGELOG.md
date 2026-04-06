@@ -5,19 +5,25 @@ All notable changes to Gestura.app will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## Unreleased / Approaching 1.0
+## [Unreleased]
+
+Current development on the `dev` branch is tracking the `0.8.0` release line as the baseline for upcoming changes.
 
 ### Changed
 
-- Gestura.app is now documented as an **intent-first AI assistant**: voice, chat, Haptic Harmony ring gestures, and future input adapters are treated as sources of the same normalized intent flow rather than as separate product paths.
-- The current implementation continues to preserve the Core-First workflow while clarifying that modality capture feeds one shared execution model across GUI, CLI, and automation surfaces.
+- Updated the changelog to reflect `0.8.0` as the current `dev` branch release line.
+
+### Fixed
+
+- User chat bubbles now preserve white body text in light mode while keeping user-authored links black for contrast.
+- Agent chat scrolling no longer feels sticky when users try to scroll up during active streaming output.
 
 ### Planned
 
 - `gestura-core-tasks` is being positioned as the home for optional advanced primitives that activate only for complex multi-step intents.
 - Upcoming work focuses on TaskRegistry-backed coordination, bounded verification loops, and semantic client flows that remain general-purpose and reusable across domains.
 
-## [Unreleased]
+## [0.8.0]
 
 ### Core-First Architecture Migration (Complete)
 
@@ -143,7 +149,7 @@ A comprehensive refactoring to consolidate all business logic in `gestura-core`,
 - CI/CD workflows updated for workspace builds
 - Updated package.json to reflect gestura-app instead of homepage project
 - Added version field to tauri.conf.json for proper Tauri versioning
-- Synchronized versions across all configuration files (currently 0.2.0)
+- Synchronized versions across all configuration files (currently 0.8.0)
 
 ### Fixed
 - Duplicate system tray icons issue resolved through configuration cleanup
