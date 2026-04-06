@@ -669,15 +669,16 @@ async fn confirmed_shell_followup_preserves_shell_session_id_without_workspace()
     use crate::streaming::StreamChunk;
     use crate::tools::registry::all_tools;
     use tokio::sync::mpsc;
-    use tokio::time::{timeout, Duration};
+    use tokio::time::{Duration, timeout};
 
     let pipeline = AgentPipeline::new(AppConfig::default());
     let history = vec![Message::assistant(
         "We will use the shell tool to run 'pwd'. Then respond.",
     )];
+    let session_id = format!("session-confirmed-shell-{}", uuid::Uuid::new_v4());
     let request = AgentRequest::new("okay please proceed")
         .with_history(history)
-        .with_session("session-confirmed-shell".to_string());
+        .with_session(session_id.clone());
     let analysis = crate::context::RequestAnalysis::new("okay please proceed");
     let relevant_tools: Vec<&'static ToolDefinition> = all_tools()
         .iter()
@@ -691,39 +692,48 @@ async fn confirmed_shell_followup_preserves_shell_session_id_without_workspace()
     // finishing in CI after the shell tool has already run.
     cancel.cancel();
 
-    let response = pipeline
-        .try_execute_confirmed_tool_from_history(
-            &request,
-            &analysis,
-            &relevant_tools,
-            None,
-            &tx,
-            &cancel,
-        )
-        .await
-        .expect("confirmed tool follow-up should execute")
-        .expect("expected confirmed shell follow-up to run");
+    let exec_tx = tx.clone();
+
+    let handle = tokio::spawn(async move {
+        pipeline
+            .try_execute_confirmed_tool_from_history(
+                &request,
+                &analysis,
+                &relevant_tools,
+                None,
+                &exec_tx,
+                &cancel,
+            )
+            .await
+    });
 
     drop(tx);
 
     let mut saw_shell_session_id = false;
-    for _ in 0..12 {
+    let mut saw_tool_result = false;
+    for _ in 0..16 {
         let chunk = timeout(Duration::from_secs(2), rx.recv())
             .await
             .expect("stream chunk timeout")
             .expect("stream should include confirmed shell follow-up chunks");
 
-        if matches!(
-            chunk,
+        match chunk {
             StreamChunk::ShellLifecycle {
                 shell_session_id: Some(_),
                 ..
-            } | StreamChunk::ShellOutput {
+            }
+            | StreamChunk::ShellOutput {
                 shell_session_id: Some(_),
                 ..
+            } => saw_shell_session_id = true,
+            StreamChunk::ToolCallResult { success, .. } => {
+                assert!(success, "confirmed shell follow-up should succeed");
+                saw_tool_result = true;
             }
-        ) {
-            saw_shell_session_id = true;
+            _ => {}
+        }
+
+        if saw_shell_session_id && saw_tool_result {
             break;
         }
     }
@@ -732,6 +742,26 @@ async fn confirmed_shell_followup_preserves_shell_session_id_without_workspace()
         saw_shell_session_id,
         "expected confirmed shell follow-up streaming to include shell_session_id"
     );
+    assert!(
+        saw_tool_result,
+        "expected confirmed shell follow-up to emit a successful tool result"
+    );
+
+    timeout(
+        Duration::from_secs(5),
+        crate::tools::shell_sessions::shutdown_session(&session_id),
+    )
+    .await
+    .expect("timed out shutting down confirmed shell test session")
+    .expect("shutdown confirmed shell test session");
+
+    let response = timeout(Duration::from_secs(5), handle)
+        .await
+        .expect("confirmed shell follow-up task timed out")
+        .expect("confirmed shell follow-up task should join")
+        .expect("confirmed tool follow-up should execute")
+        .expect("expected confirmed shell follow-up to run");
+
     assert!(response.tool_calls.iter().any(|call| call.name == "shell"));
 }
 
