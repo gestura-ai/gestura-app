@@ -54,6 +54,7 @@ describe('useShellSessions', () => {
 
     expect(result.current[0]?.startedAt).toBe(1_000);
     expect(result.current[0]?.lastActivityAt).toBe(1_000);
+    expect(result.current[0]?.lines[0]?.data).toContain('cargo test');
 
     now = 6_000;
     act(() => {

@@ -2412,7 +2412,8 @@ impl AgentPipeline {
     }
 
     async fn execute_shell_stream_via_session(
-        workspace: &SessionWorkspace,
+        pool_key: &str,
+        initial_cwd: Option<&str>,
         command: &str,
         cwd: Option<&str>,
         env: Option<&std::collections::HashMap<String, String>>,
@@ -2422,10 +2423,9 @@ impl AgentPipeline {
         let session_command = Self::render_session_shell_command(command, env)
             .or_else(|| env.is_none().then(|| command.to_string()))?;
 
-        let workspace_root = workspace.root().to_string_lossy().to_string();
         let result = crate::tools::shell_sessions::execute_in_session_with_options(
-            workspace.session_id.as_str(),
-            Some(workspace_root.as_str()),
+            pool_key,
+            initial_cwd,
             &session_command,
             cwd,
             execution_options,
@@ -3231,7 +3231,13 @@ impl AgentPipeline {
             "[ToolDispatch] Calling execute_tool"
         );
         let result = self
-            .execute_tool(&name, &arguments, workspace, Some(tx))
+            .execute_tool(
+                &name,
+                &arguments,
+                workspace,
+                session_id.as_deref(),
+                Some(tx),
+            )
             .await;
         let duration_ms = start_time.elapsed().as_millis() as u64;
         tracing::debug!(
@@ -3288,6 +3294,7 @@ impl AgentPipeline {
         name: &str,
         arguments: &str,
         workspace: Option<&SessionWorkspace>,
+        session_id: Option<&str>,
         stream_tx: Option<&mpsc::Sender<StreamChunk>>,
     ) -> ToolResult {
         let start = Instant::now();
@@ -3308,7 +3315,7 @@ impl AgentPipeline {
         let result = async {
             match name {
                 "shell" | "bash" | "execute" => {
-                    self.execute_shell_tool(arguments, workspace, stream_tx)
+                    self.execute_shell_tool(arguments, workspace, session_id, stream_tx)
                         .await
                 }
                 "file" | "read_file" | "write_file" | "edit_file" => {
@@ -3933,7 +3940,7 @@ impl AgentPipeline {
     /// Execute shell tool with workspace sandboxing.
     ///
     /// When `stream_tx` is `Some`, the command is executed via PTY session
-    /// streaming when a session workspace is available so chunks carry a
+    /// streaming when a session pool key is available so chunks carry a
     /// stable `shell_session_id` for the UI. Otherwise it falls back to the
     /// legacy streaming path (`shell_streaming`). When `None`,
     /// the legacy blocking path (`shell_async`) is used.
@@ -3941,6 +3948,7 @@ impl AgentPipeline {
         &self,
         arguments: &str,
         workspace: Option<&SessionWorkspace>,
+        session_id: Option<&str>,
         stream_tx: Option<&mpsc::Sender<StreamChunk>>,
     ) -> ToolResult {
         use crate::session_workspace::is_shell_command_allowed;
@@ -4003,6 +4011,10 @@ impl AgentPipeline {
                 let (command, env) = Self::harden_noninteractive_shell_command(command, env);
                 let command =
                     Self::strip_redundant_shell_cwd_prefix(workspace, &command, cwd.as_deref());
+                let session_pool_key = workspace.map(|ws| ws.session_id.as_str()).or(session_id);
+                let session_initial_cwd = workspace
+                    .map(|ws| ws.root().to_string_lossy().to_string())
+                    .or_else(|| cwd.clone());
 
                 // Optional timeout (seconds). Use a longer default for build/test/install flows.
                 let timeout_secs = Self::effective_shell_timeout_secs(
@@ -4029,9 +4041,10 @@ impl AgentPipeline {
                 if let Some(tx) = stream_tx {
                     use crate::tools::shell_streaming;
 
-                    if let Some(workspace) = workspace
+                    if let Some(pool_key) = session_pool_key
                         && let Some(result) = Self::execute_shell_stream_via_session(
-                            workspace,
+                            pool_key,
+                            session_initial_cwd.as_deref(),
                             &command,
                             cwd.as_deref(),
                             env.as_ref(),
@@ -4105,6 +4118,10 @@ impl AgentPipeline {
 
                 let cwd = workspace.map(|ws| ws.root().to_string_lossy().to_string());
                 let (command, env) = Self::harden_noninteractive_shell_command(arguments, None);
+                let session_pool_key = workspace.map(|ws| ws.session_id.as_str()).or(session_id);
+                let session_initial_cwd = workspace
+                    .map(|ws| ws.root().to_string_lossy().to_string())
+                    .or_else(|| cwd.clone());
                 let timeout_secs = Self::default_shell_timeout_secs(&command);
                 let execution_options = crate::tools::shell_sessions::ShellExecutionOptions {
                     timeout_secs: Some(timeout_secs),
@@ -4119,9 +4136,10 @@ impl AgentPipeline {
                 if let Some(tx) = stream_tx {
                     use crate::tools::shell_streaming;
 
-                    if let Some(workspace) = workspace
+                    if let Some(pool_key) = session_pool_key
                         && let Some(result) = Self::execute_shell_stream_via_session(
-                            workspace,
+                            pool_key,
+                            session_initial_cwd.as_deref(),
                             &command,
                             cwd.as_deref(),
                             env.as_ref(),
@@ -7479,6 +7497,7 @@ mod tests {
                 .to_string(),
                 Some(&workspace),
                 None,
+                None,
             )
             .await;
 
@@ -8678,6 +8697,7 @@ mod tests {
                 .to_string(),
                 Some(&workspace),
                 None,
+                None,
             )
             .await;
 
@@ -8715,6 +8735,7 @@ mod tests {
                         })
                         .to_string(),
                         Some(&workspace),
+                        None,
                         Some(&tx),
                     )
                     .await
@@ -8801,6 +8822,7 @@ mod tests {
                 })
                 .to_string(),
                 Some(&workspace),
+                None,
                 Some(&tx),
             ),
         )
@@ -8820,6 +8842,74 @@ mod tests {
             }
             other => panic!("expected success, got {other:?}"),
         }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[cfg(not(target_os = "windows"))]
+    async fn streaming_shell_tool_uses_agent_session_pool_without_workspace() {
+        use gestura_core_streaming::StreamChunk;
+
+        let pipeline = AgentPipeline::new(AppConfig::default());
+        let temp = TempDir::new().expect("temp dir");
+        let session_id = format!("shell-stream-session-only-{}", uuid::Uuid::new_v4());
+        let cwd = temp.path().to_string_lossy().to_string();
+        let (tx, mut rx) = tokio::sync::mpsc::channel(256);
+
+        let result = tokio::spawn({
+            let tx = tx.clone();
+            let session_id = session_id.clone();
+            let cwd = cwd.clone();
+            async move {
+                pipeline
+                    .execute_tool(
+                        "shell",
+                        &json!({
+                            "command": "printf 'session-owned'",
+                            "cwd": cwd,
+                            "timeout_secs": 10,
+                        })
+                        .to_string(),
+                        None,
+                        Some(session_id.as_str()),
+                        Some(&tx),
+                    )
+                    .await
+            }
+        });
+
+        let mut saw_shell_session_id = false;
+        for _ in 0..12 {
+            let chunk = tokio::time::timeout(tokio::time::Duration::from_secs(2), rx.recv())
+                .await
+                .expect("stream chunk timeout")
+                .expect("stream should remain open while command runs");
+
+            match chunk {
+                StreamChunk::ShellLifecycle {
+                    shell_session_id, ..
+                }
+                | StreamChunk::ShellOutput {
+                    shell_session_id, ..
+                } if shell_session_id.is_some() => {
+                    saw_shell_session_id = true;
+                    break;
+                }
+                _ => {}
+            }
+        }
+
+        let tool_result = tokio::time::timeout(STREAMING_SHELL_TOOL_TEST_TIMEOUT, result)
+            .await
+            .expect("streaming shell agent-session pool test timed out")
+            .expect("shell execution task should join");
+
+        assert!(matches!(tool_result, ToolResult::Success(_)));
+        assert!(
+            saw_shell_session_id,
+            "expected streamed shell events to include a shell_session_id"
+        );
+
+        shutdown_shell_session_for_test(&session_id).await;
     }
 
     #[tokio::test]

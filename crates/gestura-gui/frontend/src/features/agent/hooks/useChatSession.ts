@@ -42,6 +42,7 @@ import type {
   KnowledgeItem,
   StatusState,
 } from '../types';
+import { buildShellCommandLine } from '../utils/shellTranscript';
 
 // ─── Queued item ──────────────────────────────────────────────────────────────
 
@@ -649,6 +650,10 @@ function makeStreamingMessage(): AgentMessage {
   return { id: nanoid(), role: 'assistant', rawMarkdown: '', blocks: [], isStreaming: true, timestamp: Date.now() };
 }
 
+function makeStreamingMessageWithId(id: string): AgentMessage {
+  return { id, role: 'assistant', rawMarkdown: '', blocks: [], isStreaming: true, timestamp: Date.now() };
+}
+
 // ─── Hook ─────────────────────────────────────────────────────────────────────
 
 export function useChatSession(sessionId: string): ChatSessionState {
@@ -866,20 +871,30 @@ export function useChatSession(sessionId: string): ChatSessionState {
 
   // ── Ensure streaming message exists ────────────────────────────────────────
   const ensureStreamingMsg = useCallback((): string => {
-    if (!streamingMsgIdRef.current) {
-      const newMsg = makeStreamingMessage();
-      streamingMsgIdRef.current = newMsg.id;
-      setStreamingMessage(newMsg);
-      return newMsg.id;
+    if (streamingMsgIdRef.current) {
+      const existingId = streamingMsgIdRef.current;
+      setStreamingMessage((prev) => prev ?? makeStreamingMessageWithId(existingId));
+      return existingId;
     }
-    return streamingMsgIdRef.current;
+
+    const newMsg = makeStreamingMessage();
+    streamingMsgIdRef.current = newMsg.id;
+    setStreamingMessage((prev) => prev ?? newMsg);
+    return newMsg.id;
   }, []);
 
   // ── Block updater helpers ───────────────────────────────────────────────────
   const updateStreamingBlocks = useCallback((updater: (blocks: MsgBlock[]) => MsgBlock[]) => {
     setStreamingMessage((prev) => {
-      if (!prev) return prev;
-      return { ...prev, blocks: updater(prev.blocks) };
+      if (prev) {
+        return { ...prev, blocks: updater(prev.blocks) };
+      }
+
+      const streamingMsgId = streamingMsgIdRef.current;
+      if (!streamingMsgId) return prev;
+
+      const base = makeStreamingMessageWithId(streamingMsgId);
+      return { ...base, blocks: updater(base.blocks) };
     });
   }, []);
 
@@ -1160,26 +1175,36 @@ export function useChatSession(sessionId: string): ChatSessionState {
         const activityAt = Date.now();
         updateStreamingBlocks((blocks) => {
           const idx = blocks.findIndex((b) => b.kind === 'shell' && b.processId === pid);
+          const nextState = normalizeShellState(p['state']);
+          const nextCommand = p['command'] != null ? String(p['command']) : '';
           if (idx >= 0) {
             const existing = blocks[idx] as ShellBlock;
+            const command = nextCommand || existing.command;
+            const commandLine = nextState === 'Started' && command !== existing.command
+              ? buildShellCommandLine(command)
+              : null;
             const updated: ShellBlock = {
               ...existing,
               shellSessionId: p['shell_session_id'] != null
                 ? String(p['shell_session_id'])
                 : (existing.shellSessionId ?? null),
-              state: normalizeShellState(p['state'] ?? existing.state),
+              command,
+              cwd: p['cwd'] != null ? String(p['cwd']) : existing.cwd,
+              state: nextState,
               exitCode: p['exit_code'] != null ? Number(p['exit_code']) : existing.exitCode,
               durationMs: p['duration_ms'] != null ? Number(p['duration_ms']) : existing.durationMs,
               startedAt: existing.startedAt ?? activityAt,
               lastActivityAt: activityAt,
+              lines: commandLine ? [...existing.lines, commandLine] : existing.lines,
             };
             return blocks.map((b, i) => i === idx ? updated : b);
           } else {
+            const commandLine = buildShellCommandLine(nextCommand);
             const newBlock: ShellBlock = {
               kind: 'shell', id: nanoid(), processId: pid,
               shellSessionId: p['shell_session_id'] != null ? String(p['shell_session_id']) : null,
-              command: String(p['command'] ?? ''), cwd: p['cwd'] ? String(p['cwd']) : null,
-              state: normalizeShellState(p['state']), lines: [], collapsed: true,
+              command: nextCommand, cwd: p['cwd'] ? String(p['cwd']) : null,
+              state: nextState, lines: commandLine ? [commandLine] : [], collapsed: true,
               startedAt: activityAt,
               lastActivityAt: activityAt,
             };

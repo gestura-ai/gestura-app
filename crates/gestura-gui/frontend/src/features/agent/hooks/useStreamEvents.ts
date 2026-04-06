@@ -141,7 +141,14 @@ export function useStreamEvents(sessionId: string, dispatch: StreamEventDispatch
     const unlisten: UnlistenFn[] = [];
     let cancelled = false;
     let dispatchFlushHandle: number | null = null;
+    let dispatchMicrotaskQueued = false;
     const pendingActions: StreamEventAction[] = [];
+
+    const scheduleMicrotask = typeof queueMicrotask === 'function'
+      ? queueMicrotask.bind(globalThis)
+      : (callback: () => void) => {
+        void Promise.resolve().then(callback);
+      };
 
     // Debounced notification that the agent likely mutated the workspace.
     // ExplorerPanel + EditorArea both listen for this to refresh without polling.
@@ -173,13 +180,32 @@ export function useStreamEvents(sessionId: string, dispatch: StreamEventDispatch
 
     function flushBufferedActions(): void {
       dispatchFlushHandle = null;
+      dispatchMicrotaskQueued = false;
       if (cancelled || pendingActions.length === 0) return;
       const actions = pendingActions.splice(0, pendingActions.length);
       actions.forEach((action) => dispatch(action));
     }
 
-    function scheduleBufferedFlush(): void {
-      if (cancelled || dispatchFlushHandle != null) return;
+    function scheduleBufferedFlush(priority: 'default' | 'realtime' = 'default'): void {
+      if (cancelled) return;
+      if (priority === 'realtime') {
+        if (dispatchMicrotaskQueued) return;
+        if (dispatchFlushHandle != null) {
+          if (typeof window.cancelAnimationFrame === 'function') {
+            window.cancelAnimationFrame(dispatchFlushHandle);
+          } else {
+            window.clearTimeout(dispatchFlushHandle);
+          }
+          dispatchFlushHandle = null;
+        }
+        dispatchMicrotaskQueued = true;
+        scheduleMicrotask(() => {
+          flushBufferedActions();
+        });
+        return;
+      }
+
+      if (dispatchMicrotaskQueued || dispatchFlushHandle != null) return;
       if (typeof window.requestAnimationFrame === 'function') {
         dispatchFlushHandle = window.requestAnimationFrame(() => {
           flushBufferedActions();
@@ -192,13 +218,15 @@ export function useStreamEvents(sessionId: string, dispatch: StreamEventDispatch
     }
 
     function cancelBufferedFlush(): void {
-      if (dispatchFlushHandle == null) return;
-      if (typeof window.cancelAnimationFrame === 'function') {
-        window.cancelAnimationFrame(dispatchFlushHandle);
-      } else {
-        window.clearTimeout(dispatchFlushHandle);
+      if (dispatchFlushHandle != null) {
+        if (typeof window.cancelAnimationFrame === 'function') {
+          window.cancelAnimationFrame(dispatchFlushHandle);
+        } else {
+          window.clearTimeout(dispatchFlushHandle);
+        }
+        dispatchFlushHandle = null;
       }
-      dispatchFlushHandle = null;
+      dispatchMicrotaskQueued = false;
     }
 
     function dispatchNow(action: StreamEventAction): void {
@@ -206,7 +234,7 @@ export function useStreamEvents(sessionId: string, dispatch: StreamEventDispatch
       dispatch(action);
     }
 
-    function dispatchBuffered(action: StreamEventAction): void {
+    function dispatchBuffered(action: StreamEventAction, priority: 'default' | 'realtime' = 'default'): void {
       const last = pendingActions[pendingActions.length - 1];
 
       if (last?.type === 'thinking' && action.type === 'thinking') {
@@ -234,7 +262,7 @@ export function useStreamEvents(sessionId: string, dispatch: StreamEventDispatch
         pendingActions.push(action);
       }
 
-      scheduleBufferedFlush();
+      scheduleBufferedFlush(priority);
     }
 
     function accept<T = unknown>(eventName: string, raw: unknown): { ok: true; value: T } | { ok: false } {
@@ -402,7 +430,7 @@ export function useStreamEvents(sessionId: string, dispatch: StreamEventDispatch
           processId: String(p['process_id'] ?? ''),
           stream: (p['stream'] as 'Stdout' | 'Stderr') ?? 'Stdout',
           data: String(p['data'] ?? ''),
-        });
+        }, 'realtime');
       });
 
       await safeListen('agent-stream-retry', (e) => {

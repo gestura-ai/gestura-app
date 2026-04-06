@@ -21,6 +21,10 @@ import { ShellConsoleView } from './ShellConsoleView';
 
 // ─── Block renderers ──────────────────────────────────────────────────────────
 
+type MessageRenderOptions = {
+  linkifyTaskReferences?: boolean;
+};
+
 const ThinkingBlockView: React.FC<{ block: ThinkingBlock }> = ({ block }) => {
   const [collapsed, setCollapsed] = useState(block.collapsed);
 
@@ -40,14 +44,22 @@ const ThinkingBlockView: React.FC<{ block: ThinkingBlock }> = ({ block }) => {
   );
 };
 
-function renderMessageHtml(content: string, tasks: TaskHierarchy): string {
-  return enhanceTaskReferenceHtml(parseMarkdown(content), tasks);
+function renderMessageHtml(content: string, tasks: TaskHierarchy, options: MessageRenderOptions = {}): string {
+  const html = parseMarkdown(content);
+  if (options.linkifyTaskReferences === false) return html;
+  return enhanceTaskReferenceHtml(html, tasks);
 }
 
-const TextBlockView: React.FC<{ block: TextBlock; tasks: TaskHierarchy }> = ({ block, tasks }) => (
+const TextBlockView: React.FC<{
+  block: TextBlock;
+  tasks: TaskHierarchy;
+  role: AgentMessage['role'];
+}> = ({ block, tasks, role }) => (
   <div
     className="text-content markdown-body"
-    dangerouslySetInnerHTML={{ __html: renderMessageHtml(block.content, tasks) }}
+    dangerouslySetInnerHTML={{
+      __html: renderMessageHtml(block.content, tasks, { linkifyTaskReferences: role !== 'user' }),
+    }}
   />
 );
 
@@ -380,7 +392,7 @@ const MessageView: React.FC<{
           const nextBlock = message.blocks[index + 1];
           switch (block.kind) {
             case 'thinking': return <ThinkingBlockView key={block.id} block={block} />;
-            case 'text': return <TextBlockView key={block.id} block={block} tasks={tasks} />;
+            case 'text': return <TextBlockView key={block.id} block={block} tasks={tasks} role={message.role} />;
             case 'narration':
               return (
                 <NarrationBlockView
@@ -432,6 +444,10 @@ export interface MessageListProps {
 
 const SCROLL_THRESHOLD = 60;
 
+function bottomScrollTop(element: HTMLDivElement): number {
+  return Math.max(0, element.scrollHeight - element.clientHeight);
+}
+
 export const MessageList: React.FC<MessageListProps> = ({
   messages,
   streamingMessage,
@@ -447,8 +463,9 @@ export const MessageList: React.FC<MessageListProps> = ({
 
   // Auto-scroll unless user has scrolled up
   useEffect(() => {
-    if (!containerRef.current || userScrolledUp) return;
-    containerRef.current.scrollTop = containerRef.current.scrollHeight;
+    const element = containerRef.current;
+    if (!element || userScrolledUp) return;
+    element.scrollTop = bottomScrollTop(element);
   });
 
   const handleScroll = useCallback(() => {
@@ -459,16 +476,20 @@ export const MessageList: React.FC<MessageListProps> = ({
     onScrollChange(scrolled);
   }, [onScrollChange]);
 
+  const handleWheel = useCallback((event: React.WheelEvent<HTMLDivElement>) => {
+    if (event.deltaY < 0) onScrollChange(true);
+  }, [onScrollChange]);
+
   const scrollToBottom = useCallback(() => {
     onScrollChange(false);
-    if (containerRef.current) containerRef.current.scrollTop = containerRef.current.scrollHeight;
+    if (containerRef.current) containerRef.current.scrollTop = bottomScrollTop(containerRef.current);
   }, [onScrollChange]);
 
   const allMessages = streamingMessage ? [...messages, streamingMessage] : messages;
 
   return (
     <div className="messages-viewport">
-      <div className="messages-container" ref={containerRef} onScroll={handleScroll}>
+      <div className="messages-container" ref={containerRef} onScroll={handleScroll} onWheel={handleWheel}>
         {allMessages.map((msg) => (
           <MessageView
             key={msg.id}

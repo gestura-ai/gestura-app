@@ -961,6 +961,11 @@ html[data-theme="dark"] .shell-console {
   max-height: none;
 }
 
+.shell-console-output--terminal {
+  padding: 0;
+  overflow: hidden;
+}
+
 .shell-console-output::-webkit-scrollbar {
   width: 3px;
 }
@@ -1634,6 +1639,11 @@ html[data-theme="dark"] .shell-console {
   min-height: 0;
   padding: 10px 12px 12px;
   background: var(--bg-base);
+}
+
+.interactive-shell-terminal--inline {
+  height: 192px;
+  padding: 8px 10px;
 }
 
 .interactive-shell-terminal .xterm,
