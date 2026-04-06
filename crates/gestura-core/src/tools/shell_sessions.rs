@@ -66,6 +66,7 @@ mod imp {
     const DEFAULT_EXECUTION_TIMEOUT_SECS: u64 = 300;
     const MIN_STALL_TIMEOUT_SECS: u64 = 30;
     const MAX_STALL_TIMEOUT_SECS: u64 = 300;
+    const EARLY_SIGNAL_STALL_TIMEOUT_SECS: u64 = 15;
     const MAX_QUIET_WAIT_CYCLES_WITHOUT_SIGNAL: u8 = 2;
     const SHELL_OUTPUT_SEND_TIMEOUT: Duration = Duration::from_millis(100);
     const STATUS_CHUNK_SEND_TIMEOUT: Duration = Duration::from_millis(100);
@@ -282,6 +283,18 @@ mod imp {
 
     fn default_stall_timeout_secs(timeout_secs: u64) -> u64 {
         timeout_secs.clamp(MIN_STALL_TIMEOUT_SECS, MAX_STALL_TIMEOUT_SECS)
+    }
+
+    fn early_signal_stall_timeout(
+        stall_timeout: Duration,
+        stall_signal: StallSignal,
+    ) -> Option<Duration> {
+        match stall_signal {
+            StallSignal::InteractivePrompt | StallSignal::ErrorOutput => {
+                Some(stall_timeout.min(Duration::from_secs(EARLY_SIGNAL_STALL_TIMEOUT_SECS)))
+            }
+            StallSignal::None => None,
+        }
     }
 
     pub(super) async fn stop_process(process_id: &str) -> Result<Option<ShellSessionHandle>> {
@@ -848,6 +861,48 @@ mod imp {
             let mut runtime_failure_kind: Option<ShellRuntimeFailureKind> = None;
 
             loop {
+                if interrupted
+                    && interrupt_started_at
+                        .expect("interrupt timestamp must be set")
+                        .elapsed()
+                        >= Duration::from_secs(INTERRUPT_GRACE_SECS)
+                {
+                    self.set_state(ShellSessionState::Failed)?;
+                    self.emit_session_lifecycle();
+                    self.terminate().await?;
+                    let flushed = parser.finish();
+                    if !flushed.is_empty() {
+                        stdout.push_str(&flushed);
+                        let output_chunk = StreamChunk::ShellOutput {
+                            process_id: process_id.clone(),
+                            shell_session_id: Some(self.shell_session_id.clone()),
+                            stream: ShellOutputStream::Stdout,
+                            data: flushed,
+                        };
+                        self.emit_broadcast(output_chunk.clone());
+                        send_shell_output_chunk_best_effort(&tx, output_chunk).await;
+                    }
+
+                    let duration_ms = start.elapsed().as_millis() as u64;
+                    return self
+                        .finish_command(
+                            &tx,
+                            command,
+                            command_cwd,
+                            CommandCompletion {
+                                process_id,
+                                stdout,
+                                exit_code: 124,
+                                process_state: ShellProcessState::Failed,
+                                duration_ms,
+                                session_state: ShellSessionState::Failed,
+                                failure_kind: runtime_failure_kind
+                                    .or(Some(ShellRuntimeFailureKind::TimedOut)),
+                            },
+                        )
+                        .await;
+                }
+
                 let wait_for = if interrupted {
                     Duration::from_secs(INTERRUPT_GRACE_SECS)
                         .checked_sub(
@@ -864,6 +919,29 @@ mod imp {
                     stall_timeout
                         .checked_sub(idle_for)
                         .unwrap_or(Duration::from_secs(0))
+                } else if options.allow_long_running {
+                    let idle_for = last_activity_at
+                        .or(continued_wait_anchor_at)
+                        .map(|timestamp| timestamp.elapsed())
+                        .unwrap_or_else(|| start.elapsed());
+                    let stall_signal =
+                        inspect_stall_signal(&recent_output_tail, parser.buffered_output());
+                    if let Some(signal_timeout) =
+                        early_signal_stall_timeout(stall_timeout, stall_signal)
+                    {
+                        timeout
+                            .checked_sub(start.elapsed())
+                            .unwrap_or(Duration::from_secs(0))
+                            .min(
+                                signal_timeout
+                                    .checked_sub(idle_for)
+                                    .unwrap_or(Duration::from_secs(0)),
+                            )
+                    } else {
+                        timeout
+                            .checked_sub(start.elapsed())
+                            .unwrap_or(Duration::from_secs(0))
+                    }
                 } else {
                     timeout
                         .checked_sub(start.elapsed())
@@ -993,67 +1071,120 @@ mod imp {
                             .await;
                     }
                     Err(_) if !interrupted => {
-                        if options.allow_long_running && start.elapsed() >= timeout {
+                        if options.allow_long_running {
                             let idle_for = last_activity_at
                                 .or(continued_wait_anchor_at)
                                 .map(|timestamp| timestamp.elapsed())
                                 .unwrap_or_else(|| start.elapsed());
-
-                            if idle_for < stall_timeout {
-                                continue;
-                            }
-
                             let stall_signal =
                                 inspect_stall_signal(&recent_output_tail, parser.buffered_output());
-                            runtime_failure_kind = stall_signal.runtime_failure_kind();
-                            send_status_chunk_best_effort(
-                                &tx,
-                                stall_signal.status_message(&self.shell_session_id, command),
-                            )
-                            .await;
 
-                            match stall_signal {
-                                StallSignal::None => {
-                                    if continued_wait_cycles >= MAX_QUIET_WAIT_CYCLES_WITHOUT_SIGNAL
-                                    {
+                            if let Some(signal_timeout) =
+                                early_signal_stall_timeout(stall_timeout, stall_signal)
+                                && idle_for >= signal_timeout
+                            {
+                                runtime_failure_kind = stall_signal.runtime_failure_kind();
+                                send_status_chunk_best_effort(
+                                    &tx,
+                                    stall_signal.status_message(&self.shell_session_id, command),
+                                )
+                                .await;
+
+                                match stall_signal {
+                                    StallSignal::InteractivePrompt => {
                                         tracing::info!(
                                             shell_session_id = %self.shell_session_id,
                                             process_id = %process_id,
                                             command = %command,
-                                            timeout_secs,
-                                            stall_timeout_secs = stall_timeout.as_secs(),
-                                            "Interrupting quiet PTY command after repeated quiet periods without prompt/error indicators"
+                                            stall_timeout_secs = signal_timeout.as_secs(),
+                                            "Interrupting quiet PTY command early because recent output looks interactive"
                                         );
-                                    } else {
-                                        continued_wait_anchor_at = Some(Instant::now());
-                                        continued_wait_cycles += 1;
-                                        tracing::debug!(
+                                    }
+                                    StallSignal::ErrorOutput => {
+                                        tracing::info!(
                                             shell_session_id = %self.shell_session_id,
                                             process_id = %process_id,
                                             command = %command,
-                                            timeout_secs,
-                                            stall_timeout_secs = stall_timeout.as_secs(),
-                                            "Long-running PTY command is quiet with no prompt/error indicator; continuing to wait"
+                                            stall_timeout_secs = signal_timeout.as_secs(),
+                                            "Interrupting quiet PTY command early because recent output looks like an error"
                                         );
-                                        continue;
+                                    }
+                                    StallSignal::None => {}
+                                }
+
+                                timed_out = true;
+                                interrupted = true;
+                                interrupt_started_at = Some(Instant::now());
+                                self.set_state(ShellSessionState::Interrupting)?;
+                                self.emit_session_lifecycle();
+                                self.interrupt().await?;
+                                continue;
+                            }
+
+                            if start.elapsed() >= timeout {
+                                if idle_for < stall_timeout {
+                                    continue;
+                                }
+
+                                runtime_failure_kind = stall_signal.runtime_failure_kind();
+                                send_status_chunk_best_effort(
+                                    &tx,
+                                    stall_signal.status_message(&self.shell_session_id, command),
+                                )
+                                .await;
+
+                                match stall_signal {
+                                    StallSignal::None => {
+                                        if continued_wait_cycles
+                                            >= MAX_QUIET_WAIT_CYCLES_WITHOUT_SIGNAL
+                                        {
+                                            tracing::info!(
+                                                shell_session_id = %self.shell_session_id,
+                                                process_id = %process_id,
+                                                command = %command,
+                                                timeout_secs,
+                                                stall_timeout_secs = stall_timeout.as_secs(),
+                                                "Interrupting quiet PTY command after repeated quiet periods without prompt/error indicators"
+                                            );
+                                        } else {
+                                            continued_wait_anchor_at = Some(Instant::now());
+                                            continued_wait_cycles += 1;
+                                            tracing::debug!(
+                                                shell_session_id = %self.shell_session_id,
+                                                process_id = %process_id,
+                                                command = %command,
+                                                timeout_secs,
+                                                stall_timeout_secs = stall_timeout.as_secs(),
+                                                "Long-running PTY command is quiet with no prompt/error indicator; continuing to wait"
+                                            );
+                                            continue;
+                                        }
+                                    }
+                                    StallSignal::InteractivePrompt => {
+                                        tracing::info!(
+                                            shell_session_id = %self.shell_session_id,
+                                            process_id = %process_id,
+                                            command = %command,
+                                            "Interrupting quiet PTY command because recent output looks interactive"
+                                        );
+                                    }
+                                    StallSignal::ErrorOutput => {
+                                        tracing::info!(
+                                            shell_session_id = %self.shell_session_id,
+                                            process_id = %process_id,
+                                            command = %command,
+                                            "Interrupting quiet PTY command because recent output looks like an error"
+                                        );
                                     }
                                 }
-                                StallSignal::InteractivePrompt => {
-                                    tracing::info!(
-                                        shell_session_id = %self.shell_session_id,
-                                        process_id = %process_id,
-                                        command = %command,
-                                        "Interrupting quiet PTY command because recent output looks interactive"
-                                    );
-                                }
-                                StallSignal::ErrorOutput => {
-                                    tracing::info!(
-                                        shell_session_id = %self.shell_session_id,
-                                        process_id = %process_id,
-                                        command = %command,
-                                        "Interrupting quiet PTY command because recent output looks like an error"
-                                    );
-                                }
+
+                                timed_out = true;
+                                interrupted = true;
+                                interrupt_started_at = Some(Instant::now());
+                                self.set_state(ShellSessionState::Interrupting)?;
+                                self.emit_session_lifecycle();
+                                self.interrupt().await?;
+                                continue;
                             }
                         }
 
@@ -1935,6 +2066,26 @@ mod imp {
             assert!(!result.success);
             assert_eq!(result.exit_code, 124);
             assert_eq!(result.failure_kind, Some(ShellRuntimeFailureKind::TimedOut));
+        }
+
+        #[test]
+        fn error_output_stalls_use_the_shorter_early_signal_timeout() {
+            assert_eq!(
+                early_signal_stall_timeout(Duration::from_secs(30), StallSignal::ErrorOutput),
+                Some(Duration::from_secs(EARLY_SIGNAL_STALL_TIMEOUT_SECS))
+            );
+            assert_eq!(
+                early_signal_stall_timeout(Duration::from_secs(5), StallSignal::ErrorOutput),
+                Some(Duration::from_secs(5))
+            );
+        }
+
+        #[test]
+        fn generic_quiet_stalls_do_not_use_the_early_signal_timeout() {
+            assert_eq!(
+                early_signal_stall_timeout(Duration::from_secs(30), StallSignal::None),
+                None
+            );
         }
 
         #[test]

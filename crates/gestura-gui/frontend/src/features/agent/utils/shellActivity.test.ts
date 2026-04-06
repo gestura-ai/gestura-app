@@ -103,4 +103,27 @@ describe('describeShellActivity', () => {
       },
     });
   });
+
+  it('surfaces error-output stalls before the generic one-minute threshold', () => {
+    expect(
+      describeShellActivity({
+        kind: 'shell',
+        id: 'shell-early-error',
+        processId: 'proc-early-error',
+        shellSessionId: 'shell-session-early-error',
+        command: 'cargo tset',
+        cwd: '/workspace',
+        state: 'Running',
+        lastActivityAt: 10_000,
+        lines: [{ stream: 'Stderr', data: 'error: no such command: `tset`' }],
+        collapsed: false,
+      }, 35_000),
+    ).toMatchObject({
+      tone: 'stalled',
+      diagnosis: {
+        kind: 'error-output',
+        label: 'Recent output suggests an error',
+      },
+    });
+  });
 });
