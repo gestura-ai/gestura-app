@@ -87,9 +87,9 @@ describe('useShellSessions', () => {
   });
 
   it('registers shell output listeners even if the first shell listener is still pending', async () => {
-    let resolveFirstListener: (() => void) | null = null;
+    const resolveFirstListenerRef: { current: null | (() => void) } = { current: null };
     listenMock.mockImplementationOnce(() => new Promise((resolve) => {
-      resolveFirstListener = () => resolve(() => undefined);
+      resolveFirstListenerRef.current = () => resolve(() => undefined);
     }));
 
     renderHook(() => useShellSessions('session-1'));
@@ -98,7 +98,9 @@ describe('useShellSessions', () => {
       expect((listeners.get('agent-stream-shell-output') ?? []).length).toBeGreaterThan(0);
     });
 
-    resolveFirstListener?.();
+    if (resolveFirstListenerRef.current) {
+      resolveFirstListenerRef.current();
+    }
     await Promise.resolve();
   });
 });

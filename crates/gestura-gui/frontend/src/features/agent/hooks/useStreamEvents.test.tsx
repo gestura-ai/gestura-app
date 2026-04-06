@@ -240,9 +240,9 @@ describe('useStreamEvents', () => {
   });
 
   it('registers shell listeners even if earlier listeners are still pending', async () => {
-    let resolveProbe: (() => void) | null = null;
+    const resolveProbeRef: { current: null | (() => void) } = { current: null };
     listenMock.mockImplementationOnce(() => new Promise((resolve) => {
-      resolveProbe = () => resolve(vi.fn());
+      resolveProbeRef.current = () => resolve(vi.fn());
     }));
 
     const dispatch = createDispatchMock();
@@ -252,7 +252,9 @@ describe('useStreamEvents', () => {
       expect(listeners.has('agent-stream-shell-output')).toBe(true);
     });
 
-    resolveProbe?.();
+    if (resolveProbeRef.current) {
+      resolveProbeRef.current();
+    }
     await Promise.resolve();
   });
 
