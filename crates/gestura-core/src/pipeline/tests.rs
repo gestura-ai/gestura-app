@@ -669,6 +669,7 @@ async fn confirmed_shell_followup_preserves_shell_session_id_without_workspace()
     use crate::streaming::StreamChunk;
     use crate::tools::registry::all_tools;
     use tokio::sync::mpsc;
+    use tokio::time::{timeout, Duration};
 
     let pipeline = AgentPipeline::new(AppConfig::default());
     let history = vec![Message::assistant(
@@ -701,7 +702,12 @@ async fn confirmed_shell_followup_preserves_shell_session_id_without_workspace()
     drop(tx);
 
     let mut saw_shell_session_id = false;
-    while let Some(chunk) = rx.recv().await {
+    for _ in 0..12 {
+        let chunk = timeout(Duration::from_secs(2), rx.recv())
+            .await
+            .expect("stream chunk timeout")
+            .expect("stream should include confirmed shell follow-up chunks");
+
         if matches!(
             chunk,
             StreamChunk::ShellLifecycle {
@@ -713,6 +719,7 @@ async fn confirmed_shell_followup_preserves_shell_session_id_without_workspace()
             }
         ) {
             saw_shell_session_id = true;
+            break;
         }
     }
 
