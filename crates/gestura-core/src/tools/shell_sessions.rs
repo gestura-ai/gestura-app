@@ -1321,12 +1321,14 @@ mod imp {
         async fn interrupt(&self) -> Result<()> {
             let mut writer_lock = self.writer.lock().await;
             let mut writer = writer_lock.take().ok_or_else(Self::closed_session_error)?;
-            let (res, writer) = tokio::task::spawn_blocking(move || {
+            let (tx, rx) = tokio::sync::oneshot::channel();
+            std::thread::spawn(move || {
                 let res = writer.write_all(&[3]).and_then(|_| writer.flush());
-                (res, writer)
-            })
-            .await
-            .expect("spawn_blocking panicked");
+                let _ = tx.send((res, writer));
+            });
+            let (res, writer) = rx.await.map_err(|_| {
+                AppError::Session("interrupt write thread died".to_string())
+            })?;
             *writer_lock = Some(writer);
             res.map_err(AppError::Io)?;
             Ok(())
@@ -1375,15 +1377,18 @@ mod imp {
                 #[cfg(windows)]
                 {
                     if let Some(pid) = child.process_id() {
-                        let _ = tokio::task::spawn_blocking(move || {
-                            std::process::Command::new("taskkill")
-                                .arg("/F")
+                        let (tx, rx) = tokio::sync::oneshot::channel();
+                        std::thread::spawn(move || {
+                            let mut cmd = std::process::Command::new("taskkill");
+                            cmd.arg("/F")
                                 .arg("/T")
                                 .arg("/PID")
                                 .arg(pid.to_string())
-                                .output()
-                        })
-                        .await;
+                                .stdout(std::process::Stdio::null())
+                                .stderr(std::process::Stdio::null());
+                            let _ = tx.send(cmd.status());
+                        });
+                        let _ = rx.await;
                     }
                 }
                 child.kill()
