@@ -684,7 +684,7 @@ async fn confirmed_shell_followup_preserves_shell_session_id_without_workspace()
         .iter()
         .filter(|tool| tool.name == "shell")
         .collect();
-    let (tx, mut rx) = mpsc::channel(128);
+    let (tx, rx) = mpsc::channel(128);
     let cancel = CancellationToken::new();
 
     // This test is only validating shell-session routing metadata. Pre-cancel the
@@ -707,45 +707,47 @@ async fn confirmed_shell_followup_preserves_shell_session_id_without_workspace()
             .await
     });
 
+    let (observed_tx, observed_rx) = tokio::sync::oneshot::channel();
+    let drain = tokio::spawn(async move {
+        let mut rx = rx;
+        let mut observed_tx = Some(observed_tx);
+        let mut saw_shell_session_id = false;
+        let mut saw_tool_result = false;
+
+        while let Some(chunk) = rx.recv().await {
+            match chunk {
+                StreamChunk::ShellLifecycle {
+                    shell_session_id: Some(_),
+                    ..
+                }
+                | StreamChunk::ShellOutput {
+                    shell_session_id: Some(_),
+                    ..
+                } => saw_shell_session_id = true,
+                StreamChunk::ToolCallResult { success, .. } => {
+                    assert!(success, "confirmed shell follow-up should succeed");
+                    saw_tool_result = true;
+                }
+                _ => {}
+            }
+
+            if saw_shell_session_id
+                && saw_tool_result
+                && let Some(observed_tx) = observed_tx.take()
+            {
+                let _ = observed_tx.send(());
+            }
+        }
+
+        (saw_shell_session_id, saw_tool_result)
+    });
+
     drop(tx);
 
-    let mut saw_shell_session_id = false;
-    let mut saw_tool_result = false;
-    for _ in 0..16 {
-        let chunk = timeout(Duration::from_secs(2), rx.recv())
-            .await
-            .expect("stream chunk timeout")
-            .expect("stream should include confirmed shell follow-up chunks");
-
-        match chunk {
-            StreamChunk::ShellLifecycle {
-                shell_session_id: Some(_),
-                ..
-            }
-            | StreamChunk::ShellOutput {
-                shell_session_id: Some(_),
-                ..
-            } => saw_shell_session_id = true,
-            StreamChunk::ToolCallResult { success, .. } => {
-                assert!(success, "confirmed shell follow-up should succeed");
-                saw_tool_result = true;
-            }
-            _ => {}
-        }
-
-        if saw_shell_session_id && saw_tool_result {
-            break;
-        }
-    }
-
-    assert!(
-        saw_shell_session_id,
-        "expected confirmed shell follow-up streaming to include shell_session_id"
-    );
-    assert!(
-        saw_tool_result,
-        "expected confirmed shell follow-up to emit a successful tool result"
-    );
+    timeout(Duration::from_secs(5), observed_rx)
+        .await
+        .expect("confirmed shell follow-up stream observation timed out")
+        .expect("confirmed shell follow-up observation channel closed unexpectedly");
 
     timeout(
         Duration::from_secs(5),
@@ -761,6 +763,20 @@ async fn confirmed_shell_followup_preserves_shell_session_id_without_workspace()
         .expect("confirmed shell follow-up task should join")
         .expect("confirmed tool follow-up should execute")
         .expect("expected confirmed shell follow-up to run");
+
+    let (saw_shell_session_id, saw_tool_result) = timeout(Duration::from_secs(5), drain)
+        .await
+        .expect("confirmed shell follow-up drain task timed out")
+        .expect("confirmed shell follow-up drain task should join");
+
+    assert!(
+        saw_shell_session_id,
+        "expected confirmed shell follow-up streaming to include shell_session_id"
+    );
+    assert!(
+        saw_tool_result,
+        "expected confirmed shell follow-up to emit a successful tool result"
+    );
 
     assert!(response.tool_calls.iter().any(|call| call.name == "shell"));
 }

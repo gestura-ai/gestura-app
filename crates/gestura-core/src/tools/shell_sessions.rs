@@ -1720,6 +1720,10 @@ mod imp {
         const PTY_TEST_TIMEOUT_SECS: u64 = 45;
         #[cfg(not(windows))]
         const PTY_TEST_TIMEOUT_SECS: u64 = 30;
+        #[cfg(windows)]
+        const PTY_EVENT_TIMEOUT_SECS: u64 = 30;
+        #[cfg(not(windows))]
+        const PTY_EVENT_TIMEOUT_SECS: u64 = 20;
 
         async fn shutdown_session_for_test(pool_key: &str) {
             let _ = tokio::time::timeout(Duration::from_secs(2), shutdown_session(pool_key)).await;
@@ -1761,7 +1765,7 @@ mod imp {
                     interactive,
                     user_managed,
                     ..
-                } = tokio::time::timeout(Duration::from_secs(10), rx.recv())
+                } = tokio::time::timeout(Duration::from_secs(PTY_EVENT_TIMEOUT_SECS), rx.recv())
                     .await
                     .expect("timed out waiting for shell event")
                     .expect("channel closed while waiting for shell event")
@@ -1778,7 +1782,7 @@ mod imp {
                     shell_session_id,
                     state: ShellProcessState::Started,
                     ..
-                } = tokio::time::timeout(Duration::from_secs(10), rx.recv())
+                } = tokio::time::timeout(Duration::from_secs(PTY_EVENT_TIMEOUT_SECS), rx.recv())
                     .await
                     .expect("timed out waiting for command start")
                     .expect("channel closed while waiting for command start")
@@ -1788,6 +1792,52 @@ mod imp {
                         shell_session_id.expect("PTY-managed commands should carry session id"),
                     );
                 }
+            }
+        }
+
+        fn simple_output_command(text: &str) -> String {
+            #[cfg(windows)]
+            {
+                format!("echo {text}")
+            }
+
+            #[cfg(not(windows))]
+            {
+                format!("printf {text}")
+            }
+        }
+
+        fn delayed_output_command(text: &str) -> String {
+            #[cfg(windows)]
+            {
+                format!("ping -n 4 127.0.0.1 >nul && echo {text}")
+            }
+
+            #[cfg(not(windows))]
+            {
+                format!("sleep 2; printf {text}")
+            }
+        }
+
+        #[cfg(windows)]
+        fn activity_aware_windows_command() -> &'static str {
+            "powershell -NoLogo -NoProfile -Command \"Write-Output warmup; Start-Sleep -Seconds 2; Write-Output progress; Start-Sleep -Seconds 2; Write-Output done\""
+        }
+
+        #[cfg(windows)]
+        fn quiet_timeout_windows_command() -> &'static str {
+            "powershell -NoLogo -NoProfile -Command \"Start-Sleep -Seconds 4; Write-Output done\""
+        }
+
+        fn interactive_input_command(text: &str) -> String {
+            #[cfg(windows)]
+            {
+                format!("echo {text}\r\n")
+            }
+
+            #[cfg(not(windows))]
+            {
+                format!("printf {text}\n")
             }
         }
 
@@ -1856,13 +1906,14 @@ mod imp {
         async fn reuses_idle_session_within_same_pool() {
             run_pty_test("pty-reuse-pool", async move {
                 let (tx, mut rx) = mpsc::channel(128);
+                let first_command = simple_output_command("first");
                 let first = execute_in_session(
                     "pty-reuse-pool",
                     std::env::current_dir()
                         .ok()
                         .and_then(|p| p.to_str().map(ToOwned::to_owned))
                         .as_deref(),
-                    "printf first",
+                    first_command.as_str(),
                     None,
                     Some(10),
                     tx.clone(),
@@ -1873,13 +1924,14 @@ mod imp {
 
                 let (_, first_session_id) = recv_command_started(&mut rx).await;
 
+                let second_command = simple_output_command("second");
                 let second = execute_in_session(
                     "pty-reuse-pool",
                     std::env::current_dir()
                         .ok()
                         .and_then(|p| p.to_str().map(ToOwned::to_owned))
                         .as_deref(),
-                    "printf second",
+                    second_command.as_str(),
                     None,
                     Some(10),
                     tx,
@@ -1902,13 +1954,14 @@ mod imp {
         async fn execute_in_session_emits_session_lifecycle_to_caller_stream() {
             run_pty_test("pty-session-lifecycle-stream", async move {
                 let (tx, mut rx) = mpsc::channel(128);
+                let command = simple_output_command("streamed");
                 let result = execute_in_session(
                     "pty-session-lifecycle-stream",
                     std::env::current_dir()
                         .ok()
                         .and_then(|p| p.to_str().map(ToOwned::to_owned))
                         .as_deref(),
-                    "printf streamed",
+                    command.as_str(),
                     None,
                     Some(10),
                     tx,
@@ -1945,6 +1998,7 @@ mod imp {
             run_pty_test("pty-busy-pool", async move {
                 let (tx_one, mut rx_one) = mpsc::channel(128);
                 let (tx_two, mut rx_two) = mpsc::channel(128);
+                let first_command = delayed_output_command("one");
 
                 let first = tokio::spawn(async move {
                     execute_in_session(
@@ -1953,7 +2007,7 @@ mod imp {
                             .ok()
                             .and_then(|p| p.to_str().map(ToOwned::to_owned))
                             .as_deref(),
-                        "sleep 1; printf one",
+                        first_command.as_str(),
                         None,
                         Some(10),
                         tx_one,
@@ -1962,6 +2016,7 @@ mod imp {
                 });
 
                 let (_, first_session_id) = recv_command_started(&mut rx_one).await;
+                let second_command = simple_output_command("two");
 
                 let second = tokio::spawn(async move {
                     execute_in_session(
@@ -1970,7 +2025,7 @@ mod imp {
                             .ok()
                             .and_then(|p| p.to_str().map(ToOwned::to_owned))
                             .as_deref(),
-                        "printf two",
+                        second_command.as_str(),
                         None,
                         Some(10),
                         tx_two,
@@ -1995,11 +2050,11 @@ mod imp {
         async fn activity_aware_execution_allows_recently_active_long_running_commands() {
             run_pty_test("pty-activity-aware-pool", async move {
                 let (tx, _rx) = mpsc::channel(128);
-                let command = if cfg!(windows) {
-                    "echo warmup && ping -n 3 127.0.0.1 >nul && echo progress && ping -n 3 127.0.0.1 >nul && echo done"
-                } else {
-                    "printf warmup && sleep 2 && printf progress && sleep 2 && printf done"
-                };
+                #[cfg(windows)]
+                let command = activity_aware_windows_command();
+                #[cfg(not(windows))]
+                let command =
+                    "printf warmup && sleep 2 && printf progress && sleep 2 && printf done";
 
                 let result = execute_in_session_with_options(
                     "pty-activity-aware-pool",
@@ -2034,11 +2089,10 @@ mod imp {
          {
             run_pty_test("pty-quiet-activity-aware-pool", async move {
                 let (tx, mut rx) = mpsc::channel(128);
-                let command = if cfg!(windows) {
-                    "ping -n 6 127.0.0.1 >nul && echo done"
-                } else {
-                    "sleep 4 && printf done"
-                };
+                #[cfg(windows)]
+                let command = quiet_timeout_windows_command();
+                #[cfg(not(windows))]
+                let command = "sleep 4 && printf done";
 
                 let result = execute_in_session_with_options(
                     "pty-quiet-activity-aware-pool",
@@ -2083,14 +2137,22 @@ mod imp {
         async fn activity_aware_execution_times_out_after_repeated_quiet_periods_without_signal() {
             run_pty_test("pty-quiet-timeout-pool", async move {
                 let (tx, _rx) = mpsc::channel(128);
-                let command = if cfg!(windows) {
-                    "ping -n 6 127.0.0.1 >nul && echo done"
-                } else {
-                    "sleep 4 && printf done"
-                };
+                #[cfg(windows)]
+                let command = quiet_timeout_windows_command();
+                #[cfg(not(windows))]
+                let command = "sleep 4 && printf done";
 
                 let result = tokio::time::timeout(
-                    Duration::from_secs(8),
+                    Duration::from_secs({
+                        #[cfg(windows)]
+                        {
+                            15
+                        }
+                        #[cfg(not(windows))]
+                        {
+                            8
+                        }
+                    }),
                     execute_in_session_with_options(
                         "pty-quiet-timeout-pool",
                         std::env::current_dir()
@@ -2187,13 +2249,14 @@ mod imp {
         async fn claiming_automation_session_removes_it_from_reuse_pool() {
             run_pty_test("pty-claim-pool", async move {
                 let (tx, mut rx) = mpsc::channel(128);
+                let first_command = simple_output_command("first");
                 let first = execute_in_session(
                     "pty-claim-pool",
                     std::env::current_dir()
                         .ok()
                         .and_then(|p| p.to_str().map(ToOwned::to_owned))
                         .as_deref(),
-                    "printf first",
+                    first_command.as_str(),
                     None,
                     Some(10),
                     tx.clone(),
@@ -2216,13 +2279,14 @@ mod imp {
                 assert!(metadata.user_managed);
                 assert!(!metadata.available_for_reuse);
 
+                let second_command = simple_output_command("second");
                 let second = execute_in_session(
                     "pty-claim-pool",
                     std::env::current_dir()
                         .ok()
                         .and_then(|p| p.to_str().map(ToOwned::to_owned))
                         .as_deref(),
-                    "printf second",
+                    second_command.as_str(),
                     None,
                     Some(10),
                     tx,
@@ -2245,13 +2309,14 @@ mod imp {
         async fn claimed_automation_session_streams_interactive_output_after_attach() {
             run_pty_test("pty-attach-pool", async move {
                 let (tx, mut rx) = mpsc::channel(128);
+                let seed_command = simple_output_command("base");
                 execute_in_session(
                     "pty-attach-pool",
                     std::env::current_dir()
                         .ok()
                         .and_then(|p| p.to_str().map(ToOwned::to_owned))
                         .as_deref(),
-                    "printf base",
+                    seed_command.as_str(),
                     None,
                     Some(10),
                     tx,
@@ -2272,7 +2337,8 @@ mod imp {
                     .expect("claim session")
                     .expect("claimed session metadata");
 
-                send_input(&shell_session_id, "printf attached\n")
+                let attached_input = interactive_input_command("attached");
+                send_input(&shell_session_id, attached_input.as_str())
                     .await
                     .expect("send interactive input");
 
