@@ -1362,7 +1362,7 @@ mod imp {
                     let writer_to_drop = writer_lock.take();
                     let mut master_lock = self.master.lock().await;
                     let master_to_drop = master_lock.take();
-                    tokio::task::spawn_blocking(move || {
+                    std::thread::spawn(move || {
                         drop(writer_to_drop);
                         drop(master_to_drop);
                     });
@@ -1389,12 +1389,13 @@ mod imp {
             {
                 // On Windows ConPTY, dropping MasterPty calls ClosePseudoConsole which
                 // blocks synchronously if any child process is still attached.
-                // We drop them in a blocking task to prevent stalling the async executor.
+                // We drop them in a detached thread to prevent stalling the async executor
+                // or preventing Tokio runtime shutdown if ClosePseudoConsole hangs.
                 let mut writer_lock = self.writer.lock().await;
                 let writer_to_drop = writer_lock.take();
                 let mut master_lock = self.master.lock().await;
                 let master_to_drop = master_lock.take();
-                tokio::task::spawn_blocking(move || {
+                std::thread::spawn(move || {
                     drop(writer_to_drop);
                     drop(master_to_drop);
                 });
