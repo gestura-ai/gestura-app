@@ -1132,6 +1132,7 @@ mod imp {
 
                             if start.elapsed() >= timeout {
                                 if idle_for < stall_timeout {
+                                    tokio::time::sleep(Duration::from_millis(50)).await;
                                     continue;
                                 }
 
@@ -1374,12 +1375,15 @@ mod imp {
                 #[cfg(windows)]
                 {
                     if let Some(pid) = child.process_id() {
-                        let _ = std::process::Command::new("taskkill")
-                            .arg("/F")
-                            .arg("/T")
-                            .arg("/PID")
-                            .arg(pid.to_string())
-                            .output();
+                        let _ = tokio::task::spawn_blocking(move || {
+                            std::process::Command::new("taskkill")
+                                .arg("/F")
+                                .arg("/T")
+                                .arg("/PID")
+                                .arg(pid.to_string())
+                                .output()
+                        })
+                        .await;
                     }
                 }
                 child.kill()
