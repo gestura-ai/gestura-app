@@ -155,8 +155,8 @@ mod imp {
         shell_session_id: String,
         pool_key: String,
         mode: SessionMode,
-        master: Mutex<Box<dyn MasterPty + Send>>,
-        writer: Mutex<Box<dyn Write + Send>>,
+        master: Mutex<Option<Box<dyn MasterPty + Send>>>,
+        writer: Mutex<Option<Box<dyn Write + Send>>>,
         command_lock: Mutex<()>,
         active_sender: Arc<StdMutex<Option<mpsc::Sender<String>>>>,
         event_tx: broadcast::Sender<StreamChunk>,
@@ -491,6 +491,12 @@ mod imp {
     }
 
     impl ShellSession {
+        fn closed_session_error() -> AppError {
+            AppError::Session(
+                "PTY shell session closed unexpectedly; retry to create a fresh shell".to_string(),
+            )
+        }
+
         fn spawn(
             pool_key: &str,
             initial_cwd: Option<&str>,
@@ -552,8 +558,8 @@ mod imp {
                 shell_session_id,
                 pool_key: pool_key.to_string(),
                 mode,
-                master: Mutex::new(pair.master),
-                writer: Mutex::new(writer),
+                master: Mutex::new(Some(pair.master)),
+                writer: Mutex::new(Some(writer)),
                 command_lock: Mutex::new(()),
                 active_sender,
                 event_tx,
@@ -753,10 +759,7 @@ mod imp {
 
         async fn send_input(&self, data: &str) -> Result<()> {
             if self.is_closed() {
-                return Err(AppError::Session(
-                    "PTY shell session closed unexpectedly; retry to create a fresh shell"
-                        .to_string(),
-                ));
+                return Err(Self::closed_session_error());
             }
 
             self.claim_for_user();
@@ -766,6 +769,7 @@ mod imp {
             }
 
             let mut writer = self.writer.lock().await;
+            let writer = writer.as_mut().ok_or_else(Self::closed_session_error)?;
             writer.write_all(data.as_bytes()).map_err(AppError::Io)?;
             writer.flush().map_err(AppError::Io)
         }
@@ -774,6 +778,7 @@ mod imp {
             let cols = cols.max(1);
             let rows = rows.max(1);
             let master = self.master.lock().await;
+            let master = master.as_ref().ok_or_else(Self::closed_session_error)?;
             master
                 .resize(PtySize {
                     rows,
@@ -793,10 +798,7 @@ mod imp {
         ) -> Result<StreamingCommandResult> {
             let _command_guard = self.command_lock.lock().await;
             if self.is_closed() {
-                return Err(AppError::Session(
-                    "PTY shell session closed unexpectedly; retry to create a fresh shell"
-                        .to_string(),
-                ));
+                return Err(Self::closed_session_error());
             }
 
             let process_id = uuid::Uuid::new_v4().to_string();
@@ -826,6 +828,7 @@ mod imp {
 
             {
                 let mut writer = self.writer.lock().await;
+                let writer = writer.as_mut().ok_or_else(Self::closed_session_error)?;
                 if let Err(error) = writer.write_all(wrapped.as_bytes()) {
                     self.set_state(ShellSessionState::Failed)?;
                     self.set_active_sender(None)?;
@@ -1300,6 +1303,7 @@ mod imp {
 
         async fn interrupt(&self) -> Result<()> {
             let mut writer = self.writer.lock().await;
+            let writer = writer.as_mut().ok_or_else(Self::closed_session_error)?;
             writer.write_all(&[3]).map_err(AppError::Io)?;
             writer.flush().map_err(AppError::Io)?;
             Ok(())
@@ -1309,11 +1313,27 @@ mod imp {
             if self.closed.swap(true, Ordering::SeqCst) {
                 return Ok(());
             }
-            let mut killer = self
-                .killer
-                .lock()
-                .map_err(|_| AppError::Session("failed to lock PTY killer".to_string()))?;
-            match killer.kill() {
+            let kill_result = {
+                let mut killer = self
+                    .killer
+                    .lock()
+                    .map_err(|_| AppError::Session("failed to lock PTY killer".to_string()))?;
+                killer.kill()
+            };
+
+            // Drop the PTY handles so any background blocking reader can observe
+            // EOF/closure and stop keeping the test runtime alive on shutdown.
+            self.set_active_sender(None)?;
+            {
+                let mut writer = self.writer.lock().await;
+                writer.take();
+            }
+            {
+                let mut master = self.master.lock().await;
+                master.take();
+            }
+
+            match kill_result {
                 Ok(()) => Ok(()),
                 Err(error) if error.kind() == ErrorKind::NotFound => Ok(()),
                 Err(error) => Err(AppError::Io(error)),
