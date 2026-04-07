@@ -1337,10 +1337,14 @@ mod imp {
             let Some(mut child) = child else {
                 #[cfg(windows)]
                 {
-                    let mut writer = self.writer.lock().await;
-                    writer.take();
-                    let mut master = self.master.lock().await;
-                    master.take();
+                    let mut writer_lock = self.writer.lock().await;
+                    let writer_to_drop = writer_lock.take();
+                    let mut master_lock = self.master.lock().await;
+                    let master_to_drop = master_lock.take();
+                    tokio::task::spawn_blocking(move || {
+                        drop(writer_to_drop);
+                        drop(master_to_drop);
+                    });
                 }
                 return Ok(());
             };
@@ -1364,11 +1368,15 @@ mod imp {
             {
                 // On Windows ConPTY, dropping MasterPty calls ClosePseudoConsole which
                 // blocks synchronously if any child process is still attached.
-                // We must kill the processes first.
-                let mut writer = self.writer.lock().await;
-                writer.take();
-                let mut master = self.master.lock().await;
-                master.take();
+                // We drop them in a blocking task to prevent stalling the async executor.
+                let mut writer_lock = self.writer.lock().await;
+                let writer_to_drop = writer_lock.take();
+                let mut master_lock = self.master.lock().await;
+                let master_to_drop = master_lock.take();
+                tokio::task::spawn_blocking(move || {
+                    drop(writer_to_drop);
+                    drop(master_to_drop);
+                });
             }
 
             let should_observe_exit = match &kill_result {
