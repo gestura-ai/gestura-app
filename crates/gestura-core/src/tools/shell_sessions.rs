@@ -1795,6 +1795,18 @@ mod imp {
             }
         }
 
+        fn spawn_chunk_collector(
+            mut rx: mpsc::Receiver<StreamChunk>,
+        ) -> tokio::task::JoinHandle<Vec<StreamChunk>> {
+            tokio::spawn(async move {
+                let mut chunks = Vec::new();
+                while let Some(chunk) = rx.recv().await {
+                    chunks.push(chunk);
+                }
+                chunks
+            })
+        }
+
         fn simple_output_command(text: &str) -> String {
             #[cfg(windows)]
             {
@@ -1810,7 +1822,9 @@ mod imp {
         fn delayed_output_command(text: &str) -> String {
             #[cfg(windows)]
             {
-                format!("ping -n 4 127.0.0.1 >nul && echo {text}")
+                format!(
+                    "powershell -NoLogo -NoProfile -NonInteractive -Command \"Start-Sleep -Seconds 2; Write-Output '{text}'\""
+                )
             }
 
             #[cfg(not(windows))]
@@ -1905,7 +1919,8 @@ mod imp {
         #[tokio::test]
         async fn reuses_idle_session_within_same_pool() {
             run_pty_test("pty-reuse-pool", async move {
-                let (tx, mut rx) = mpsc::channel(128);
+                let (tx, rx) = mpsc::channel(128);
+                let collector = spawn_chunk_collector(rx);
                 let first_command = simple_output_command("first");
                 let first = execute_in_session(
                     "pty-reuse-pool",
@@ -1922,8 +1937,6 @@ mod imp {
                 .expect("first command result");
                 assert!(first.stdout.contains("first"));
 
-                let (_, first_session_id) = recv_command_started(&mut rx).await;
-
                 let second_command = simple_output_command("second");
                 let second = execute_in_session(
                     "pty-reuse-pool",
@@ -1934,18 +1947,39 @@ mod imp {
                     second_command.as_str(),
                     None,
                     Some(10),
-                    tx,
+                    tx.clone(),
                 )
                 .await
                 .expect("second command result");
                 assert!(second.stdout.contains("second"));
 
-                let (_, second_session_id) = recv_command_started(&mut rx).await;
-                assert_eq!(first_session_id, second_session_id);
-
                 shutdown_session("pty-reuse-pool")
                     .await
                     .expect("shutdown PTY session pool");
+
+                drop(tx);
+                let chunks = tokio::time::timeout(Duration::from_secs(5), collector)
+                    .await
+                    .expect("timed out collecting reuse-pool shell chunks")
+                    .expect("reuse-pool collector should join");
+
+                let started_session_ids = chunks
+                    .iter()
+                    .filter_map(|chunk| match chunk {
+                        StreamChunk::ShellLifecycle {
+                            shell_session_id: Some(shell_session_id),
+                            state: ShellProcessState::Started,
+                            ..
+                        } => Some(shell_session_id.clone()),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>();
+
+                assert!(
+                    started_session_ids.len() >= 2,
+                    "expected at least two started shell lifecycle events, got {chunks:?}"
+                );
+                assert_eq!(started_session_ids[0], started_session_ids[1]);
             })
             .await;
         }
@@ -1953,7 +1987,8 @@ mod imp {
         #[tokio::test]
         async fn execute_in_session_emits_session_lifecycle_to_caller_stream() {
             run_pty_test("pty-session-lifecycle-stream", async move {
-                let (tx, mut rx) = mpsc::channel(128);
+                let (tx, rx) = mpsc::channel(128);
+                let collector = spawn_chunk_collector(rx);
                 let command = simple_output_command("streamed");
                 let result = execute_in_session(
                     "pty-session-lifecycle-stream",
@@ -1964,31 +1999,67 @@ mod imp {
                     command.as_str(),
                     None,
                     Some(10),
-                    tx,
+                    tx.clone(),
                 )
                 .await
                 .expect("command result");
                 assert!(result.stdout.contains("streamed"));
 
-                let (busy_session_id, busy_state, interactive, user_managed) =
-                    recv_session_lifecycle(&mut rx).await;
-                assert_eq!(busy_state, ShellSessionState::Busy);
-                assert!(!interactive);
-                assert!(!user_managed);
-
-                let (_, started_session_id) = recv_command_started(&mut rx).await;
-                assert_eq!(started_session_id, busy_session_id);
-
-                let (idle_session_id, idle_state, interactive, user_managed) =
-                    recv_session_lifecycle(&mut rx).await;
-                assert_eq!(idle_session_id, busy_session_id);
-                assert_eq!(idle_state, ShellSessionState::Idle);
-                assert!(!interactive);
-                assert!(!user_managed);
-
                 shutdown_session("pty-session-lifecycle-stream")
                     .await
                     .expect("shutdown PTY session pool");
+
+                drop(tx);
+                let chunks = tokio::time::timeout(Duration::from_secs(5), collector)
+                    .await
+                    .expect("timed out collecting lifecycle stream chunks")
+                    .expect("lifecycle collector should join");
+
+                let (busy_index, busy_session_id) = chunks
+                    .iter()
+                    .enumerate()
+                    .find_map(|(index, chunk)| match chunk {
+                        StreamChunk::ShellSessionLifecycle {
+                            shell_session_id,
+                            state: ShellSessionState::Busy,
+                            interactive: false,
+                            user_managed: false,
+                            ..
+                        } => Some((index, shell_session_id.clone())),
+                        _ => None,
+                    })
+                    .expect("expected busy shell session lifecycle event");
+
+                let started_index = chunks
+                    .iter()
+                    .enumerate()
+                    .find_map(|(index, chunk)| match chunk {
+                        StreamChunk::ShellLifecycle {
+                            shell_session_id: Some(shell_session_id),
+                            state: ShellProcessState::Started,
+                            ..
+                        } if shell_session_id == &busy_session_id => Some(index),
+                        _ => None,
+                    })
+                    .expect("expected started shell lifecycle event for busy session");
+
+                let idle_index = chunks
+                    .iter()
+                    .enumerate()
+                    .find_map(|(index, chunk)| match chunk {
+                        StreamChunk::ShellSessionLifecycle {
+                            shell_session_id,
+                            state: ShellSessionState::Idle,
+                            interactive: false,
+                            user_managed: false,
+                            ..
+                        } if shell_session_id == &busy_session_id => Some(index),
+                        _ => None,
+                    })
+                    .expect("expected idle shell session lifecycle event for busy session");
+
+                assert!(busy_index < started_index);
+                assert!(started_index < idle_index);
             })
             .await;
         }
@@ -2289,7 +2360,7 @@ mod imp {
                     second_command.as_str(),
                     None,
                     Some(10),
-                    tx,
+                    tx.clone(),
                 )
                 .await
                 .expect("second command result");
@@ -2343,8 +2414,11 @@ mod imp {
                     .expect("send interactive input");
 
                 let mut saw_attached_output = false;
-                for _ in 0..12 {
-                    let chunk = tokio::time::timeout(Duration::from_secs(5), attach_rx.recv())
+                let deadline =
+                    tokio::time::Instant::now() + Duration::from_secs(PTY_EVENT_TIMEOUT_SECS);
+                while tokio::time::Instant::now() < deadline {
+                    let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+                    let chunk = tokio::time::timeout(remaining, attach_rx.recv())
                         .await
                         .expect("timed out waiting for attached shell output")
                         .expect("attach channel closed unexpectedly");
