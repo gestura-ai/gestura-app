@@ -71,6 +71,7 @@ mod imp {
     const SHELL_OUTPUT_SEND_TIMEOUT: Duration = Duration::from_millis(100);
     const STATUS_CHUNK_SEND_TIMEOUT: Duration = Duration::from_millis(100);
     const STALL_SIGNAL_TAIL_BYTES: usize = 4096;
+    const CHILD_EXIT_POLL_INTERVAL: Duration = Duration::from_millis(100);
 
     const INTERACTIVE_PROMPT_PATTERNS: &[&str] = &[
         "ok to proceed?",
@@ -160,7 +161,7 @@ mod imp {
         command_lock: Mutex<()>,
         active_sender: Arc<StdMutex<Option<mpsc::Sender<String>>>>,
         event_tx: broadcast::Sender<StreamChunk>,
-        killer: Arc<StdMutex<Box<dyn ChildKiller + Send + Sync>>>,
+        child: Arc<StdMutex<Option<Box<dyn Child + Send + Sync>>>>,
         closed: Arc<AtomicBool>,
         claimed_by_user: Arc<AtomicBool>,
         user_stop_requested: Arc<AtomicBool>,
@@ -537,7 +538,7 @@ mod imp {
             let active_process_id = Arc::new(StdMutex::new(None));
             let closed = Arc::new(AtomicBool::new(false));
             let claimed_by_user = Arc::new(AtomicBool::new(false));
-            let killer = Arc::new(StdMutex::new(child.clone_killer()));
+            let child = Arc::new(StdMutex::new(Some(child)));
             let (event_tx, _) = broadcast::channel(SESSION_EVENT_BUFFER);
 
             spawn_reader_loop(
@@ -552,7 +553,7 @@ mod imp {
                     emit_raw_output: matches!(mode, SessionMode::Interactive),
                 },
             );
-            spawn_wait_loop(child, closed.clone(), shell_session_id.clone());
+            spawn_child_monitor(child.clone(), closed.clone(), shell_session_id.clone());
 
             Ok(Arc::new(Self {
                 shell_session_id,
@@ -563,7 +564,7 @@ mod imp {
                 command_lock: Mutex::new(()),
                 active_sender,
                 event_tx,
-                killer,
+                child,
                 closed,
                 claimed_by_user,
                 user_stop_requested: Arc::new(AtomicBool::new(false)),
@@ -1313,17 +1314,10 @@ mod imp {
             if self.closed.swap(true, Ordering::SeqCst) {
                 return Ok(());
             }
-            let kill_result = {
-                let mut killer = self
-                    .killer
-                    .lock()
-                    .map_err(|_| AppError::Session("failed to lock PTY killer".to_string()))?;
-                killer.kill()
-            };
-
-            // Drop the PTY handles so any background blocking reader can observe
-            // EOF/closure and stop keeping the test runtime alive on shutdown.
             self.set_active_sender(None)?;
+
+            // Drop the PTY handles first so the blocking reader can observe
+            // closure promptly, especially on Windows ConPTY.
             {
                 let mut writer = self.writer.lock().await;
                 writer.take();
@@ -1331,6 +1325,44 @@ mod imp {
             {
                 let mut master = self.master.lock().await;
                 master.take();
+            }
+
+            let child = {
+                let mut child = self
+                    .child
+                    .lock()
+                    .map_err(|_| AppError::Session("failed to lock PTY child".to_string()))?;
+                child.take()
+            };
+
+            let Some(mut child) = child else {
+                return Ok(());
+            };
+
+            let kill_result = child.kill();
+
+            let should_observe_exit = match &kill_result {
+                Ok(()) => true,
+                Err(error) if error.kind() == ErrorKind::NotFound => true,
+                Err(_) => false,
+            };
+
+            if should_observe_exit {
+                for _ in 0..10 {
+                    match child.try_wait() {
+                        Ok(Some(_)) => break,
+                        Err(error) if error.kind() == ErrorKind::NotFound => break,
+                        Ok(None) => tokio::time::sleep(Duration::from_millis(50)).await,
+                        Err(error) => {
+                            tracing::debug!(
+                                shell_session_id = %self.shell_session_id,
+                                error = %error,
+                                "PTY shell try_wait after kill failed"
+                            );
+                            break;
+                        }
+                    }
+                }
             }
 
             match kill_result {
@@ -1482,16 +1514,61 @@ mod imp {
         });
     }
 
-    fn spawn_wait_loop(
-        mut child: Box<dyn Child + Send + Sync>,
+    fn spawn_child_monitor(
+        child: Arc<StdMutex<Option<Box<dyn Child + Send + Sync>>>>,
         closed: Arc<AtomicBool>,
         shell_session_id: String,
     ) {
-        tokio::task::spawn_blocking(move || {
-            if let Err(error) = child.wait() {
-                tracing::warn!(shell_session_id = %shell_session_id, error = %error, "PTY shell wait failed");
+        tokio::spawn(async move {
+            loop {
+                if closed.load(Ordering::SeqCst) {
+                    return;
+                }
+
+                let exit_result = {
+                    let mut child = match child.lock() {
+                        Ok(child) => child,
+                        Err(_) => {
+                            closed.store(true, Ordering::SeqCst);
+                            return;
+                        }
+                    };
+
+                    let poll_result = match child.as_mut() {
+                        Some(child) => child.try_wait().map(|status| status.is_some()),
+                        None => return,
+                    };
+
+                    match poll_result {
+                        Ok(true) => {
+                            child.take();
+                            Some(Ok(()))
+                        }
+                        Ok(false) => None,
+                        Err(error) => {
+                            child.take();
+                            Some(Err(error))
+                        }
+                    }
+                };
+
+                match exit_result {
+                    Some(Ok(())) => {
+                        closed.store(true, Ordering::SeqCst);
+                        return;
+                    }
+                    Some(Err(error)) => {
+                        tracing::warn!(
+                            shell_session_id = %shell_session_id,
+                            error = %error,
+                            "PTY shell exit poll failed"
+                        );
+                        closed.store(true, Ordering::SeqCst);
+                        return;
+                    }
+                    None => tokio::time::sleep(CHILD_EXIT_POLL_INTERVAL).await,
+                }
             }
-            closed.store(true, Ordering::SeqCst);
         });
     }
 
@@ -2145,6 +2222,60 @@ mod imp {
                 shutdown_session("pty-busy-pool")
                     .await
                     .expect("shutdown PTY session pool");
+            })
+            .await;
+        }
+
+        #[tokio::test]
+        async fn stop_process_interrupts_active_command_without_hanging() {
+            run_pty_test("pty-stop-process", async move {
+                let (tx, mut rx) = mpsc::channel(128);
+                let initial_cwd = std::env::current_dir()
+                    .ok()
+                    .and_then(|p| p.to_str().map(ToOwned::to_owned));
+
+                #[cfg(windows)]
+                let command = "ping -n 20 127.0.0.1 >nul & echo done";
+                #[cfg(not(windows))]
+                let command = "sleep 20; printf done";
+
+                let handle = tokio::spawn({
+                    let tx = tx.clone();
+                    let initial_cwd = initial_cwd.clone();
+                    async move {
+                        execute_in_session(
+                            "pty-stop-process",
+                            initial_cwd.as_deref(),
+                            command,
+                            None,
+                            Some(30),
+                            tx,
+                        )
+                        .await
+                    }
+                });
+
+                let (process_id, shell_session_id) = recv_command_started(&mut rx).await;
+                let stopped = tokio::time::timeout(
+                    Duration::from_secs(PTY_EVENT_TIMEOUT_SECS),
+                    stop_process(&process_id),
+                )
+                .await
+                .expect("timed out stopping PTY process")
+                .expect("stop PTY process")
+                .expect("expected PTY process handle after stop");
+                assert_eq!(stopped.shell_session_id, shell_session_id);
+
+                let result = tokio::time::timeout(Duration::from_secs(5), handle)
+                    .await
+                    .expect("timed out waiting for stopped PTY command")
+                    .expect("stopped PTY command should join")
+                    .expect("stopped PTY command result");
+
+                shutdown_session_for_test("pty-stop-process").await;
+
+                assert!(!result.success);
+                assert_eq!(result.exit_code, 130);
             })
             .await;
         }
