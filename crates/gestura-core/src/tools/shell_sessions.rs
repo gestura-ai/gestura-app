@@ -1326,8 +1326,9 @@ mod imp {
                 let res = writer.write_all(&[3]).and_then(|_| writer.flush());
                 let _ = tx.send((res, writer));
             });
-            let (res, writer) = rx
+            let (res, writer) = tokio::time::timeout(Duration::from_secs(2), rx)
                 .await
+                .map_err(|_| AppError::Session("interrupt write timed out".to_string()))?
                 .map_err(|_| AppError::Session("interrupt write thread died".to_string()))?;
             *writer_lock = Some(writer);
             res.map_err(AppError::Io)?;
@@ -1388,7 +1389,7 @@ mod imp {
                                 .stderr(std::process::Stdio::null());
                             let _ = tx.send(cmd.status());
                         });
-                        let _ = rx.await;
+                        let _ = tokio::time::timeout(Duration::from_secs(2), rx).await;
                     }
                 }
                 child.kill()
@@ -1545,7 +1546,7 @@ mod imp {
             emit_raw_output,
         } = context;
 
-        tokio::task::spawn_blocking(move || {
+        std::thread::spawn(move || {
             let mut buffer = [0_u8; 4096];
             loop {
                 match reader.read(&mut buffer) {
