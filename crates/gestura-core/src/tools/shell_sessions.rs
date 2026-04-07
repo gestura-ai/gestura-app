@@ -1326,9 +1326,9 @@ mod imp {
                 let res = writer.write_all(&[3]).and_then(|_| writer.flush());
                 let _ = tx.send((res, writer));
             });
-            let (res, writer) = rx.await.map_err(|_| {
-                AppError::Session("interrupt write thread died".to_string())
-            })?;
+            let (res, writer) = rx
+                .await
+                .map_err(|_| AppError::Session("interrupt write thread died".to_string()))?;
             *writer_lock = Some(writer);
             res.map_err(AppError::Io)?;
             Ok(())
