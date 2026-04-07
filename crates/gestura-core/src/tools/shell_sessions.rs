@@ -1386,7 +1386,19 @@ mod imp {
 
         #[cfg(not(windows))]
         {
-            CommandBuilder::new("sh")
+            // Prefer bash for PTY automation sessions when available.
+            // Ubuntu typically maps /bin/sh to dash, and that shell has proven
+            // less reliable for our marker-wrapped PTY command protocol than the
+            // macOS /bin/sh environment that CI was already passing under.
+            // Fall back to plain sh so we still work on minimal systems.
+            if std::path::Path::new("/bin/bash").exists() {
+                let mut builder = CommandBuilder::new("/bin/bash");
+                builder.arg("--noprofile");
+                builder.arg("--norc");
+                builder
+            } else {
+                CommandBuilder::new("sh")
+            }
         }
     }
 
@@ -1855,12 +1867,12 @@ mod imp {
 
         #[cfg(windows)]
         fn activity_aware_windows_command() -> &'static str {
-            "powershell -NoLogo -NoProfile -Command \"Write-Output warmup; Start-Sleep -Seconds 2; Write-Output progress; Start-Sleep -Seconds 2; Write-Output done\""
+            "echo warmup & ping -n 3 127.0.0.1 >nul & echo progress & ping -n 3 127.0.0.1 >nul & echo done"
         }
 
         #[cfg(windows)]
         fn quiet_timeout_windows_command() -> &'static str {
-            "powershell -NoLogo -NoProfile -Command \"Start-Sleep -Seconds 4; Write-Output done\""
+            "ping -n 5 127.0.0.1 >nul & echo done"
         }
 
         fn interactive_input_command(text: &str) -> String {
