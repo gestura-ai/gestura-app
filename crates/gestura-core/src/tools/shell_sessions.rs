@@ -791,7 +791,7 @@ mod imp {
         }
 
         async fn execute(
-            &self,
+            self: Arc<Self>,
             command: &str,
             command_cwd: Option<&str>,
             options: ShellExecutionOptions,
@@ -1121,7 +1121,12 @@ mod imp {
                                 interrupt_started_at = Some(Instant::now());
                                 self.set_state(ShellSessionState::Interrupting)?;
                                 self.emit_session_lifecycle();
-                                self.interrupt().await?;
+                                let session = self.clone();
+                                tokio::spawn(async move {
+                                    if let Err(e) = session.interrupt().await {
+                                        tracing::debug!("interrupt error: {e}");
+                                    }
+                                });
                                 continue;
                             }
 
@@ -1187,7 +1192,12 @@ mod imp {
                                 interrupt_started_at = Some(Instant::now());
                                 self.set_state(ShellSessionState::Interrupting)?;
                                 self.emit_session_lifecycle();
-                                self.interrupt().await?;
+                                let session = self.clone();
+                                tokio::spawn(async move {
+                                    if let Err(e) = session.interrupt().await {
+                                        tracing::debug!("interrupt error: {e}");
+                                    }
+                                });
                                 continue;
                             }
                         }
@@ -1197,7 +1207,12 @@ mod imp {
                         interrupt_started_at = Some(Instant::now());
                         self.set_state(ShellSessionState::Interrupting)?;
                         self.emit_session_lifecycle();
-                        self.interrupt().await?;
+                        let session = self.clone();
+                        tokio::spawn(async move {
+                            if let Err(e) = session.interrupt().await {
+                                tracing::debug!("interrupt error: {e}");
+                            }
+                        });
                     }
                     Err(_) => {
                         self.set_state(ShellSessionState::Failed)?;
@@ -1303,10 +1318,16 @@ mod imp {
         }
 
         async fn interrupt(&self) -> Result<()> {
-            let mut writer = self.writer.lock().await;
-            let writer = writer.as_mut().ok_or_else(Self::closed_session_error)?;
-            writer.write_all(&[3]).map_err(AppError::Io)?;
-            writer.flush().map_err(AppError::Io)?;
+            let mut writer_lock = self.writer.lock().await;
+            let mut writer = writer_lock.take().ok_or_else(Self::closed_session_error)?;
+            let (res, writer) = tokio::task::spawn_blocking(move || {
+                let res = writer.write_all(&[3]).and_then(|_| writer.flush());
+                (res, writer)
+            })
+            .await
+            .expect("spawn_blocking panicked");
+            *writer_lock = Some(writer);
+            res.map_err(AppError::Io)?;
             Ok(())
         }
 
