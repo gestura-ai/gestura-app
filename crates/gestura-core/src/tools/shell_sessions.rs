@@ -1345,7 +1345,20 @@ mod imp {
                 return Ok(());
             };
 
-            let kill_result = child.kill();
+            let kill_result = {
+                #[cfg(windows)]
+                {
+                    if let Some(pid) = child.process_id() {
+                        let _ = std::process::Command::new("taskkill")
+                            .arg("/F")
+                            .arg("/T")
+                            .arg("/PID")
+                            .arg(pid.to_string())
+                            .output();
+                    }
+                }
+                child.kill()
+            };
 
             #[cfg(windows)]
             {
