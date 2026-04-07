@@ -1316,30 +1316,47 @@ mod imp {
             }
             self.set_active_sender(None)?;
 
-            // Drop the PTY handles first so the blocking reader can observe
-            // closure promptly, especially on Windows ConPTY.
+            #[cfg(not(windows))]
             {
+                // On Unix, drop the PTY handles first so the blocking reader can observe
+                // closure promptly.
                 let mut writer = self.writer.lock().await;
                 writer.take();
-            }
-            {
                 let mut master = self.master.lock().await;
                 master.take();
             }
 
             let child = {
-                let mut child = self
+                let mut child_guard = self
                     .child
                     .lock()
                     .map_err(|_| AppError::Session("failed to lock PTY child".to_string()))?;
-                child.take()
+                child_guard.take()
             };
 
             let Some(mut child) = child else {
+                #[cfg(windows)]
+                {
+                    let mut writer = self.writer.lock().await;
+                    writer.take();
+                    let mut master = self.master.lock().await;
+                    master.take();
+                }
                 return Ok(());
             };
 
             let kill_result = child.kill();
+
+            #[cfg(windows)]
+            {
+                // On Windows ConPTY, dropping MasterPty calls ClosePseudoConsole which
+                // blocks synchronously if any child process is still attached.
+                // We must kill the processes first.
+                let mut writer = self.writer.lock().await;
+                writer.take();
+                let mut master = self.master.lock().await;
+                master.take();
+            }
 
             let should_observe_exit = match &kill_result {
                 Ok(()) => true,
