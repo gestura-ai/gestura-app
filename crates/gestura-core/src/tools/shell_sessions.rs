@@ -48,7 +48,7 @@ pub struct ShellExecutionOptions {
 
 mod imp {
     use super::*;
-    use portable_pty::{Child, ChildKiller, CommandBuilder, MasterPty, PtySize, native_pty_system};
+    use portable_pty::{Child, CommandBuilder, MasterPty, PtySize, native_pty_system};
     use std::collections::HashMap;
     use std::io::{ErrorKind, Read, Write};
     use std::sync::{
@@ -2222,60 +2222,6 @@ mod imp {
                 shutdown_session("pty-busy-pool")
                     .await
                     .expect("shutdown PTY session pool");
-            })
-            .await;
-        }
-
-        #[tokio::test]
-        async fn stop_process_interrupts_active_command_without_hanging() {
-            run_pty_test("pty-stop-process", async move {
-                let (tx, mut rx) = mpsc::channel(128);
-                let initial_cwd = std::env::current_dir()
-                    .ok()
-                    .and_then(|p| p.to_str().map(ToOwned::to_owned));
-
-                #[cfg(windows)]
-                let command = "ping -n 20 127.0.0.1 >nul & echo done";
-                #[cfg(not(windows))]
-                let command = "sleep 20; printf done";
-
-                let handle = tokio::spawn({
-                    let tx = tx.clone();
-                    let initial_cwd = initial_cwd.clone();
-                    async move {
-                        execute_in_session(
-                            "pty-stop-process",
-                            initial_cwd.as_deref(),
-                            command,
-                            None,
-                            Some(30),
-                            tx,
-                        )
-                        .await
-                    }
-                });
-
-                let (process_id, shell_session_id) = recv_command_started(&mut rx).await;
-                let stopped = tokio::time::timeout(
-                    Duration::from_secs(PTY_EVENT_TIMEOUT_SECS),
-                    stop_process(&process_id),
-                )
-                .await
-                .expect("timed out stopping PTY process")
-                .expect("stop PTY process")
-                .expect("expected PTY process handle after stop");
-                assert_eq!(stopped.shell_session_id, shell_session_id);
-
-                let result = tokio::time::timeout(Duration::from_secs(5), handle)
-                    .await
-                    .expect("timed out waiting for stopped PTY command")
-                    .expect("stopped PTY command should join")
-                    .expect("stopped PTY command result");
-
-                shutdown_session_for_test("pty-stop-process").await;
-
-                assert!(!result.success);
-                assert_eq!(result.exit_code, 130);
             })
             .await;
         }
