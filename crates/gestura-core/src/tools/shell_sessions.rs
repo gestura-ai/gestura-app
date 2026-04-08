@@ -1903,6 +1903,10 @@ mod imp {
     mod tests {
         use super::*;
 
+        lazy_static::lazy_static! {
+            static ref PTY_TEST_SEMAPHORE: tokio::sync::Semaphore = tokio::sync::Semaphore::new(1);
+        }
+
         #[cfg(windows)]
         const PTY_TEST_TIMEOUT_SECS: u64 = 45;
         #[cfg(not(windows))]
@@ -1920,6 +1924,7 @@ mod imp {
         where
             F: std::future::Future<Output = ()> + Send + 'static,
         {
+            let _permit = PTY_TEST_SEMAPHORE.acquire().await.unwrap();
             let mut handle = tokio::spawn(future);
             tokio::select! {
                 result = &mut handle => {
