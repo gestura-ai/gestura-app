@@ -1378,8 +1378,7 @@ mod imp {
                 #[cfg(windows)]
                 {
                     if let Some(pid) = child.process_id() {
-                        let (tx, rx) = tokio::sync::oneshot::channel();
-                        std::thread::spawn(move || {
+                        let _ = tokio::task::spawn_blocking(move || {
                             let mut cmd = std::process::Command::new("taskkill");
                             cmd.arg("/F")
                                 .arg("/T")
@@ -1387,9 +1386,9 @@ mod imp {
                                 .arg(pid.to_string())
                                 .stdout(std::process::Stdio::null())
                                 .stderr(std::process::Stdio::null());
-                            let _ = tx.send(cmd.status());
-                        });
-                        let _ = tokio::time::timeout(Duration::from_secs(2), rx).await;
+                            let _ = cmd.status();
+                        })
+                        .await;
                     }
                 }
                 child.kill()
