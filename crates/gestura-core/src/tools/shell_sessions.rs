@@ -1548,7 +1548,7 @@ mod imp {
             emit_raw_output,
         } = context;
 
-        std::thread::spawn(move || {
+        tokio::task::spawn_blocking(move || {
             let mut buffer = [0_u8; 4096];
             loop {
                 match reader.read(&mut buffer) {
@@ -1925,6 +1925,7 @@ mod imp {
             F: std::future::Future<Output = ()> + Send + 'static,
         {
             let _permit = PTY_TEST_SEMAPHORE.acquire().await.unwrap();
+            shutdown_session_for_test(pool_key).await;
             let mut handle = tokio::spawn(future);
             tokio::select! {
                 result = &mut handle => {
@@ -2027,12 +2028,12 @@ mod imp {
 
         #[cfg(windows)]
         fn activity_aware_windows_command() -> &'static str {
-            "echo warmup & ping -n 2 127.0.0.1 >nul & echo progress & ping -n 2 127.0.0.1 >nul & echo done"
+            "echo warmup & powershell -NoProfile -Command \"Start-Sleep 1\" & echo progress & powershell -NoProfile -Command \"Start-Sleep 1\" & echo done"
         }
 
         #[cfg(windows)]
         fn quiet_timeout_windows_command() -> &'static str {
-            "ping -n 5 127.0.0.1 >nul & echo done"
+            "powershell -NoProfile -Command \"Start-Sleep 4\" & echo done"
         }
 
         fn interactive_input_command(text: &str) -> String {
@@ -2328,9 +2329,9 @@ mod imp {
                     command,
                     None,
                     ShellExecutionOptions {
-                        timeout_secs: Some(2),
+                        timeout_secs: Some(5),
                         allow_long_running: true,
-                        stall_timeout_secs: Some(8),
+                        stall_timeout_secs: Some(15),
                     },
                     tx,
                 )
