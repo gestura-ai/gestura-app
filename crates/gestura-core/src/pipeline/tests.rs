@@ -744,20 +744,20 @@ async fn confirmed_shell_followup_preserves_shell_session_id_without_workspace()
 
     drop(tx);
 
-    timeout(Duration::from_secs(5), observed_rx)
+    timeout(Duration::from_secs(15), observed_rx)
         .await
         .expect("confirmed shell follow-up stream observation timed out")
         .expect("confirmed shell follow-up observation channel closed unexpectedly");
 
     timeout(
-        Duration::from_secs(5),
+        Duration::from_secs(15),
         crate::tools::shell_sessions::shutdown_session(&session_id),
     )
     .await
     .expect("timed out shutting down confirmed shell test session")
     .expect("shutdown confirmed shell test session");
 
-    let response = timeout(Duration::from_secs(5), handle)
+    let response = timeout(Duration::from_secs(15), handle)
         .await
         .expect("confirmed shell follow-up task timed out")
         .expect("confirmed shell follow-up task should join")

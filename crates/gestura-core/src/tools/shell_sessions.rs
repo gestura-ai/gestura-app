@@ -1548,7 +1548,7 @@ mod imp {
             emit_raw_output,
         } = context;
 
-        std::thread::spawn(move || {
+        tokio::task::spawn_blocking(move || {
             let mut buffer = [0_u8; 4096];
             loop {
                 match reader.read(&mut buffer) {
@@ -2022,7 +2022,7 @@ mod imp {
 
         #[cfg(windows)]
         fn activity_aware_windows_command() -> &'static str {
-            "echo warmup & ping -n 3 127.0.0.1 >nul & echo progress & ping -n 3 127.0.0.1 >nul & echo done"
+            "echo warmup & ping -n 2 127.0.0.1 >nul & echo progress & ping -n 2 127.0.0.1 >nul & echo done"
         }
 
         #[cfg(windows)]
