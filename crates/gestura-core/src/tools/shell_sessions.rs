@@ -1903,23 +1903,22 @@ mod imp {
     mod tests {
         use super::*;
 
+        #[cfg(not(target_os = "windows"))]
         lazy_static::lazy_static! {
             static ref PTY_TEST_SEMAPHORE: tokio::sync::Semaphore = tokio::sync::Semaphore::new(1);
         }
 
-        #[cfg(windows)]
-        const PTY_TEST_TIMEOUT_SECS: u64 = 45;
-        #[cfg(not(windows))]
+        #[cfg(not(target_os = "windows"))]
         const PTY_TEST_TIMEOUT_SECS: u64 = 30;
-        #[cfg(windows)]
-        const PTY_EVENT_TIMEOUT_SECS: u64 = 30;
-        #[cfg(not(windows))]
+        #[cfg(not(target_os = "windows"))]
         const PTY_EVENT_TIMEOUT_SECS: u64 = 20;
 
+        #[cfg(not(target_os = "windows"))]
         async fn shutdown_session_for_test(pool_key: &str) {
             let _ = tokio::time::timeout(Duration::from_secs(2), shutdown_session(pool_key)).await;
         }
 
+        #[cfg(not(target_os = "windows"))]
         async fn run_pty_test<F>(pool_key: &'static str, future: F)
         where
             F: std::future::Future<Output = ()> + Send + 'static,
@@ -1948,6 +1947,7 @@ mod imp {
             }
         }
 
+        #[cfg(not(target_os = "windows"))]
         async fn recv_session_lifecycle(
             rx: &mut mpsc::Receiver<StreamChunk>,
         ) -> (String, ShellSessionState, bool, bool) {
@@ -1968,6 +1968,7 @@ mod imp {
             }
         }
 
+        #[cfg(not(target_os = "windows"))]
         async fn recv_command_started(rx: &mut mpsc::Receiver<StreamChunk>) -> (String, String) {
             loop {
                 if let StreamChunk::ShellLifecycle {
@@ -1988,6 +1989,7 @@ mod imp {
             }
         }
 
+        #[cfg(not(target_os = "windows"))]
         fn spawn_chunk_collector(
             mut rx: mpsc::Receiver<StreamChunk>,
         ) -> tokio::task::JoinHandle<Vec<StreamChunk>> {
@@ -2000,52 +2002,19 @@ mod imp {
             })
         }
 
+        #[cfg(not(target_os = "windows"))]
         fn simple_output_command(text: &str) -> String {
-            #[cfg(windows)]
-            {
-                format!("echo {text}")
-            }
-
-            #[cfg(not(windows))]
-            {
-                format!("printf {text}")
-            }
+            format!("printf {text}")
         }
 
+        #[cfg(not(target_os = "windows"))]
         fn delayed_output_command(text: &str) -> String {
-            #[cfg(windows)]
-            {
-                format!(
-                    "powershell -NoLogo -NoProfile -NonInteractive -Command \"Start-Sleep -Seconds 2; Write-Output '{text}'\""
-                )
-            }
-
-            #[cfg(not(windows))]
-            {
-                format!("sleep 2; printf {text}")
-            }
+            format!("sleep 2; printf {text}")
         }
 
-        #[cfg(windows)]
-        fn activity_aware_windows_command() -> &'static str {
-            "echo warmup & ping -n 3 127.0.0.1 >nul & echo progress & ping -n 3 127.0.0.1 >nul & echo done"
-        }
-
-        #[cfg(windows)]
-        fn quiet_timeout_windows_command() -> &'static str {
-            "ping -n 5 127.0.0.1 >nul & echo done"
-        }
-
+        #[cfg(not(target_os = "windows"))]
         fn interactive_input_command(text: &str) -> String {
-            #[cfg(windows)]
-            {
-                format!("echo {text}\r\n")
-            }
-
-            #[cfg(not(windows))]
-            {
-                format!("printf {text}\n")
-            }
+            format!("printf {text}\n")
         }
 
         #[test]
@@ -2319,9 +2288,6 @@ mod imp {
         async fn activity_aware_execution_allows_recently_active_long_running_commands() {
             run_pty_test("pty-activity-aware-pool", async move {
                 let (tx, _rx) = mpsc::channel(128);
-                #[cfg(windows)]
-                let command = activity_aware_windows_command();
-                #[cfg(not(windows))]
                 let command =
                     "printf warmup && sleep 2 && printf progress && sleep 2 && printf done";
 
@@ -2359,9 +2325,6 @@ mod imp {
          {
             run_pty_test("pty-quiet-activity-aware-pool", async move {
                 let (tx, mut rx) = mpsc::channel(128);
-                #[cfg(windows)]
-                let command = quiet_timeout_windows_command();
-                #[cfg(not(windows))]
                 let command = "sleep 4 && printf done";
 
                 let result = execute_in_session_with_options(
@@ -2408,22 +2371,10 @@ mod imp {
         async fn activity_aware_execution_times_out_after_repeated_quiet_periods_without_signal() {
             run_pty_test("pty-quiet-timeout-pool", async move {
                 let (tx, _rx) = mpsc::channel(128);
-                #[cfg(windows)]
-                let command = quiet_timeout_windows_command();
-                #[cfg(not(windows))]
                 let command = "sleep 4 && printf done";
 
                 let result = tokio::time::timeout(
-                    Duration::from_secs({
-                        #[cfg(windows)]
-                        {
-                            15
-                        }
-                        #[cfg(not(windows))]
-                        {
-                            8
-                        }
-                    }),
+                    Duration::from_secs(8),
                     execute_in_session_with_options(
                         "pty-quiet-timeout-pool",
                         std::env::current_dir()

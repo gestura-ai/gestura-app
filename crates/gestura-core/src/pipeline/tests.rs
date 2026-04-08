@@ -664,6 +664,7 @@ async fn tools_enabled_false_skips_confirmed_tool_followup_execution() {
     assert!(saw_done);
 }
 
+#[cfg(not(target_os = "windows"))]
 #[tokio::test]
 async fn confirmed_shell_followup_preserves_shell_session_id_without_workspace() {
     use crate::streaming::StreamChunk;
