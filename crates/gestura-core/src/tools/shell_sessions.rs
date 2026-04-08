@@ -1369,16 +1369,12 @@ mod imp {
                     let writer_to_drop = writer_lock.take();
                     let mut master_lock = self.master.lock().await;
                     if let Some(master_to_drop) = master_lock.take() {
-                        if writer_to_drop.is_none() {
-                            tracing::warn!(
-                                "Writer was leaked; leaking master to prevent ClosePseudoConsole hang (child exited)"
-                            );
-                            Box::leak(master_to_drop);
-                        } else {
-                            std::thread::spawn(move || {
-                                drop(writer_to_drop);
-                                drop(master_to_drop);
-                            });
+                        tracing::warn!(
+                            "Leaking master unconditionally on Windows to prevent ClosePseudoConsole deadlocks (child exited)"
+                        );
+                        Box::leak(master_to_drop);
+                        if let Some(writer) = writer_to_drop {
+                            drop(writer);
                         }
                     }
                 }
@@ -1415,16 +1411,12 @@ mod imp {
                 let writer_to_drop = writer_lock.take();
                 let mut master_lock = self.master.lock().await;
                 if let Some(master_to_drop) = master_lock.take() {
-                    if writer_to_drop.is_none() {
-                        tracing::warn!(
-                            "Writer was leaked; leaking master to prevent ClosePseudoConsole hang"
-                        );
-                        Box::leak(master_to_drop);
-                    } else {
-                        std::thread::spawn(move || {
-                            drop(writer_to_drop);
-                            drop(master_to_drop);
-                        });
+                    tracing::warn!(
+                        "Leaking master unconditionally on Windows to prevent ClosePseudoConsole deadlocks"
+                    );
+                    Box::leak(master_to_drop);
+                    if let Some(writer) = writer_to_drop {
+                        drop(writer);
                     }
                 }
             }
@@ -1564,7 +1556,7 @@ mod imp {
             emit_raw_output,
         } = context;
 
-        tokio::task::spawn_blocking(move || {
+        std::thread::spawn(move || {
             let mut buffer = [0_u8; 4096];
             loop {
                 match reader.read(&mut buffer) {
@@ -1594,6 +1586,7 @@ mod imp {
                                 data: chunk,
                             });
                         }
+                        std::thread::sleep(std::time::Duration::from_millis(5));
                     }
                     Err(err) => {
                         tracing::error!("PTY reader read failed: {:?}", err);
@@ -2044,12 +2037,12 @@ mod imp {
 
         #[cfg(windows)]
         fn activity_aware_windows_command() -> &'static str {
-            "echo warmup & powershell -NoProfile -Command \"Start-Sleep 1\" & echo progress & powershell -NoProfile -Command \"Start-Sleep 1\" & echo done"
+            "echo warmup & timeout /t 1 /nobreak >nul & echo progress & timeout /t 1 /nobreak >nul & echo done"
         }
 
         #[cfg(windows)]
         fn quiet_timeout_windows_command() -> &'static str {
-            "powershell -NoProfile -Command \"Start-Sleep 4\" & echo done"
+            "timeout /t 4 /nobreak >nul & echo done"
         }
 
         fn interactive_input_command(text: &str) -> String {
@@ -2345,9 +2338,9 @@ mod imp {
                     command,
                     None,
                     ShellExecutionOptions {
-                        timeout_secs: Some(5),
+                        timeout_secs: Some(1),
                         allow_long_running: true,
-                        stall_timeout_secs: Some(15),
+                        stall_timeout_secs: Some(8),
                     },
                     tx,
                 )
