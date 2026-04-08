@@ -24,6 +24,12 @@ Current development on the `dev` branch is tracking the `0.8.0` release line as 
 - Inline chat shell output now shows the executed command, strips leaked control-sequence artifacts more reliably, and surfaces the Shell Manager link as soon as the shell session starts instead of after the stream finishes.
 - First shell requests now register shell stream listeners in parallel, preserve `shell_session_id` on output-first events, and keep the chat timeline synchronized with live shell activity instead of showing the session only after the process is already underway.
 
+
+### Added
+
+- Shell sessions now surface early stall signals for interactive prompts and error output, providing faster feedback when a command is waiting for user input or has encountered an error.
+- Migrated Windows release signing from local PFX certificate to cloud-based SSL.com eSigner, with Python/Java toolchain setup and TOTP-based authentication.
+
 ### Planned
 
 - `gestura-core-tasks` is being positioned as the home for optional advanced primitives that activate only for complex multi-step intents.
