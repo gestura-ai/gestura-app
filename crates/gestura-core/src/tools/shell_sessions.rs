@@ -1370,7 +1370,9 @@ mod imp {
                     let mut master_lock = self.master.lock().await;
                     if let Some(master_to_drop) = master_lock.take() {
                         if writer_to_drop.is_none() {
-                            tracing::warn!("Writer was leaked; leaking master to prevent ClosePseudoConsole hang (child exited)");
+                            tracing::warn!(
+                                "Writer was leaked; leaking master to prevent ClosePseudoConsole hang (child exited)"
+                            );
                             Box::leak(master_to_drop);
                         } else {
                             std::thread::spawn(move || {
@@ -1414,7 +1416,9 @@ mod imp {
                 let mut master_lock = self.master.lock().await;
                 if let Some(master_to_drop) = master_lock.take() {
                     if writer_to_drop.is_none() {
-                        tracing::warn!("Writer was leaked; leaking master to prevent ClosePseudoConsole hang");
+                        tracing::warn!(
+                            "Writer was leaked; leaking master to prevent ClosePseudoConsole hang"
+                        );
                         Box::leak(master_to_drop);
                     } else {
                         std::thread::spawn(move || {
