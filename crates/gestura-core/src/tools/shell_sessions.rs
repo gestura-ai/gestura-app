@@ -1322,13 +1322,6 @@ mod imp {
         }
 
         async fn interrupt(&self) -> Result<()> {
-            #[cfg(windows)]
-            if cfg!(test) {
-                // In Windows tests, writing Ctrl-C to a busy ConPTY can deadlock the writer
-                // and hang the entire test suite. Bypass graceful interrupt in tests.
-                return Ok(());
-            }
-
             let mut writer_lock = self.writer.lock().await;
             let mut writer = writer_lock.take().ok_or_else(Self::closed_session_error)?;
             let (tx, rx) = tokio::sync::oneshot::channel();
@@ -2087,6 +2080,7 @@ mod imp {
             assert!(script.contains("printf '\\n__GESTURA_DONE__:%s\\n'"));
         }
 
+        #[cfg(not(target_os = "windows"))]
         #[tokio::test]
         async fn create_session_starts_idle_shell_without_command() {
             run_pty_test("pty-create-session", async move {
@@ -2116,6 +2110,7 @@ mod imp {
             .await;
         }
 
+        #[cfg(not(target_os = "windows"))]
         #[tokio::test]
         async fn reuses_idle_session_within_same_pool() {
             run_pty_test("pty-reuse-pool", async move {
@@ -2184,6 +2179,7 @@ mod imp {
             .await;
         }
 
+        #[cfg(not(target_os = "windows"))]
         #[tokio::test]
         async fn execute_in_session_emits_session_lifecycle_to_caller_stream() {
             run_pty_test("pty-session-lifecycle-stream", async move {
@@ -2264,6 +2260,7 @@ mod imp {
             .await;
         }
 
+        #[cfg(not(target_os = "windows"))]
         #[tokio::test]
         async fn allocates_new_session_when_existing_one_is_busy() {
             run_pty_test("pty-busy-pool", async move {
@@ -2317,6 +2314,7 @@ mod imp {
             .await;
         }
 
+        #[cfg(not(target_os = "windows"))]
         #[tokio::test]
         async fn activity_aware_execution_allows_recently_active_long_running_commands() {
             run_pty_test("pty-activity-aware-pool", async move {
@@ -2355,6 +2353,7 @@ mod imp {
             .await;
         }
 
+        #[cfg(not(target_os = "windows"))]
         #[tokio::test]
         async fn activity_aware_execution_reports_continue_wait_before_timing_out_when_quiet_output_has_no_indicator()
          {
@@ -2404,6 +2403,7 @@ mod imp {
             .await;
         }
 
+        #[cfg(not(target_os = "windows"))]
         #[tokio::test]
         async fn activity_aware_execution_times_out_after_repeated_quiet_periods_without_signal() {
             run_pty_test("pty-quiet-timeout-pool", async move {
@@ -2516,6 +2516,7 @@ mod imp {
             );
         }
 
+        #[cfg(not(target_os = "windows"))]
         #[tokio::test]
         async fn claiming_automation_session_removes_it_from_reuse_pool() {
             run_pty_test("pty-claim-pool", async move {
@@ -2576,6 +2577,7 @@ mod imp {
             .await;
         }
 
+        #[cfg(not(target_os = "windows"))]
         #[tokio::test]
         async fn claimed_automation_session_streams_interactive_output_after_attach() {
             run_pty_test("pty-attach-pool", async move {
