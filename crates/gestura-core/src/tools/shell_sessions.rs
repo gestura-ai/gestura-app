@@ -1324,12 +1324,15 @@ mod imp {
         async fn interrupt(&self) -> Result<()> {
             let mut writer_lock = self.writer.lock().await;
             let mut writer = writer_lock.take().ok_or_else(Self::closed_session_error)?;
-            let (res, writer) = tokio::task::spawn_blocking(move || {
+            let (tx, rx) = tokio::sync::oneshot::channel();
+            std::thread::spawn(move || {
                 let res = writer.write_all(&[3]).and_then(|_| writer.flush());
-                (res, writer)
-            })
-            .await
-            .expect("spawn_blocking panicked");
+                let _ = tx.send((res, writer));
+            });
+            let (res, writer) = tokio::time::timeout(Duration::from_secs(2), rx)
+                .await
+                .map_err(|_| AppError::Session("interrupt write timed out".to_string()))?
+                .map_err(|_| AppError::Session("interrupt write thread died".to_string()))?;
             *writer_lock = Some(writer);
             res.map_err(AppError::Io)?;
             Ok(())
@@ -1366,7 +1369,7 @@ mod imp {
                     let writer_to_drop = writer_lock.take();
                     let mut master_lock = self.master.lock().await;
                     let master_to_drop = master_lock.take();
-                    tokio::task::spawn_blocking(move || {
+                    std::thread::spawn(move || {
                         drop(writer_to_drop);
                         drop(master_to_drop);
                     });
@@ -1404,7 +1407,7 @@ mod imp {
                 let writer_to_drop = writer_lock.take();
                 let mut master_lock = self.master.lock().await;
                 let master_to_drop = master_lock.take();
-                tokio::task::spawn_blocking(move || {
+                std::thread::spawn(move || {
                     drop(writer_to_drop);
                     drop(master_to_drop);
                 });
@@ -1545,7 +1548,7 @@ mod imp {
             emit_raw_output,
         } = context;
 
-        tokio::task::spawn_blocking(move || {
+        std::thread::spawn(move || {
             let mut buffer = [0_u8; 4096];
             loop {
                 match reader.read(&mut buffer) {
