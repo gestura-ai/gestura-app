@@ -69,9 +69,9 @@ If the release definition and the generated artifact set diverge, the publish jo
    - builds `.deb` / `.rpm` installers and the standalone CLI tarball
    - validates packaged CLI placement and emitted DEB/RPM runtime dependency metadata
 4. **Build Windows**
-   - imports the PFX certificate
-   - injects the certificate thumbprint into `tauri.conf.json` during the build
-   - signs the MSI and standalone CLI executable
+   - provisions Python, Java, and Jsign when eSigner secrets are present
+   - injects a temporary Tauri `signCommand` during the build
+   - signs the MSI and standalone CLI executable through SSL.com eSigner
    - publishes both the MSI and standalone CLI zip
    - verifies signatures with `Get-AuthenticodeSignature`
 5. **Publish release**
@@ -130,8 +130,10 @@ The publish job validates that the assets required by those channels are present
 
 ### Windows
 
-- `WINDOWS_CERTIFICATE`
-- `WINDOWS_CERTIFICATE_PASSWORD`
+- `ESIGNER_USERNAME`
+- `ESIGNER_PASSWORD`
+- `ESIGNER_CREDENTIAL_ID`
+- `ESIGNER_TOTP_SECRET`
 
 If `publish=true` (or the workflow is tag-triggered), the workflow **fails early** when these signing secrets are incomplete.
 

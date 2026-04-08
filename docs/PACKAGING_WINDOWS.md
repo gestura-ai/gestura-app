@@ -29,7 +29,7 @@ cargo build --release -p gestura-gui
 
 ### Signed Release Build
 
-Signing is handled automatically in CI when `WINDOWS_CERTIFICATE` secret is configured.
+Signing is handled automatically in CI when the SSL.com eSigner secrets are configured.
 
 ---
 
@@ -85,7 +85,7 @@ rustup target add aarch64-pc-windows-msvc
 |---------|-------|----------|
 | Target Architecture | x86_64-pc-windows-msvc | CI matrix |
 | Installer Format | MSI (WiX) | tauri.conf.json |
-| Timestamp Server | timestamp.digicert.com | tauri.conf.json |
+| Timestamp Server | ts.ssl.com (CI eSigner) | `scripts/sign-windows-esigner.py` |
 | Digest Algorithm | SHA256 | tauri.conf.json |
 
 ---
@@ -110,18 +110,16 @@ Purchase from a trusted CA:
 
 ### Setting Up CI Signing
 
-1. **Export certificate as PFX** with private key
-2. **Base64 encode the certificate**:
-   ```powershell
-   [Convert]::ToBase64String([IO.File]::ReadAllBytes("certificate.pfx")) | Out-File -FilePath cert-base64.txt
-   ```
-3. **Add GitHub Secrets**:
-   - `WINDOWS_CERTIFICATE`: The base64-encoded PFX content
-   - `WINDOWS_CERTIFICATE_PASSWORD`: The PFX password
+1. **Provision SSL.com eSigner access** for the Windows code signing certificate
+2. **Add GitHub Secrets**:
+   - `ESIGNER_USERNAME`
+   - `ESIGNER_PASSWORD`
+   - `ESIGNER_CREDENTIAL_ID`
+   - `ESIGNER_TOTP_SECRET`
 
 ### Tauri Configuration
 
-The signing configuration in `crates/gestura-gui/tauri.conf.json`:
+The static configuration in `crates/gestura-gui/tauri.conf.json` keeps the Windows signing fields neutral by default:
 
 ```json
 "windows": {
@@ -131,8 +129,9 @@ The signing configuration in `crates/gestura-gui/tauri.conf.json`:
 }
 ```
 
-- `certificateThumbprint`: Injected automatically during CI after the PFX is imported, then restored after the build
-- `timestampUrl`: Ensures signature remains valid after certificate expiry
+- `certificateThumbprint`: Left unset in the checked-in config; CI uses a temporary custom sign command instead
+- `signCommand`: Injected automatically during CI for eSigner-backed release builds, then restored after the build
+- `timestampUrl`: Default timestamp setting for local signing flows; CI eSigner signing uses the SSL.com RFC3161 timestamp service
 
 ---
 
@@ -144,17 +143,19 @@ The release workflow (`.github/workflows/release.yml`) handles Windows builds:
 
 1. **Runner**: Defaults to `windows-2022`, but can be overridden with the `RELEASE_WINDOWS_RUNNER` repo/org variable
 2. **Install dependencies**: cmake and LLVM via Chocolatey
-3. **Import certificate**: Decode the PFX, import it to `Cert:\CurrentUser\My`, and capture the thumbprint
-4. **MSI signing**: Inject the thumbprint into `tauri.conf.json` only for the packaging run, so Tauri signs the MSI
-5. **CLI signing**: Sign the standalone `gestura.exe` with `signtool.exe` before zipping it
+3. **Install signing dependencies**: Python, Java, and Jsign when signing secrets are present
+4. **MSI signing**: Inject a Tauri `signCommand` that calls `scripts/sign-windows-esigner.py` during the packaging run
+5. **CLI signing**: Sign the standalone `gestura.exe` with the same eSigner-backed script before zipping it
 6. **Verification**: Hard-fails published releases if `Get-AuthenticodeSignature` is not `Valid`
 
 ### Secrets Required
 
 | Secret | Description |
 |--------|-------------|
-| `WINDOWS_CERTIFICATE` | Base64-encoded PFX certificate |
-| `WINDOWS_CERTIFICATE_PASSWORD` | PFX password |
+| `ESIGNER_USERNAME` | SSL.com eSigner username |
+| `ESIGNER_PASSWORD` | SSL.com eSigner password |
+| `ESIGNER_CREDENTIAL_ID` | SSL.com signing credential ID |
+| `ESIGNER_TOTP_SECRET` | SSL.com TOTP secret for unattended signing |
 
 ### Verification
 
@@ -187,7 +188,7 @@ SignerCertificate: [Subject] CN=Your Company Name
 
 | Issue | Solution |
 |-------|----------|
-| `Certificate not found` | Verify certificate is imported to `Cert:\CurrentUser\My` |
-| `Timestamp failed` | Check network access to timestamp.digicert.com |
+| `eSigner authentication failed` | Verify the four `ESIGNER_*` secrets and confirm the credential ID matches the certificate |
+| `Timestamp failed` | Check network access to `http://ts.ssl.com` |
 | `SmartScreen warning` | Use EV certificate or build reputation over time |
 
