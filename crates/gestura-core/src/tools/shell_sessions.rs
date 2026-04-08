@@ -1368,11 +1368,17 @@ mod imp {
                     let mut writer_lock = self.writer.lock().await;
                     let writer_to_drop = writer_lock.take();
                     let mut master_lock = self.master.lock().await;
-                    let master_to_drop = master_lock.take();
-                    std::thread::spawn(move || {
-                        drop(writer_to_drop);
-                        drop(master_to_drop);
-                    });
+                    if let Some(master_to_drop) = master_lock.take() {
+                        if writer_to_drop.is_none() {
+                            tracing::warn!("Writer was leaked; leaking master to prevent ClosePseudoConsole hang (child exited)");
+                            Box::leak(master_to_drop);
+                        } else {
+                            std::thread::spawn(move || {
+                                drop(writer_to_drop);
+                                drop(master_to_drop);
+                            });
+                        }
+                    }
                 }
                 return Ok(());
             };
@@ -1406,11 +1412,17 @@ mod imp {
                 let mut writer_lock = self.writer.lock().await;
                 let writer_to_drop = writer_lock.take();
                 let mut master_lock = self.master.lock().await;
-                let master_to_drop = master_lock.take();
-                std::thread::spawn(move || {
-                    drop(writer_to_drop);
-                    drop(master_to_drop);
-                });
+                if let Some(master_to_drop) = master_lock.take() {
+                    if writer_to_drop.is_none() {
+                        tracing::warn!("Writer was leaked; leaking master to prevent ClosePseudoConsole hang");
+                        Box::leak(master_to_drop);
+                    } else {
+                        std::thread::spawn(move || {
+                            drop(writer_to_drop);
+                            drop(master_to_drop);
+                        });
+                    }
+                }
             }
 
             let should_observe_exit = match &kill_result {
