@@ -1548,7 +1548,7 @@ mod imp {
             emit_raw_output,
         } = context;
 
-        tokio::task::spawn_blocking(move || {
+        std::thread::spawn(move || {
             let mut buffer = [0_u8; 4096];
             loop {
                 match reader.read(&mut buffer) {
@@ -2323,9 +2323,9 @@ mod imp {
                     command,
                     None,
                     ShellExecutionOptions {
-                        timeout_secs: Some(1),
+                        timeout_secs: Some(2),
                         allow_long_running: true,
-                        stall_timeout_secs: Some(3),
+                        stall_timeout_secs: Some(8),
                     },
                     tx,
                 )
