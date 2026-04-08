@@ -22,6 +22,7 @@ type RenderableShell = ShellBlock | ShellSessionRecord;
 const ACTIVE_THRESHOLD_MS = 5_000;
 const RECENT_THRESHOLD_MS = 20_000;
 const STALLED_THRESHOLD_MS = 60_000;
+const SIGNAL_STALLED_THRESHOLD_MS = 20_000;
 const RECENT_LINE_WINDOW = 16;
 const ANSI_ESCAPE = String.fromCharCode(27);
 const ANSI_ESCAPE_PATTERN = new RegExp(`${ANSI_ESCAPE}\\[[0-9;?]*[ -/]*[@-~]`, 'g');
@@ -163,6 +164,16 @@ export function describeShellActivity(shell: RenderableShell, now = Date.now()):
   const idleMs = Math.max(0, now - referenceTime);
   if (idleMs <= ACTIVE_THRESHOLD_MS) return { label: 'Active now', tone: 'active', diagnosis: null };
   if (idleMs <= RECENT_THRESHOLD_MS) return { label: `Active ${formatElapsed(idleMs)} ago`, tone: 'recent', diagnosis: null };
+  if (idleMs >= SIGNAL_STALLED_THRESHOLD_MS) {
+    const diagnosis = diagnoseStallFromOutput(shell);
+    if (diagnosis.kind !== 'generic') {
+      return {
+        label: `Possibly stalled · ${formatElapsed(idleMs)} quiet`,
+        tone: 'stalled',
+        diagnosis,
+      };
+    }
+  }
   if (idleMs <= STALLED_THRESHOLD_MS) return { label: `Quiet for ${formatElapsed(idleMs)}`, tone: 'quiet', diagnosis: null };
   return {
     label: `Possibly stalled · ${formatElapsed(idleMs)} quiet`,

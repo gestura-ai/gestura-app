@@ -664,6 +664,124 @@ async fn tools_enabled_false_skips_confirmed_tool_followup_execution() {
     assert!(saw_done);
 }
 
+#[cfg(not(target_os = "windows"))]
+#[tokio::test]
+async fn confirmed_shell_followup_preserves_shell_session_id_without_workspace() {
+    use crate::streaming::StreamChunk;
+    use crate::tools::registry::all_tools;
+    use tokio::sync::mpsc;
+    use tokio::time::{Duration, timeout};
+
+    let pipeline = AgentPipeline::new(AppConfig::default());
+    let history = vec![Message::assistant(
+        "We will use the shell tool to run 'pwd'. Then respond.",
+    )];
+    let session_id = format!("session-confirmed-shell-{}", uuid::Uuid::new_v4());
+    let request = AgentRequest::new("okay please proceed")
+        .with_history(history)
+        .with_session(session_id.clone());
+    let analysis = crate::context::RequestAnalysis::new("okay please proceed");
+    let relevant_tools: Vec<&'static ToolDefinition> = all_tools()
+        .iter()
+        .filter(|tool| tool.name == "shell")
+        .collect();
+    let (tx, rx) = mpsc::channel(128);
+    let cancel = CancellationToken::new();
+
+    // This test is only validating shell-session routing metadata. Pre-cancel the
+    // follow-up synthesis stream so we do not depend on an LLM provider stream
+    // finishing in CI after the shell tool has already run.
+    cancel.cancel();
+
+    let exec_tx = tx.clone();
+
+    let handle = tokio::spawn(async move {
+        pipeline
+            .try_execute_confirmed_tool_from_history(
+                &request,
+                &analysis,
+                &relevant_tools,
+                None,
+                &exec_tx,
+                &cancel,
+            )
+            .await
+    });
+
+    let (observed_tx, observed_rx) = tokio::sync::oneshot::channel();
+    let drain = tokio::spawn(async move {
+        let mut rx = rx;
+        let mut observed_tx = Some(observed_tx);
+        let mut saw_shell_session_id = false;
+        let mut saw_tool_result = false;
+
+        while let Some(chunk) = rx.recv().await {
+            match chunk {
+                StreamChunk::ShellLifecycle {
+                    shell_session_id: Some(_),
+                    ..
+                }
+                | StreamChunk::ShellOutput {
+                    shell_session_id: Some(_),
+                    ..
+                } => saw_shell_session_id = true,
+                StreamChunk::ToolCallResult { success, .. } => {
+                    assert!(success, "confirmed shell follow-up should succeed");
+                    saw_tool_result = true;
+                }
+                _ => {}
+            }
+
+            if saw_shell_session_id
+                && saw_tool_result
+                && let Some(observed_tx) = observed_tx.take()
+            {
+                let _ = observed_tx.send(());
+            }
+        }
+
+        (saw_shell_session_id, saw_tool_result)
+    });
+
+    drop(tx);
+
+    timeout(Duration::from_secs(15), observed_rx)
+        .await
+        .expect("confirmed shell follow-up stream observation timed out")
+        .expect("confirmed shell follow-up observation channel closed unexpectedly");
+
+    timeout(
+        Duration::from_secs(15),
+        crate::tools::shell_sessions::shutdown_session(&session_id),
+    )
+    .await
+    .expect("timed out shutting down confirmed shell test session")
+    .expect("shutdown confirmed shell test session");
+
+    let response = timeout(Duration::from_secs(15), handle)
+        .await
+        .expect("confirmed shell follow-up task timed out")
+        .expect("confirmed shell follow-up task should join")
+        .expect("confirmed tool follow-up should execute")
+        .expect("expected confirmed shell follow-up to run");
+
+    let (saw_shell_session_id, saw_tool_result) = timeout(Duration::from_secs(5), drain)
+        .await
+        .expect("confirmed shell follow-up drain task timed out")
+        .expect("confirmed shell follow-up drain task should join");
+
+    assert!(
+        saw_shell_session_id,
+        "expected confirmed shell follow-up streaming to include shell_session_id"
+    );
+    assert!(
+        saw_tool_result,
+        "expected confirmed shell follow-up to emit a successful tool result"
+    );
+
+    assert!(response.tool_calls.iter().any(|call| call.name == "shell"));
+}
+
 /// Even when request analysis would normally select tools, `tools_enabled=false`
 /// must ensure the blocking pipeline path does not execute tools.
 #[tokio::test]
@@ -1017,7 +1135,9 @@ async fn execute_tool_dispatches_code_stats_with_workspace_sandbox() {
         .expect("workspace should be created");
 
     let args = serde_json::json!({"operation":"stats","path":"."}).to_string();
-    let result = pipeline.execute_tool("code", &args, Some(&ws), None).await;
+    let result = pipeline
+        .execute_tool("code", &args, Some(&ws), None, None)
+        .await;
 
     match result {
         ToolResult::Success(s) => {
@@ -1048,7 +1168,9 @@ async fn file_read_honors_start_end_range() {
     })
     .to_string();
 
-    let result = pipeline.execute_tool("file", &args, Some(&ws), None).await;
+    let result = pipeline
+        .execute_tool("file", &args, Some(&ws), None, None)
+        .await;
     match result {
         ToolResult::Success(s) => {
             assert!(s.contains("l2"));
@@ -1080,7 +1202,7 @@ async fn file_tree_honors_show_hidden() {
     .to_string();
 
     let r1 = pipeline
-        .execute_tool("file", &args_hidden_off, Some(&ws), None)
+        .execute_tool("file", &args_hidden_off, Some(&ws), None, None)
         .await;
     match r1 {
         ToolResult::Success(s) => {
@@ -1099,7 +1221,7 @@ async fn file_tree_honors_show_hidden() {
     .to_string();
 
     let r2 = pipeline
-        .execute_tool("file", &args_hidden_on, Some(&ws), None)
+        .execute_tool("file", &args_hidden_on, Some(&ws), None, None)
         .await;
     match r2 {
         ToolResult::Success(s) => {
@@ -1130,7 +1252,9 @@ async fn file_edit_replaces_content() {
     })
     .to_string();
 
-    let result = pipeline.execute_tool("file", &args, Some(&ws), None).await;
+    let result = pipeline
+        .execute_tool("file", &args, Some(&ws), None, None)
+        .await;
     match result {
         ToolResult::Success(s) => {
             let v: serde_json::Value = serde_json::from_str(&s).unwrap();
@@ -1158,7 +1282,9 @@ async fn shell_env_is_passed_through() {
     })
     .to_string();
 
-    let result = pipeline.execute_tool("shell", &args, Some(&ws), None).await;
+    let result = pipeline
+        .execute_tool("shell", &args, Some(&ws), None, None)
+        .await;
     match result {
         ToolResult::Success(s) => {
             // The shell async wrapper returns stdout on success.
@@ -1181,7 +1307,7 @@ async fn screenshot_tool_rejects_non_screenshot_operations() {
 
     let args = serde_json::json!({"operation": "start"}).to_string();
     let result = pipeline
-        .execute_tool("screenshot", &args, Some(&ws), None)
+        .execute_tool("screenshot", &args, Some(&ws), None, None)
         .await;
     match result {
         ToolResult::Error(e) => assert!(e.contains("does not support operation")),
@@ -1202,7 +1328,7 @@ async fn screenshot_rejects_invalid_return_mode() {
     .to_string();
 
     let result = pipeline
-        .execute_tool("screenshot", &args, Some(&ws), None)
+        .execute_tool("screenshot", &args, Some(&ws), None, None)
         .await;
     match result {
         ToolResult::Error(e) => assert!(e.contains("Invalid return.mode")),
@@ -1224,7 +1350,7 @@ async fn screenshot_rejects_extension_mismatch_vs_output_format() {
     .to_string();
 
     let result = pipeline
-        .execute_tool("screenshot", &args, Some(&ws), None)
+        .execute_tool("screenshot", &args, Some(&ws), None, None)
         .await;
     match result {
         ToolResult::Error(e) => assert!(e.contains("does not match requested output_format")),
@@ -1241,7 +1367,7 @@ async fn screen_record_requires_operation() {
 
     let args = serde_json::json!({}).to_string();
     let result = pipeline
-        .execute_tool("screen_record", &args, Some(&ws), None)
+        .execute_tool("screen_record", &args, Some(&ws), None, None)
         .await;
     match result {
         ToolResult::Error(e) => assert!(e.contains("Missing required field 'operation'")),

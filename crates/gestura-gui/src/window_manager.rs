@@ -215,6 +215,19 @@ fn uses_regular_activation_policy(window_type: &str) -> bool {
 }
 
 #[cfg(target_os = "macos")]
+fn promote_to_regular_window_mode(app_handle: &AppHandle, window_type: &str) {
+    use tauri::ActivationPolicy;
+
+    if let Err(error) = app_handle.set_activation_policy(ActivationPolicy::Regular) {
+        tracing::warn!(%error, window_type, "Failed to set activation policy to Regular");
+    } else {
+        tracing::debug!(window_type, "Promoted app to regular activation policy");
+    }
+
+    crate::macos_icon::apply_dock_icon();
+}
+
+#[cfg(target_os = "macos")]
 fn revert_to_tray_only_if_no_regular_windows(
     app_handle: &AppHandle,
     windows: &Arc<Mutex<HashMap<String, WindowInfo>>>,
@@ -528,16 +541,7 @@ impl WindowManager {
         // macOS: promote the app to a regular activation policy so this agent
         // window appears in the Dock and Cmd+Tab switcher.
         #[cfg(target_os = "macos")]
-        {
-            use tauri::ActivationPolicy;
-            if let Err(e) = self.app.set_activation_policy(ActivationPolicy::Regular) {
-                tracing::warn!("Failed to set activation policy to Regular: {e}");
-            }
-            // Explicitly set the Dock icon. In production `.app` bundles macOS
-            // resolves it from Info.plist automatically, but in dev builds (raw
-            // Cargo binary, no bundle) it falls back to a generic terminal icon.
-            crate::macos_icon::apply_dock_icon();
-        }
+        promote_to_regular_window_mode(&self.app, WINDOW_TYPE_AGENT);
 
         // Keep the hidden-on-create behavior that avoids a flash before the
         // React shell applies theme/layout, but do not depend on the frontend as
@@ -641,6 +645,9 @@ impl WindowManager {
         if self.app.get_webview_window(window_label).is_some()
             && let Some(window) = self.app.get_webview_window(window_label)
         {
+            #[cfg(target_os = "macos")]
+            promote_to_regular_window_mode(&self.app, WINDOW_TYPE_CONFIG);
+
             let _ = window.show();
             let _ = window.set_focus();
             return Ok(());
@@ -660,6 +667,9 @@ impl WindowManager {
         .visible(true)
         .devtools(true)
         .build()?;
+
+        #[cfg(target_os = "macos")]
+        promote_to_regular_window_mode(&self.app, WINDOW_TYPE_CONFIG);
 
         {
             let mut windows = self.windows.lock().unwrap();
@@ -704,6 +714,9 @@ impl WindowManager {
         if self.app.get_webview_window(window_label).is_some()
             && let Some(window) = self.app.get_webview_window(window_label)
         {
+            #[cfg(target_os = "macos")]
+            promote_to_regular_window_mode(&self.app, WINDOW_TYPE_ONBOARDING);
+
             let _ = window.show();
             let _ = window.set_focus();
             return Ok(());
@@ -724,6 +737,9 @@ impl WindowManager {
         .transparent(false) // Ensure opaque background
         .devtools(true)
         .build()?;
+
+        #[cfg(target_os = "macos")]
+        promote_to_regular_window_mode(&self.app, WINDOW_TYPE_ONBOARDING);
 
         {
             let mut windows = self.windows.lock().unwrap();
@@ -797,6 +813,9 @@ impl WindowManager {
                 if let Some(ref window_label) = session.window_label
                     && let Some(window) = self.app.get_webview_window(window_label)
                 {
+                    #[cfg(target_os = "macos")]
+                    promote_to_regular_window_mode(&self.app, WINDOW_TYPE_AGENT);
+
                     let _ = window.show();
                     let _ = window.set_focus();
                     tracing::info!("Focused existing session window: {}", session_id);

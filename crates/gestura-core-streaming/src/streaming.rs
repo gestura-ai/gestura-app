@@ -1193,31 +1193,15 @@ async fn emit_ready_openai_responses_tool_calls(
     }
 }
 
-struct OpenAiChatCompatibleStreamRequest<'a> {
-    api_key: &'a str,
-    base_url: &'a str,
-    model: &'a str,
-    prompt: &'a str,
-    tools: Option<&'a [serde_json::Value]>,
+async fn stream_openai_chat_compatible(
+    api_key: &str,
+    base_url: &str,
+    model: &str,
+    prompt: &str,
+    tools: Option<&[serde_json::Value]>,
     tx: mpsc::Sender<StreamChunk>,
     cancel_token: CancellationToken,
-    provider_name: &'a str,
-}
-
-async fn stream_openai_chat_compatible(
-    req: OpenAiChatCompatibleStreamRequest<'_>,
 ) -> Result<(), AppError> {
-    let OpenAiChatCompatibleStreamRequest {
-        api_key,
-        base_url,
-        model,
-        prompt,
-        tools,
-        tx,
-        cancel_token,
-        provider_name,
-    } = req;
-
     let url = format!(
         "{}{}",
         base_url.trim_end_matches('/'),
@@ -1232,14 +1216,14 @@ async fn stream_openai_chat_compatible(
         .json(&body)
         .send()
         .await
-        .map_err(|e| AppError::Llm(format!("{provider_name} streaming request failed: {e}")))?;
+        .map_err(|e| AppError::Llm(format!("OpenAI streaming request failed: {}", e)))?;
 
     if !response.status().is_success() {
         let status = response.status();
         let body = response.text().await.unwrap_or_default();
         return Err(AppError::Llm(format_openai_http_error(
             status,
-            provider_name,
+            "OpenAI",
             model,
             OpenAiApi::ChatCompletions,
             &body,
@@ -1249,6 +1233,11 @@ async fn stream_openai_chat_compatible(
     let mut stream = response.bytes_stream();
     let mut parser = ThinkingParser::new();
     let mut line_buffer = String::new();
+    // OpenAI-compatible providers may stream multiple tool calls concurrently,
+    // identifying each call by `index` and interleaving argument fragments
+    // across SSE events. Buffer them until the provider signals the end of the
+    // tool-call block, then emit complete Start/Args/End sequences in index
+    // order so downstream consumers never merge fragments from different calls.
     let mut pending_tool_calls = BTreeMap::<usize, PendingOpenAiToolCall>::new();
 
     while let Some(chunk_result) = stream.next().await {
@@ -1270,14 +1259,17 @@ async fn stream_openai_chat_compatible(
                         return Ok(());
                     }
                     if let Ok(json) = serde_json::from_str::<serde_json::Value>(data) {
+                        // Handle content
                         if let Some(content) = json["choices"][0]["delta"]["content"].as_str()
                             && !content.is_empty()
                         {
-                            for chunk in parser.process(content) {
+                            let chunks = parser.process(content);
+                            for chunk in chunks {
                                 let _ = tx.send(chunk).await;
                             }
                         }
 
+                        // Handle tool calls
                         if let Some(tool_calls) =
                             json["choices"][0]["delta"]["tool_calls"].as_array()
                         {
@@ -1290,6 +1282,7 @@ async fn stream_openai_chat_compatible(
                             }
                         }
 
+                        // Handle finish reason — emit each complete tool call in order.
                         if let Some(finish_reason) = json["choices"][0]["finish_reason"].as_str()
                             && finish_reason == "tool_calls"
                         {
@@ -1300,9 +1293,9 @@ async fn stream_openai_chat_compatible(
             }
             Err(e) => {
                 let _ = tx
-                    .send(StreamChunk::Error(format!("Stream error: {e}")))
+                    .send(StreamChunk::Error(format!("Stream error: {}", e)))
                     .await;
-                return Err(AppError::Llm(format!("Stream error: {e}")));
+                return Err(AppError::Llm(format!("Stream error: {}", e)));
             }
         }
     }
@@ -1334,7 +1327,7 @@ async fn stream_openai_responses(
         .json(&body)
         .send()
         .await
-        .map_err(|e| AppError::Llm(format!("OpenAI streaming request failed: {e}")))?;
+        .map_err(|e| AppError::Llm(format!("OpenAI streaming request failed: {}", e)))?;
 
     if !response.status().is_success() {
         let status = response.status();
@@ -1378,8 +1371,7 @@ async fn stream_openai_responses(
                         continue;
                     };
 
-                    let event_type = json["type"].as_str().unwrap_or_default();
-                    match event_type {
+                    match json["type"].as_str().unwrap_or_default() {
                         "response.output_text.delta" => {
                             if let Some(delta) = json["delta"].as_str()
                                 && !delta.is_empty()
@@ -1450,9 +1442,9 @@ async fn stream_openai_responses(
             }
             Err(e) => {
                 let _ = tx
-                    .send(StreamChunk::Error(format!("Stream error: {e}")))
+                    .send(StreamChunk::Error(format!("Stream error: {}", e)))
                     .await;
-                return Err(AppError::Llm(format!("Stream error: {e}")));
+                return Err(AppError::Llm(format!("Stream error: {}", e)));
             }
         }
     }
@@ -1477,17 +1469,8 @@ pub async fn stream_openai(
 
     match openai_api_for_model(model) {
         OpenAiApi::ChatCompletions => {
-            stream_openai_chat_compatible(OpenAiChatCompatibleStreamRequest {
-                api_key,
-                base_url,
-                model,
-                prompt,
-                tools,
-                tx,
-                cancel_token,
-                provider_name: "OpenAI",
-            })
-            .await
+            stream_openai_chat_compatible(api_key, base_url, model, prompt, tools, tx, cancel_token)
+                .await
         }
         OpenAiApi::Responses => {
             stream_openai_responses(api_key, base_url, model, prompt, tools, tx, cancel_token).await
@@ -2139,16 +2122,15 @@ pub async fn start_streaming(
             "grok" => {
                 // Grok uses OpenAI-compatible API
                 if let Some(c) = &config.grok {
-                    stream_openai_chat_compatible(OpenAiChatCompatibleStreamRequest {
-                        api_key: &c.api_key,
-                        base_url: c.base_url.as_deref().unwrap_or("https://api.x.ai"),
-                        model: &c.model,
+                    stream_openai_chat_compatible(
+                        &c.api_key,
+                        c.base_url.as_deref().unwrap_or("https://api.x.ai"),
+                        &c.model,
                         prompt,
-                        tools: tool_schemas.as_ref().map(|s| s.openai.as_slice()),
+                        tool_schemas.as_ref().map(|s| s.openai.as_slice()),
                         tx,
                         cancel_token,
-                        provider_name: "Grok",
-                    })
+                    )
                     .await
                 } else {
                     stream_unconfigured_error("grok", tx).await

@@ -9,51 +9,19 @@ import {
   shellSessionResize,
 } from '../../../services/tauri/agent';
 import type { ShellSessionRecord } from '../types';
+import { buildTerminalTheme } from './terminalTheme';
 
 interface InteractiveShellTerminalProps {
   shell: ShellSessionRecord;
   readOnly?: boolean;
+  className?: string;
 }
 
-function readCssColor(name: string, fallback: string): string {
-  if (typeof window === 'undefined') return fallback;
-  const value = window.getComputedStyle(document.documentElement).getPropertyValue(name).trim();
-  return value || fallback;
-}
-
-function buildTerminalTheme() {
-  const accent = readCssColor('--accent-primary', '#3b82f6');
-  const background = readCssColor('--bg-base', '#111827');
-  const elevated = readCssColor('--bg-glass-strong', background);
-  const foreground = readCssColor('--text-primary', '#e5e7eb');
-  const secondary = readCssColor('--text-secondary', '#94a3b8');
-
-  return {
-    background,
-    foreground,
-    cursor: accent,
-    cursorAccent: background,
-    selectionBackground: 'rgba(59, 130, 246, 0.18)',
-    black: background,
-    red: '#ef4444',
-    green: '#22c55e',
-    yellow: '#f59e0b',
-    blue: accent,
-    magenta: '#a855f7',
-    cyan: '#06b6d4',
-    white: foreground,
-    brightBlack: secondary,
-    brightRed: '#f87171',
-    brightGreen: '#4ade80',
-    brightYellow: '#fbbf24',
-    brightBlue: '#60a5fa',
-    brightMagenta: '#c084fc',
-    brightCyan: '#22d3ee',
-    brightWhite: elevated,
-  };
-}
-
-export const InteractiveShellTerminal: React.FC<InteractiveShellTerminalProps> = ({ shell, readOnly = false }) => {
+export const InteractiveShellTerminal: React.FC<InteractiveShellTerminalProps> = ({
+  shell,
+  readOnly = false,
+  className,
+}) => {
   const hostRef = useRef<HTMLDivElement | null>(null);
   const terminalRef = useRef<Terminal | null>(null);
   const fitAddonRef = useRef<FitAddon | null>(null);
@@ -87,14 +55,18 @@ export const InteractiveShellTerminal: React.FC<InteractiveShellTerminalProps> =
     const scheduleResize = () => {
       window.requestAnimationFrame(() => {
         fitAddon.fit();
-        void shellSessionResize(shell.shellSessionId, terminal.cols, terminal.rows).catch(console.error);
+        if (!readOnly) {
+          void shellSessionResize(shell.shellSessionId, terminal.cols, terminal.rows).catch(console.error);
+        }
       });
     };
 
     const resizeObserver = new ResizeObserver(scheduleResize);
     resizeObserver.observe(host);
     scheduleResize();
-    terminal.focus();
+    if (!readOnly) {
+      terminal.focus();
+    }
 
     const applyTheme = () => {
       terminal.options.theme = buildTerminalTheme();
@@ -106,19 +78,19 @@ export const InteractiveShellTerminal: React.FC<InteractiveShellTerminalProps> =
       attributeFilter: ['class', 'data-theme', 'style'],
     });
 
-    const dataDisposable = terminal.onData((data) => {
-      if (readOnly) return;
+    const dataDisposable = readOnly
+      ? null
+      : terminal.onData((data) => {
+        pendingWriteRef.current = pendingWriteRef.current
+          .catch(() => undefined)
+          .then(() => shellSessionInput(shell.shellSessionId, data));
+      });
 
-      pendingWriteRef.current = pendingWriteRef.current
-        .catch(() => undefined)
-        .then(() => shellSessionInput(shell.shellSessionId, data));
-    });
-
-    const focusTimer = window.setTimeout(() => terminal.focus(), 30);
+    const focusTimer = readOnly ? null : window.setTimeout(() => terminal.focus(), 30);
 
     return () => {
-      window.clearTimeout(focusTimer);
-      dataDisposable.dispose();
+      if (focusTimer != null) window.clearTimeout(focusTimer);
+      dataDisposable?.dispose();
       resizeObserver.disconnect();
       themeObserver.disconnect();
       terminal.dispose();
@@ -126,6 +98,9 @@ export const InteractiveShellTerminal: React.FC<InteractiveShellTerminalProps> =
       fitAddonRef.current = null;
       lastRenderedLineRef.current = 0;
     };
+    // `shell.lines` are applied incrementally by the follow-up effect below; including
+    // them here would recreate the terminal on every output chunk.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [readOnly, shell.shellSessionId]);
 
   useEffect(() => {
@@ -142,12 +117,19 @@ export const InteractiveShellTerminal: React.FC<InteractiveShellTerminalProps> =
   }, [shell.lines]);
 
   useEffect(() => {
+    if (readOnly) return;
     const terminal = terminalRef.current;
     if (!terminal) return;
     terminal.focus();
-  }, [shell.shellSessionId]);
+  }, [readOnly, shell.shellSessionId]);
 
-  return <div className={`interactive-shell-terminal${readOnly ? ' interactive-shell-terminal--read-only' : ''}`} ref={hostRef} />;
+  const classes = [
+    'interactive-shell-terminal',
+    readOnly ? 'interactive-shell-terminal--read-only' : '',
+    className ?? '',
+  ].filter(Boolean).join(' ');
+
+  return <div className={classes} ref={hostRef} />;
 };
 
 export default InteractiveShellTerminal;

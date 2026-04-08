@@ -7326,7 +7326,7 @@ impl AgentPipeline {
         let mut results = stream::iter(batch.into_iter().enumerate().map(
             |(index, tool_call)| async move {
                 let result = self
-                    .execute_tool(&tool_call.name, &tool_call.arguments, workspace, None)
+                    .execute_tool(&tool_call.name, &tool_call.arguments, workspace, None, None)
                     .await;
                 (
                     index,
@@ -9508,8 +9508,14 @@ impl AgentPipeline {
                         );
                         pending_parallel_signatures.clear();
                     }
-                    self.execute_tool(&tc.name, &tc.arguments, workspace, None)
-                        .await
+                    self.execute_tool(
+                        &tc.name,
+                        &tc.arguments,
+                        workspace,
+                        session_id.as_deref(),
+                        None,
+                    )
+                    .await
                 };
                 let duration_ms = 0u64; // No per-call timing in blocking path.
                 iteration_tool_calls.push(ToolCallRecord {

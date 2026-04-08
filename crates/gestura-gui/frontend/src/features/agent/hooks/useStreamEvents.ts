@@ -111,7 +111,13 @@ export type StreamEventAction =
   | { type: 'tool-end'; toolCallId?: string | null }
   | { type: 'tool-result'; name: string; success: boolean; output: string | null; durationMs: number | null; toolCallId?: string | null }
   | { type: 'shell-lifecycle'; processId: string; payload: Record<string, unknown> }
-  | { type: 'shell-output'; processId: string; stream: 'Stdout' | 'Stderr'; data: string }
+  | {
+    type: 'shell-output';
+    processId: string;
+    shellSessionId?: string | null;
+    stream: 'Stdout' | 'Stderr';
+    data: string;
+  }
   | { type: 'retry'; attempt: number; reason: string }
   | { type: 'status'; text: string; kind: string }
   | { type: 'context-compacted'; summary: string }
@@ -141,7 +147,14 @@ export function useStreamEvents(sessionId: string, dispatch: StreamEventDispatch
     const unlisten: UnlistenFn[] = [];
     let cancelled = false;
     let dispatchFlushHandle: number | null = null;
+    let dispatchMicrotaskQueued = false;
     const pendingActions: StreamEventAction[] = [];
+
+    const scheduleMicrotask = typeof queueMicrotask === 'function'
+      ? queueMicrotask.bind(globalThis)
+      : (callback: () => void) => {
+        void Promise.resolve().then(callback);
+      };
 
     // Debounced notification that the agent likely mutated the workspace.
     // ExplorerPanel + EditorArea both listen for this to refresh without polling.
@@ -173,13 +186,32 @@ export function useStreamEvents(sessionId: string, dispatch: StreamEventDispatch
 
     function flushBufferedActions(): void {
       dispatchFlushHandle = null;
+      dispatchMicrotaskQueued = false;
       if (cancelled || pendingActions.length === 0) return;
       const actions = pendingActions.splice(0, pendingActions.length);
       actions.forEach((action) => dispatch(action));
     }
 
-    function scheduleBufferedFlush(): void {
-      if (cancelled || dispatchFlushHandle != null) return;
+    function scheduleBufferedFlush(priority: 'default' | 'realtime' = 'default'): void {
+      if (cancelled) return;
+      if (priority === 'realtime') {
+        if (dispatchMicrotaskQueued) return;
+        if (dispatchFlushHandle != null) {
+          if (typeof window.cancelAnimationFrame === 'function') {
+            window.cancelAnimationFrame(dispatchFlushHandle);
+          } else {
+            window.clearTimeout(dispatchFlushHandle);
+          }
+          dispatchFlushHandle = null;
+        }
+        dispatchMicrotaskQueued = true;
+        scheduleMicrotask(() => {
+          flushBufferedActions();
+        });
+        return;
+      }
+
+      if (dispatchMicrotaskQueued || dispatchFlushHandle != null) return;
       if (typeof window.requestAnimationFrame === 'function') {
         dispatchFlushHandle = window.requestAnimationFrame(() => {
           flushBufferedActions();
@@ -192,13 +224,15 @@ export function useStreamEvents(sessionId: string, dispatch: StreamEventDispatch
     }
 
     function cancelBufferedFlush(): void {
-      if (dispatchFlushHandle == null) return;
-      if (typeof window.cancelAnimationFrame === 'function') {
-        window.cancelAnimationFrame(dispatchFlushHandle);
-      } else {
-        window.clearTimeout(dispatchFlushHandle);
+      if (dispatchFlushHandle != null) {
+        if (typeof window.cancelAnimationFrame === 'function') {
+          window.cancelAnimationFrame(dispatchFlushHandle);
+        } else {
+          window.clearTimeout(dispatchFlushHandle);
+        }
+        dispatchFlushHandle = null;
       }
-      dispatchFlushHandle = null;
+      dispatchMicrotaskQueued = false;
     }
 
     function dispatchNow(action: StreamEventAction): void {
@@ -206,7 +240,7 @@ export function useStreamEvents(sessionId: string, dispatch: StreamEventDispatch
       dispatch(action);
     }
 
-    function dispatchBuffered(action: StreamEventAction): void {
+    function dispatchBuffered(action: StreamEventAction, priority: 'default' | 'realtime' = 'default'): void {
       const last = pendingActions[pendingActions.length - 1];
 
       if (last?.type === 'thinking' && action.type === 'thinking') {
@@ -234,7 +268,7 @@ export function useStreamEvents(sessionId: string, dispatch: StreamEventDispatch
         pendingActions.push(action);
       }
 
-      scheduleBufferedFlush();
+      scheduleBufferedFlush(priority);
     }
 
     function accept<T = unknown>(eventName: string, raw: unknown): { ok: true; value: T } | { ok: false } {
@@ -265,285 +299,251 @@ export function useStreamEvents(sessionId: string, dispatch: StreamEventDispatch
     }
 
     async function setup() {
-      await safeListen('agent-probe', () => { /* diagnostics only */ });
-
-      await safeListen('agent-stream-thinking', (e) => {
-        const r = accept<string>('agent-stream-thinking', e.payload);
-        if (!r.ok) return;
-        dispatchBuffered({
-          type: 'thinking',
-          chunk: typeof r.value === 'string' ? r.value : JSON.stringify(r.value),
-        });
-      });
-
-      await safeListen('agent-stream-chunk', (e) => {
-        const r = accept<string>('agent-stream-chunk', e.payload);
-        if (!r.ok) return;
-        dispatchBuffered({
-          type: 'chunk',
-          chunk: typeof r.value === 'string' ? r.value : JSON.stringify(r.value),
-        });
-      });
-
-      await safeListen('agent-stream-tool-confirmation', (e) => {
-        const r = accept<ToolConfirmation>('agent-stream-tool-confirmation', e.payload);
-        if (!r.ok) return;
-        dispatch({ type: 'tool-confirmation', payload: r.value });
-      });
-
-      await safeListen('agent-stream-tool-blocked', (e) => {
-        const r = accept<Record<string, unknown>>('agent-stream-tool-blocked', e.payload);
-        if (!r.ok) return;
-        const p = r.value as Record<string, unknown>;
-        dispatch({
-          type: 'tool-blocked',
-          toolName: String(p['tool_name'] ?? 'tool'),
-          reason: String(p['reason'] ?? 'blocked'),
-        });
-      });
-
-      await safeListen('agent-stream-agent-iteration', (e) => {
-        const r = accept<Record<string, unknown>>('agent-stream-agent-iteration', e.payload);
-        if (!r.ok) return;
-        dispatch({
-          type: 'agent-iteration',
-          iteration: Number((r.value as Record<string, unknown>)['iteration'] ?? 0),
-        });
-      });
-
-      await safeListen('agent-stream-tool-start', (e) => {
-        const r = accept<unknown>('agent-stream-tool-start', e.payload);
-        if (!r.ok) return;
-        const toolCallId = isRecord(r.value) ? readOptionalString(r.value['id']) : null;
-        const toolName =
-          typeof r.value === 'string'
-            ? r.value
-            : String((r.value as Record<string, unknown>)?.['name'] ?? 'tool');
-        currentToolName = toolName;
-        if (shouldSignalWorkspaceChanged(toolName)) sawWorkspaceMutation = true;
-        dispatch({ type: 'tool-start', toolName, toolCallId });
-      });
-
-      await safeListen('agent-stream-tool-args', (e) => {
-        const r = accept<unknown>('agent-stream-tool-args', e.payload);
-        if (!r.ok) return;
-        const toolCallId = isRecord(r.value) ? readOptionalString(r.value['id']) : null;
-        const args = typeof r.value === 'string'
-          ? r.value
-          : isRecord(r.value) && typeof r.value['args'] === 'string'
-            ? r.value['args']
-            : JSON.stringify(r.value, null, 2);
-        dispatchBuffered({ type: 'tool-args', args, toolCallId });
-      });
-
-      await safeListen('agent-stream-tool-end', (e) => {
-        const r = accept<unknown>('agent-stream-tool-end', e.payload);
-        if (!r.ok) return;
-        const toolCallId = isRecord(r.value) ? readOptionalString(r.value['id']) : null;
-
-        if (shouldSignalWorkspaceChanged(currentToolName)) {
-          sawWorkspaceMutation = true;
-          scheduleWorkspaceChanged();
-        }
-        currentToolName = null;
-
-        dispatch({ type: 'tool-end', toolCallId });
-      });
-
-      await safeListen('agent-stream-tool-result', (e) => {
-        const r = accept<Record<string, unknown>>('agent-stream-tool-result', e.payload);
-        if (!r.ok) return;
-        const p = r.value as Record<string, unknown>;
-        const name = String(p['name'] ?? '');
-        const success = Boolean(p['success']);
-
-        // Refresh the workspace after tools that commonly mutate local files.
-        // We do this regardless of `success` since a partially failed tool may still
-        // have written files.
-        if (shouldSignalWorkspaceChanged(name)) {
-          sawWorkspaceMutation = true;
-          scheduleWorkspaceChanged();
-        }
-
-        // Core-side task tool mutations update the shared TaskManager directly, but
-        // they do not emit Tauri `task-*` events. Refresh the task hierarchy when a
-        // task tool call succeeds so autogenerated subtasks stay current mid-run.
-        if (shouldRefreshTasks(name, success)) {
-          dispatch({ type: 'task-changed' });
-        }
-
-        dispatch({
-          type: 'tool-result',
-          name,
-          success,
-          output: p['output'] != null ? String(p['output']) : null,
-          durationMs: p['duration_ms'] != null ? Number(p['duration_ms']) : null,
-          toolCallId: readOptionalString(p['id']),
-        });
-      });
-
-      await safeListen('agent-stream-shell-lifecycle', (e) => {
-        const r = accept<Record<string, unknown>>('agent-stream-shell-lifecycle', e.payload);
-        if (!r.ok) return;
-        const p = r.value as Record<string, unknown>;
-        dispatch({
-          type: 'shell-lifecycle',
-          processId: String(p['process_id'] ?? ''),
-          payload: p,
-        });
-      });
-
-      await safeListen('agent-stream-shell-output', (e) => {
-        const r = accept<Record<string, unknown>>('agent-stream-shell-output', e.payload);
-        if (!r.ok) return;
-        const p = r.value as Record<string, unknown>;
-        dispatchBuffered({
-          type: 'shell-output',
-          processId: String(p['process_id'] ?? ''),
-          stream: (p['stream'] as 'Stdout' | 'Stderr') ?? 'Stdout',
-          data: String(p['data'] ?? ''),
-        });
-      });
-
-      await safeListen('agent-stream-retry', (e) => {
-        const r = accept<Record<string, unknown>>('agent-stream-retry', e.payload);
-        if (!r.ok) return;
-        const p = r.value as Record<string, unknown>;
-        dispatch({
-          type: 'retry',
-          attempt: Number(p['attempt'] ?? 1),
-          reason: String(p['reason'] ?? ''),
-        });
-      });
-
-      await safeListen('agent-stream-status', (e) => {
-        const r = accept<Record<string, unknown>>('agent-stream-status', e.payload);
-        if (!r.ok) return;
-        const p = r.value as Record<string, unknown>;
-        dispatchBuffered({
-          type: 'status',
-          text: String(p['text'] ?? ''),
-          kind: String(p['kind'] ?? 'ready'),
-        });
-      });
-
-      await safeListen('agent-stream-narration', (e) => {
-        const r = accept<Record<string, unknown>>('agent-stream-narration', e.payload);
-        if (!r.ok) return;
-        const p = r.value as Record<string, unknown>;
-        dispatch({
-          type: 'narration',
-          title: p['title'] != null ? String(p['title']) : null,
-          message: String(p['message'] ?? ''),
-          summary: p['summary'] != null ? String(p['summary']) : null,
-          reason: p['reason'] != null ? String(p['reason']) : null,
-          nextStep: p['next_step'] != null ? String(p['next_step']) : null,
-          evidence: readStringArray(p['evidence']),
-          stage: (p['stage'] as 'context' | 'planning' | 'execution' | 'verification' | 'blocked' | 'progress' | undefined) ?? 'progress',
-        });
-      });
-
-      await safeListen('agent-stream-task-state', (e) => {
-        const r = accept<Record<string, unknown>>('agent-stream-task-state', e.payload);
-        if (!r.ok) return;
-        const snapshot = readTaskRuntimeSnapshot(r.value);
-        if (!snapshot) return;
-        dispatchBuffered({ type: 'task-runtime-state', snapshot });
-      });
-
-      await safeListen('agent-context-compacted', (e) => {
-        const r = accept<Record<string, unknown>>('agent-context-compacted', e.payload);
-        if (!r.ok) return;
-        const p = r.value as Record<string, unknown>;
-        dispatch({ type: 'context-compacted', summary: String(p['summary'] ?? '') });
-      });
-
-      await safeListen('agent-stream-done', (e) => {
-        const r = accept('agent-stream-done', e.payload);
-        if (!r.ok) return;
-        // Cheap convergence refresh at the end of a stream, only when we saw a
-        // tool that commonly mutates local files.
-        if (sawWorkspaceMutation) scheduleWorkspaceChanged();
-        dispatchNow({ type: 'done' });
-      });
-
-      await safeListen('agent-stream-paused', (e) => {
-        const r = accept('agent-stream-paused', e.payload);
-        if (!r.ok) return;
-        dispatchNow({ type: 'paused' });
-      });
-
-      await safeListen('agent-stream-cancelled', (e) => {
-        const r = accept('agent-stream-cancelled', e.payload);
-        if (!r.ok) return;
-        dispatchNow({ type: 'cancelled' });
-      });
-
-      await safeListen('agent-stream-resumed', (e) => {
-        const r = accept('agent-stream-resumed', e.payload);
-        if (!r.ok) return;
-        dispatchNow({ type: 'resumed' });
-      });
-
-      await safeListen('agent-stream-error', (e) => {
-        const r = accept<unknown>('agent-stream-error', e.payload);
-        if (!r.ok) return;
-        let message: string;
-        if (typeof r.value === 'string') {
-          message = r.value;
-        } else {
+      await Promise.all([
+        safeListen('agent-probe', () => { /* diagnostics only */ }),
+        safeListen('agent-stream-thinking', (e) => {
+          const r = accept<string>('agent-stream-thinking', e.payload);
+          if (!r.ok) return;
+          dispatchBuffered({
+            type: 'thinking',
+            chunk: typeof r.value === 'string' ? r.value : JSON.stringify(r.value),
+          });
+        }),
+        safeListen('agent-stream-chunk', (e) => {
+          const r = accept<string>('agent-stream-chunk', e.payload);
+          if (!r.ok) return;
+          dispatchBuffered({
+            type: 'chunk',
+            chunk: typeof r.value === 'string' ? r.value : JSON.stringify(r.value),
+          });
+        }),
+        safeListen('agent-stream-tool-confirmation', (e) => {
+          const r = accept<ToolConfirmation>('agent-stream-tool-confirmation', e.payload);
+          if (!r.ok) return;
+          dispatch({ type: 'tool-confirmation', payload: r.value });
+        }),
+        safeListen('agent-stream-tool-blocked', (e) => {
+          const r = accept<Record<string, unknown>>('agent-stream-tool-blocked', e.payload);
+          if (!r.ok) return;
           const p = r.value as Record<string, unknown>;
-          message = String(p['message'] ?? p['error'] ?? 'Unknown error');
-        }
-        dispatchNow({ type: 'error', message });
-      });
+          dispatch({
+            type: 'tool-blocked',
+            toolName: String(p['tool_name'] ?? 'tool'),
+            reason: String(p['reason'] ?? 'blocked'),
+          });
+        }),
+        safeListen('agent-stream-agent-iteration', (e) => {
+          const r = accept<Record<string, unknown>>('agent-stream-agent-iteration', e.payload);
+          if (!r.ok) return;
+          dispatch({
+            type: 'agent-iteration',
+            iteration: Number((r.value as Record<string, unknown>)['iteration'] ?? 0),
+          });
+        }),
+        safeListen('agent-stream-tool-start', (e) => {
+          const r = accept<unknown>('agent-stream-tool-start', e.payload);
+          if (!r.ok) return;
+          const toolCallId = isRecord(r.value) ? readOptionalString(r.value['id']) : null;
+          const toolName =
+            typeof r.value === 'string'
+              ? r.value
+              : String((r.value as Record<string, unknown>)?.['name'] ?? 'tool');
+          currentToolName = toolName;
+          if (shouldSignalWorkspaceChanged(toolName)) sawWorkspaceMutation = true;
+          dispatch({ type: 'tool-start', toolName, toolCallId });
+        }),
+        safeListen('agent-stream-tool-args', (e) => {
+          const r = accept<unknown>('agent-stream-tool-args', e.payload);
+          if (!r.ok) return;
+          const toolCallId = isRecord(r.value) ? readOptionalString(r.value['id']) : null;
+          const args = typeof r.value === 'string'
+            ? r.value
+            : isRecord(r.value) && typeof r.value['args'] === 'string'
+              ? r.value['args']
+              : JSON.stringify(r.value, null, 2);
+          dispatchBuffered({ type: 'tool-args', args, toolCallId });
+        }),
+        safeListen('agent-stream-tool-end', (e) => {
+          const r = accept<unknown>('agent-stream-tool-end', e.payload);
+          if (!r.ok) return;
+          const toolCallId = isRecord(r.value) ? readOptionalString(r.value['id']) : null;
 
-      for (const evtName of [
-        'stream-health-status',
-        'stream-health-warning',
-        'stream-reconnect-attempt',
-        'stream-reconnect-success',
-        'stream-reconnect-failed',
-      ] as const) {
-        await safeListen(evtName, (e) => {
+          if (shouldSignalWorkspaceChanged(currentToolName)) {
+            sawWorkspaceMutation = true;
+            scheduleWorkspaceChanged();
+          }
+          currentToolName = null;
+
+          dispatch({ type: 'tool-end', toolCallId });
+        }),
+        safeListen('agent-stream-tool-result', (e) => {
+          const r = accept<Record<string, unknown>>('agent-stream-tool-result', e.payload);
+          if (!r.ok) return;
+          const p = r.value as Record<string, unknown>;
+          const name = String(p['name'] ?? '');
+          const success = Boolean(p['success']);
+
+          if (shouldSignalWorkspaceChanged(name)) {
+            sawWorkspaceMutation = true;
+            scheduleWorkspaceChanged();
+          }
+
+          if (shouldRefreshTasks(name, success)) {
+            dispatch({ type: 'task-changed' });
+          }
+
+          dispatch({
+            type: 'tool-result',
+            name,
+            success,
+            output: p['output'] != null ? String(p['output']) : null,
+            durationMs: p['duration_ms'] != null ? Number(p['duration_ms']) : null,
+            toolCallId: readOptionalString(p['id']),
+          });
+        }),
+        safeListen('agent-stream-shell-lifecycle', (e) => {
+          const r = accept<Record<string, unknown>>('agent-stream-shell-lifecycle', e.payload);
+          if (!r.ok) return;
+          const p = r.value as Record<string, unknown>;
+          dispatch({
+            type: 'shell-lifecycle',
+            processId: String(p['process_id'] ?? ''),
+            payload: p,
+          });
+        }),
+        safeListen('agent-stream-shell-output', (e) => {
+          const r = accept<Record<string, unknown>>('agent-stream-shell-output', e.payload);
+          if (!r.ok) return;
+          const p = r.value as Record<string, unknown>;
+          dispatchBuffered({
+            type: 'shell-output',
+            processId: String(p['process_id'] ?? ''),
+            shellSessionId: p['shell_session_id'] != null ? String(p['shell_session_id']) : null,
+            stream: (p['stream'] as 'Stdout' | 'Stderr') ?? 'Stdout',
+            data: String(p['data'] ?? ''),
+          }, 'realtime');
+        }),
+        safeListen('agent-stream-retry', (e) => {
+          const r = accept<Record<string, unknown>>('agent-stream-retry', e.payload);
+          if (!r.ok) return;
+          const p = r.value as Record<string, unknown>;
+          dispatch({
+            type: 'retry',
+            attempt: Number(p['attempt'] ?? 1),
+            reason: String(p['reason'] ?? ''),
+          });
+        }),
+        safeListen('agent-stream-status', (e) => {
+          const r = accept<Record<string, unknown>>('agent-stream-status', e.payload);
+          if (!r.ok) return;
+          const p = r.value as Record<string, unknown>;
+          dispatchBuffered({
+            type: 'status',
+            text: String(p['text'] ?? ''),
+            kind: String(p['kind'] ?? 'ready'),
+          });
+        }),
+        safeListen('agent-stream-narration', (e) => {
+          const r = accept<Record<string, unknown>>('agent-stream-narration', e.payload);
+          if (!r.ok) return;
+          const p = r.value as Record<string, unknown>;
+          dispatch({
+            type: 'narration',
+            title: p['title'] != null ? String(p['title']) : null,
+            message: String(p['message'] ?? ''),
+            summary: p['summary'] != null ? String(p['summary']) : null,
+            reason: p['reason'] != null ? String(p['reason']) : null,
+            nextStep: p['next_step'] != null ? String(p['next_step']) : null,
+            evidence: readStringArray(p['evidence']),
+            stage: (p['stage'] as 'context' | 'planning' | 'execution' | 'verification' | 'blocked' | 'progress' | undefined) ?? 'progress',
+          });
+        }),
+        safeListen('agent-stream-task-state', (e) => {
+          const r = accept<Record<string, unknown>>('agent-stream-task-state', e.payload);
+          if (!r.ok) return;
+          const snapshot = readTaskRuntimeSnapshot(r.value);
+          if (!snapshot) return;
+          dispatchBuffered({ type: 'task-runtime-state', snapshot });
+        }),
+        safeListen('agent-context-compacted', (e) => {
+          const r = accept<Record<string, unknown>>('agent-context-compacted', e.payload);
+          if (!r.ok) return;
+          const p = r.value as Record<string, unknown>;
+          dispatch({ type: 'context-compacted', summary: String(p['summary'] ?? '') });
+        }),
+        safeListen('agent-stream-done', (e) => {
+          const r = accept('agent-stream-done', e.payload);
+          if (!r.ok) return;
+          if (sawWorkspaceMutation) scheduleWorkspaceChanged();
+          dispatchNow({ type: 'done' });
+        }),
+        safeListen('agent-stream-paused', (e) => {
+          const r = accept('agent-stream-paused', e.payload);
+          if (!r.ok) return;
+          dispatchNow({ type: 'paused' });
+        }),
+        safeListen('agent-stream-cancelled', (e) => {
+          const r = accept('agent-stream-cancelled', e.payload);
+          if (!r.ok) return;
+          dispatchNow({ type: 'cancelled' });
+        }),
+        safeListen('agent-stream-resumed', (e) => {
+          const r = accept('agent-stream-resumed', e.payload);
+          if (!r.ok) return;
+          dispatchNow({ type: 'resumed' });
+        }),
+        safeListen('agent-stream-error', (e) => {
+          const r = accept<unknown>('agent-stream-error', e.payload);
+          if (!r.ok) return;
+          let message: string;
+          if (typeof r.value === 'string') {
+            message = r.value;
+          } else {
+            const p = r.value as Record<string, unknown>;
+            message = String(p['message'] ?? p['error'] ?? 'Unknown error');
+          }
+          dispatchNow({ type: 'error', message });
+        }),
+        ...([
+          'stream-health-status',
+          'stream-health-warning',
+          'stream-reconnect-attempt',
+          'stream-reconnect-success',
+          'stream-reconnect-failed',
+        ] as const).map((evtName) => safeListen(evtName, (e) => {
           const r = accept<StreamHealthPayload>(evtName, e.payload);
           if (!r.ok) return;
           dispatchNow({ type: 'health', payload: r.value });
-        });
-      }
-
-      await safeListen('agent-message', (e) => {
-        const r = accept<Record<string, unknown>>('agent-message', e.payload);
-        if (!r.ok) return;
-        const p = r.value as Record<string, unknown>;
-        const content = typeof p['content'] === 'string'
-          ? p['content']
-          : typeof p['message'] === 'string'
-            ? p['message']
-            : '';
-        if (!content.trim()) return;
-        dispatchNow({
-          type: 'agent-message',
-          role: String(p['role'] ?? p['type'] ?? 'assistant'),
-          content,
-        });
-      });
-
-      await safeListen('listening-state-changed', (e) => {
-        const r = accept<boolean>('listening-state-changed', e.payload);
-        if (!r.ok) return;
-        const val =
-          typeof r.value === 'boolean'
-            ? r.value
-            : Boolean((r.value as Record<string, unknown>)?.['listening']);
-        dispatchNow({ type: 'listening-state', listening: val });
-      });
-
-      for (const evtName of ['task-created', 'task-updated', 'task-deleted'] as const) {
-        await safeListen(evtName, () => {
+        })),
+        safeListen('agent-message', (e) => {
+          const r = accept<Record<string, unknown>>('agent-message', e.payload);
+          if (!r.ok) return;
+          const p = r.value as Record<string, unknown>;
+          const content = typeof p['content'] === 'string'
+            ? p['content']
+            : typeof p['message'] === 'string'
+              ? p['message']
+              : '';
+          if (!content.trim()) return;
+          dispatchNow({
+            type: 'agent-message',
+            role: String(p['role'] ?? p['type'] ?? 'assistant'),
+            content,
+          });
+        }),
+        safeListen('listening-state-changed', (e) => {
+          const r = accept<boolean>('listening-state-changed', e.payload);
+          if (!r.ok) return;
+          const val =
+            typeof r.value === 'boolean'
+              ? r.value
+              : Boolean((r.value as Record<string, unknown>)?.['listening']);
+          dispatchNow({ type: 'listening-state', listening: val });
+        }),
+        ...(['task-created', 'task-updated', 'task-deleted'] as const).map((evtName) => safeListen(evtName, () => {
           dispatch({ type: 'task-changed' });
-        });
-      }
+        })),
+      ]);
     }
 
     setup().catch((err) => console.error('[useStreamEvents] setup error:', err));

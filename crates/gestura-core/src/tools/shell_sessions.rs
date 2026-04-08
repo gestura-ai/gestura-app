@@ -48,7 +48,7 @@ pub struct ShellExecutionOptions {
 
 mod imp {
     use super::*;
-    use portable_pty::{Child, ChildKiller, CommandBuilder, MasterPty, PtySize, native_pty_system};
+    use portable_pty::{Child, CommandBuilder, MasterPty, PtySize, native_pty_system};
     use std::collections::HashMap;
     use std::io::{ErrorKind, Read, Write};
     use std::sync::{
@@ -61,17 +61,17 @@ mod imp {
     const DEFAULT_COLS: u16 = 120;
     const INTERRUPT_GRACE_SECS: u64 = 2;
     const STOP_ESCALATION_MILLIS: u64 = 300;
+    const ACTIVE_CHUNK_BUFFER: usize = 256;
     const SESSION_EVENT_BUFFER: usize = 512;
     const DEFAULT_EXECUTION_TIMEOUT_SECS: u64 = 300;
     const MIN_STALL_TIMEOUT_SECS: u64 = 30;
     const MAX_STALL_TIMEOUT_SECS: u64 = 300;
+    const EARLY_SIGNAL_STALL_TIMEOUT_SECS: u64 = 15;
     const MAX_QUIET_WAIT_CYCLES_WITHOUT_SIGNAL: u8 = 2;
     const SHELL_OUTPUT_SEND_TIMEOUT: Duration = Duration::from_millis(100);
     const STATUS_CHUNK_SEND_TIMEOUT: Duration = Duration::from_millis(100);
     const STALL_SIGNAL_TAIL_BYTES: usize = 4096;
-    const SHELL_READY_TIMEOUT: Duration = Duration::from_secs(5);
-    const PTY_WRITE_TIMEOUT: Duration = Duration::from_secs(5);
-    const PTY_KILL_TIMEOUT: Duration = Duration::from_secs(5);
+    const CHILD_EXIT_POLL_INTERVAL: Duration = Duration::from_millis(100);
 
     const INTERACTIVE_PROMPT_PATTERNS: &[&str] = &[
         "ok to proceed?",
@@ -118,23 +118,6 @@ mod imp {
         }
     }
 
-    async fn send_stream_chunk_best_effort(
-        tx: &mpsc::Sender<StreamChunk>,
-        chunk: StreamChunk,
-        chunk_kind: &'static str,
-    ) {
-        match tokio::time::timeout(SHELL_OUTPUT_SEND_TIMEOUT, tx.send(chunk)).await {
-            Ok(Ok(())) | Ok(Err(_)) => {}
-            Err(_) => {
-                tracing::debug!(
-                    timeout_ms = SHELL_OUTPUT_SEND_TIMEOUT.as_millis(),
-                    chunk_kind,
-                    "Dropping PTY stream chunk because the receiver is not draining fast enough"
-                );
-            }
-        }
-    }
-
     async fn send_status_chunk_best_effort(tx: &mpsc::Sender<StreamChunk>, message: String) {
         match tokio::time::timeout(
             STATUS_CHUNK_SEND_TIMEOUT,
@@ -169,18 +152,16 @@ mod imp {
         state: Mutex<ManagerState>,
     }
 
-    type SharedWriter = Arc<StdMutex<Box<dyn Write + Send>>>;
-
     struct ShellSession {
         shell_session_id: String,
         pool_key: String,
         mode: SessionMode,
-        master: Mutex<Box<dyn MasterPty + Send>>,
-        writer: SharedWriter,
+        master: Mutex<Option<Box<dyn MasterPty + Send>>>,
+        writer: Mutex<Option<Box<dyn Write + Send>>>,
         command_lock: Mutex<()>,
-        active_sender: Arc<StdMutex<Option<mpsc::UnboundedSender<String>>>>,
+        active_sender: Arc<StdMutex<Option<mpsc::Sender<String>>>>,
         event_tx: broadcast::Sender<StreamChunk>,
-        killer: Arc<StdMutex<Box<dyn ChildKiller + Send + Sync>>>,
+        child: Arc<StdMutex<Option<Box<dyn Child + Send + Sync>>>>,
         closed: Arc<AtomicBool>,
         claimed_by_user: Arc<AtomicBool>,
         user_stop_requested: Arc<AtomicBool>,
@@ -303,6 +284,18 @@ mod imp {
 
     fn default_stall_timeout_secs(timeout_secs: u64) -> u64 {
         timeout_secs.clamp(MIN_STALL_TIMEOUT_SECS, MAX_STALL_TIMEOUT_SECS)
+    }
+
+    fn early_signal_stall_timeout(
+        stall_timeout: Duration,
+        stall_signal: StallSignal,
+    ) -> Option<Duration> {
+        match stall_signal {
+            StallSignal::InteractivePrompt | StallSignal::ErrorOutput => {
+                Some(stall_timeout.min(Duration::from_secs(EARLY_SIGNAL_STALL_TIMEOUT_SECS)))
+            }
+            StallSignal::None => None,
+        }
     }
 
     pub(super) async fn stop_process(process_id: &str) -> Result<Option<ShellSessionHandle>> {
@@ -499,6 +492,12 @@ mod imp {
     }
 
     impl ShellSession {
+        fn closed_session_error() -> AppError {
+            AppError::Session(
+                "PTY shell session closed unexpectedly; retry to create a fresh shell".to_string(),
+            )
+        }
+
         fn spawn(
             pool_key: &str,
             initial_cwd: Option<&str>,
@@ -532,21 +531,14 @@ mod imp {
                 AppError::Session(format!("failed to take PTY writer: {error:#}"))
             })?;
 
-            let ready_marker = matches!(mode, SessionMode::Automation)
-                .then(|| format!("__GESTURA_READY_{}__", uuid::Uuid::new_v4()));
-            let (ready_tx, ready_rx) = if ready_marker.is_some() {
-                let (tx, rx) = std::sync::mpsc::channel();
-                (Some(tx), Some(rx))
-            } else {
-                (None, None)
-            };
+            prepare_shell(mode, &mut writer)?;
 
             let shell_session_id = format!("shell-{}", uuid::Uuid::new_v4());
             let active_sender = Arc::new(StdMutex::new(None));
             let active_process_id = Arc::new(StdMutex::new(None));
             let closed = Arc::new(AtomicBool::new(false));
             let claimed_by_user = Arc::new(AtomicBool::new(false));
-            let killer = Arc::new(StdMutex::new(child.clone_killer()));
+            let child = Arc::new(StdMutex::new(Some(child)));
             let (event_tx, _) = broadcast::channel(SESSION_EVENT_BUFFER);
 
             spawn_reader_loop(
@@ -559,47 +551,20 @@ mod imp {
                     event_tx: event_tx.clone(),
                     shell_session_id: shell_session_id.clone(),
                     emit_raw_output: matches!(mode, SessionMode::Interactive),
-                    ready_marker: ready_marker.clone(),
-                    ready_tx,
                 },
             );
-            spawn_wait_loop(child, closed.clone(), shell_session_id.clone());
-
-            prepare_shell(mode, &mut writer, ready_marker.as_deref())?;
-
-            if let Some(ready_rx) = ready_rx {
-                match ready_rx.recv_timeout(SHELL_READY_TIMEOUT) {
-                    Ok(Ok(())) => {}
-                    Ok(Err(message)) => {
-                        closed.store(true, Ordering::SeqCst);
-                        return Err(AppError::Session(message));
-                    }
-                    Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
-                        closed.store(true, Ordering::SeqCst);
-                        return Err(AppError::Session(
-                            "timed out waiting for PTY shell initialization".to_string(),
-                        ));
-                    }
-                    Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
-                        closed.store(true, Ordering::SeqCst);
-                        return Err(AppError::Session(
-                            "PTY shell initialization watcher disconnected unexpectedly"
-                                .to_string(),
-                        ));
-                    }
-                }
-            }
+            spawn_child_monitor(child.clone(), closed.clone(), shell_session_id.clone());
 
             Ok(Arc::new(Self {
                 shell_session_id,
                 pool_key: pool_key.to_string(),
                 mode,
-                master: Mutex::new(pair.master),
-                writer: Arc::new(StdMutex::new(writer)),
+                master: Mutex::new(Some(pair.master)),
+                writer: Mutex::new(Some(writer)),
                 command_lock: Mutex::new(()),
                 active_sender,
                 event_tx,
-                killer,
+                child,
                 closed,
                 claimed_by_user,
                 user_stop_requested: Arc::new(AtomicBool::new(false)),
@@ -733,7 +698,7 @@ mod imp {
             Ok(())
         }
 
-        fn set_active_sender(&self, sender: Option<mpsc::UnboundedSender<String>>) -> Result<()> {
+        fn set_active_sender(&self, sender: Option<mpsc::Sender<String>>) -> Result<()> {
             let mut guard = self.active_sender.lock().map_err(|_| {
                 AppError::Session("failed to lock active PTY command sender".to_string())
             })?;
@@ -790,60 +755,12 @@ mod imp {
         async fn emit_session_lifecycle_to(&self, tx: &mpsc::Sender<StreamChunk>) {
             let chunk = self.session_lifecycle_chunk();
             self.emit_broadcast(chunk.clone());
-            send_stream_chunk_best_effort(tx, chunk, "shell-session-lifecycle").await;
-        }
-
-        async fn await_detached_pty_operation(
-            &self,
-            thread_label: &str,
-            operation_name: &str,
-            timeout: Duration,
-            operation: impl FnOnce() -> Result<()> + Send + 'static,
-        ) -> Result<()> {
-            let shell_session_id = self.shell_session_id.clone();
-            let thread_name = format!("gestura-pty-{thread_label}-{shell_session_id}");
-            let (result_tx, result_rx) = tokio::sync::oneshot::channel();
-
-            std::thread::Builder::new()
-                .name(thread_name)
-                .spawn(move || {
-                    let _ = result_tx.send(operation());
-                })
-                .map_err(|error| {
-                    AppError::Session(format!(
-                        "failed to spawn PTY {operation_name} task for shell session `{shell_session_id}`: {error}"
-                    ))
-                })?;
-
-            match tokio::time::timeout(timeout, result_rx).await {
-                Ok(Ok(result)) => result,
-                Ok(Err(_)) => Err(AppError::Session(format!(
-                    "PTY {operation_name} task ended before reporting completion for shell session `{shell_session_id}`"
-                ))),
-                Err(_) => Err(AppError::Session(format!(
-                    "timed out waiting for PTY {operation_name} to finish for shell session `{shell_session_id}`"
-                ))),
-            }
-        }
-
-        async fn write_to_pty(&self, data: Vec<u8>) -> Result<()> {
-            let writer = self.writer.clone();
-            self.await_detached_pty_operation("write", "write", PTY_WRITE_TIMEOUT, move || {
-                let mut writer = writer.lock().map_err(|_| {
-                    AppError::Session("PTY shell writer lock poisoned unexpectedly".to_string())
-                })?;
-                writer.write_all(&data).map_err(AppError::Io)?;
-                writer.flush().map_err(AppError::Io)
-            })
-            .await
+            let _ = tx.send(chunk).await;
         }
 
         async fn send_input(&self, data: &str) -> Result<()> {
             if self.is_closed() {
-                return Err(AppError::Session(
-                    "PTY shell session closed unexpectedly; retry to create a fresh shell"
-                        .to_string(),
-                ));
+                return Err(Self::closed_session_error());
             }
 
             self.claim_for_user();
@@ -852,13 +769,17 @@ mod imp {
                 return Ok(());
             }
 
-            self.write_to_pty(data.as_bytes().to_vec()).await
+            let mut writer = self.writer.lock().await;
+            let writer = writer.as_mut().ok_or_else(Self::closed_session_error)?;
+            writer.write_all(data.as_bytes()).map_err(AppError::Io)?;
+            writer.flush().map_err(AppError::Io)
         }
 
         async fn resize(&self, cols: u16, rows: u16) -> Result<()> {
             let cols = cols.max(1);
             let rows = rows.max(1);
             let master = self.master.lock().await;
+            let master = master.as_ref().ok_or_else(Self::closed_session_error)?;
             master
                 .resize(PtySize {
                     rows,
@@ -870,7 +791,7 @@ mod imp {
         }
 
         async fn execute(
-            &self,
+            self: Arc<Self>,
             command: &str,
             command_cwd: Option<&str>,
             options: ShellExecutionOptions,
@@ -878,10 +799,7 @@ mod imp {
         ) -> Result<StreamingCommandResult> {
             let _command_guard = self.command_lock.lock().await;
             if self.is_closed() {
-                return Err(AppError::Session(
-                    "PTY shell session closed unexpectedly; retry to create a fresh shell"
-                        .to_string(),
-                ));
+                return Err(Self::closed_session_error());
             }
 
             let process_id = uuid::Uuid::new_v4().to_string();
@@ -899,7 +817,7 @@ mod imp {
             );
             let start = Instant::now();
 
-            let (chunk_tx, mut chunk_rx) = mpsc::unbounded_channel::<String>();
+            let (chunk_tx, mut chunk_rx) = mpsc::channel::<String>(ACTIVE_CHUNK_BUFFER);
             self.user_stop_requested.store(false, Ordering::SeqCst);
             self.set_active_sender(Some(chunk_tx))?;
             self.set_active_command(Some(process_id.clone()), Some(command.to_string()))?;
@@ -909,13 +827,18 @@ mod imp {
                 .await;
             self.emit_session_lifecycle_to(&tx).await;
 
-            if let Err(error) = self.write_to_pty(wrapped.into_bytes()).await {
-                self.set_state(ShellSessionState::Failed)?;
-                self.set_active_sender(None)?;
-                self.set_active_command(None, None)?;
-                manager().unregister_process(&process_id).await;
-                self.emit_session_lifecycle_to(&tx).await;
-                return Err(error);
+            {
+                let mut writer = self.writer.lock().await;
+                let writer = writer.as_mut().ok_or_else(Self::closed_session_error)?;
+                if let Err(error) = writer.write_all(wrapped.as_bytes()) {
+                    self.set_state(ShellSessionState::Failed)?;
+                    self.set_active_sender(None)?;
+                    self.set_active_command(None, None)?;
+                    manager().unregister_process(&process_id).await;
+                    self.emit_session_lifecycle_to(&tx).await;
+                    return Err(AppError::Io(error));
+                }
+                writer.flush().map_err(AppError::Io)?;
             }
 
             let start_chunk = StreamChunk::ShellLifecycle {
@@ -928,7 +851,7 @@ mod imp {
                 cwd: command_cwd.map(ToOwned::to_owned),
             };
             self.emit_broadcast(start_chunk.clone());
-            send_stream_chunk_best_effort(&tx, start_chunk, "shell-lifecycle").await;
+            let _ = tx.send(start_chunk).await;
 
             let mut parser = SessionOutputParser::new(start_marker, done_prefix);
             let mut stdout = String::new();
@@ -942,6 +865,48 @@ mod imp {
             let mut runtime_failure_kind: Option<ShellRuntimeFailureKind> = None;
 
             loop {
+                if interrupted
+                    && interrupt_started_at
+                        .expect("interrupt timestamp must be set")
+                        .elapsed()
+                        >= Duration::from_secs(INTERRUPT_GRACE_SECS)
+                {
+                    self.set_state(ShellSessionState::Failed)?;
+                    self.emit_session_lifecycle();
+                    self.terminate().await?;
+                    let flushed = parser.finish();
+                    if !flushed.is_empty() {
+                        stdout.push_str(&flushed);
+                        let output_chunk = StreamChunk::ShellOutput {
+                            process_id: process_id.clone(),
+                            shell_session_id: Some(self.shell_session_id.clone()),
+                            stream: ShellOutputStream::Stdout,
+                            data: flushed,
+                        };
+                        self.emit_broadcast(output_chunk.clone());
+                        send_shell_output_chunk_best_effort(&tx, output_chunk).await;
+                    }
+
+                    let duration_ms = start.elapsed().as_millis() as u64;
+                    return self
+                        .finish_command(
+                            &tx,
+                            command,
+                            command_cwd,
+                            CommandCompletion {
+                                process_id,
+                                stdout,
+                                exit_code: 124,
+                                process_state: ShellProcessState::Failed,
+                                duration_ms,
+                                session_state: ShellSessionState::Failed,
+                                failure_kind: runtime_failure_kind
+                                    .or(Some(ShellRuntimeFailureKind::TimedOut)),
+                            },
+                        )
+                        .await;
+                }
+
                 let wait_for = if interrupted {
                     Duration::from_secs(INTERRUPT_GRACE_SECS)
                         .checked_sub(
@@ -958,6 +923,29 @@ mod imp {
                     stall_timeout
                         .checked_sub(idle_for)
                         .unwrap_or(Duration::from_secs(0))
+                } else if options.allow_long_running {
+                    let idle_for = last_activity_at
+                        .or(continued_wait_anchor_at)
+                        .map(|timestamp| timestamp.elapsed())
+                        .unwrap_or_else(|| start.elapsed());
+                    let stall_signal =
+                        inspect_stall_signal(&recent_output_tail, parser.buffered_output());
+                    if let Some(signal_timeout) =
+                        early_signal_stall_timeout(stall_timeout, stall_signal)
+                    {
+                        timeout
+                            .checked_sub(start.elapsed())
+                            .unwrap_or(Duration::from_secs(0))
+                            .min(
+                                signal_timeout
+                                    .checked_sub(idle_for)
+                                    .unwrap_or(Duration::from_secs(0)),
+                            )
+                    } else {
+                        timeout
+                            .checked_sub(start.elapsed())
+                            .unwrap_or(Duration::from_secs(0))
+                    }
                 } else {
                     timeout
                         .checked_sub(start.elapsed())
@@ -1087,67 +1075,134 @@ mod imp {
                             .await;
                     }
                     Err(_) if !interrupted => {
-                        if options.allow_long_running && start.elapsed() >= timeout {
+                        if options.allow_long_running {
                             let idle_for = last_activity_at
                                 .or(continued_wait_anchor_at)
                                 .map(|timestamp| timestamp.elapsed())
                                 .unwrap_or_else(|| start.elapsed());
-
-                            if idle_for < stall_timeout {
-                                continue;
-                            }
-
                             let stall_signal =
                                 inspect_stall_signal(&recent_output_tail, parser.buffered_output());
-                            runtime_failure_kind = stall_signal.runtime_failure_kind();
-                            send_status_chunk_best_effort(
-                                &tx,
-                                stall_signal.status_message(&self.shell_session_id, command),
-                            )
-                            .await;
 
-                            match stall_signal {
-                                StallSignal::None => {
-                                    if continued_wait_cycles >= MAX_QUIET_WAIT_CYCLES_WITHOUT_SIGNAL
-                                    {
+                            if let Some(signal_timeout) =
+                                early_signal_stall_timeout(stall_timeout, stall_signal)
+                                && idle_for >= signal_timeout
+                            {
+                                runtime_failure_kind = stall_signal.runtime_failure_kind();
+                                send_status_chunk_best_effort(
+                                    &tx,
+                                    stall_signal.status_message(&self.shell_session_id, command),
+                                )
+                                .await;
+
+                                match stall_signal {
+                                    StallSignal::InteractivePrompt => {
                                         tracing::info!(
                                             shell_session_id = %self.shell_session_id,
                                             process_id = %process_id,
                                             command = %command,
-                                            timeout_secs,
-                                            stall_timeout_secs = stall_timeout.as_secs(),
-                                            "Interrupting quiet PTY command after repeated quiet periods without prompt/error indicators"
+                                            stall_timeout_secs = signal_timeout.as_secs(),
+                                            "Interrupting quiet PTY command early because recent output looks interactive"
                                         );
-                                    } else {
-                                        continued_wait_anchor_at = Some(Instant::now());
-                                        continued_wait_cycles += 1;
-                                        tracing::debug!(
+                                    }
+                                    StallSignal::ErrorOutput => {
+                                        tracing::info!(
                                             shell_session_id = %self.shell_session_id,
                                             process_id = %process_id,
                                             command = %command,
-                                            timeout_secs,
-                                            stall_timeout_secs = stall_timeout.as_secs(),
-                                            "Long-running PTY command is quiet with no prompt/error indicator; continuing to wait"
+                                            stall_timeout_secs = signal_timeout.as_secs(),
+                                            "Interrupting quiet PTY command early because recent output looks like an error"
                                         );
-                                        continue;
+                                    }
+                                    StallSignal::None => {}
+                                }
+
+                                timed_out = true;
+                                interrupted = true;
+                                interrupt_started_at = Some(Instant::now());
+                                self.set_state(ShellSessionState::Interrupting)?;
+                                self.emit_session_lifecycle();
+                                let session = self.clone();
+                                tokio::spawn(async move {
+                                    if let Err(e) = session.interrupt().await {
+                                        tracing::debug!("interrupt error: {e}");
+                                    }
+                                });
+                                continue;
+                            }
+
+                            if start.elapsed() >= timeout {
+                                if idle_for < stall_timeout {
+                                    let sleep_time = stall_timeout
+                                        .saturating_sub(idle_for)
+                                        .min(Duration::from_millis(50));
+                                    tokio::time::sleep(sleep_time).await;
+                                    continue;
+                                }
+
+                                runtime_failure_kind = stall_signal.runtime_failure_kind();
+                                send_status_chunk_best_effort(
+                                    &tx,
+                                    stall_signal.status_message(&self.shell_session_id, command),
+                                )
+                                .await;
+
+                                match stall_signal {
+                                    StallSignal::None => {
+                                        if continued_wait_cycles
+                                            >= MAX_QUIET_WAIT_CYCLES_WITHOUT_SIGNAL
+                                        {
+                                            tracing::info!(
+                                                shell_session_id = %self.shell_session_id,
+                                                process_id = %process_id,
+                                                command = %command,
+                                                timeout_secs,
+                                                stall_timeout_secs = stall_timeout.as_secs(),
+                                                "Interrupting quiet PTY command after repeated quiet periods without prompt/error indicators"
+                                            );
+                                        } else {
+                                            continued_wait_anchor_at = Some(Instant::now());
+                                            continued_wait_cycles += 1;
+                                            tracing::debug!(
+                                                shell_session_id = %self.shell_session_id,
+                                                process_id = %process_id,
+                                                command = %command,
+                                                timeout_secs,
+                                                stall_timeout_secs = stall_timeout.as_secs(),
+                                                "Long-running PTY command is quiet with no prompt/error indicator; continuing to wait"
+                                            );
+                                            continue;
+                                        }
+                                    }
+                                    StallSignal::InteractivePrompt => {
+                                        tracing::info!(
+                                            shell_session_id = %self.shell_session_id,
+                                            process_id = %process_id,
+                                            command = %command,
+                                            "Interrupting quiet PTY command because recent output looks interactive"
+                                        );
+                                    }
+                                    StallSignal::ErrorOutput => {
+                                        tracing::info!(
+                                            shell_session_id = %self.shell_session_id,
+                                            process_id = %process_id,
+                                            command = %command,
+                                            "Interrupting quiet PTY command because recent output looks like an error"
+                                        );
                                     }
                                 }
-                                StallSignal::InteractivePrompt => {
-                                    tracing::info!(
-                                        shell_session_id = %self.shell_session_id,
-                                        process_id = %process_id,
-                                        command = %command,
-                                        "Interrupting quiet PTY command because recent output looks interactive"
-                                    );
-                                }
-                                StallSignal::ErrorOutput => {
-                                    tracing::info!(
-                                        shell_session_id = %self.shell_session_id,
-                                        process_id = %process_id,
-                                        command = %command,
-                                        "Interrupting quiet PTY command because recent output looks like an error"
-                                    );
-                                }
+
+                                timed_out = true;
+                                interrupted = true;
+                                interrupt_started_at = Some(Instant::now());
+                                self.set_state(ShellSessionState::Interrupting)?;
+                                self.emit_session_lifecycle();
+                                let session = self.clone();
+                                tokio::spawn(async move {
+                                    if let Err(e) = session.interrupt().await {
+                                        tracing::debug!("interrupt error: {e}");
+                                    }
+                                });
+                                continue;
                             }
                         }
 
@@ -1156,7 +1211,12 @@ mod imp {
                         interrupt_started_at = Some(Instant::now());
                         self.set_state(ShellSessionState::Interrupting)?;
                         self.emit_session_lifecycle();
-                        self.interrupt().await?;
+                        let session = self.clone();
+                        tokio::spawn(async move {
+                            if let Err(e) = session.interrupt().await {
+                                tracing::debug!("interrupt error: {e}");
+                            }
+                        });
                     }
                     Err(_) => {
                         self.set_state(ShellSessionState::Failed)?;
@@ -1224,7 +1284,7 @@ mod imp {
                 cwd: command_cwd.map(ToOwned::to_owned),
             };
             self.emit_broadcast(lifecycle_chunk.clone());
-            send_stream_chunk_best_effort(tx, lifecycle_chunk, "shell-lifecycle").await;
+            let _ = tx.send(lifecycle_chunk).await;
             self.emit_session_lifecycle_to(tx).await;
 
             Ok(StreamingCommandResult {
@@ -1262,25 +1322,126 @@ mod imp {
         }
 
         async fn interrupt(&self) -> Result<()> {
-            self.write_to_pty(vec![3]).await
+            let mut writer_lock = self.writer.lock().await;
+            let mut writer = writer_lock.take().ok_or_else(Self::closed_session_error)?;
+            let (tx, rx) = tokio::sync::oneshot::channel();
+            std::thread::spawn(move || {
+                let res = writer.write_all(&[3]).and_then(|_| writer.flush());
+                let _ = tx.send((res, writer));
+            });
+            let (res, writer) = tokio::time::timeout(Duration::from_secs(2), rx)
+                .await
+                .map_err(|_| AppError::Session("interrupt write timed out".to_string()))?
+                .map_err(|_| AppError::Session("interrupt write thread died".to_string()))?;
+            *writer_lock = Some(writer);
+            res.map_err(AppError::Io)?;
+            Ok(())
         }
 
         async fn terminate(&self) -> Result<()> {
             if self.closed.swap(true, Ordering::SeqCst) {
                 return Ok(());
             }
-            let killer = self.killer.clone();
-            self.await_detached_pty_operation("kill", "termination", PTY_KILL_TIMEOUT, move || {
-                let mut killer = killer
+            self.set_active_sender(None)?;
+
+            #[cfg(not(windows))]
+            {
+                // On Unix, drop the PTY handles first so the blocking reader can observe
+                // closure promptly.
+                let mut writer = self.writer.lock().await;
+                writer.take();
+                let mut master = self.master.lock().await;
+                master.take();
+            }
+
+            let child = {
+                let mut child_guard = self
+                    .child
                     .lock()
-                    .map_err(|_| AppError::Session("failed to lock PTY killer".to_string()))?;
-                match killer.kill() {
-                    Ok(()) => Ok(()),
-                    Err(error) if error.kind() == ErrorKind::NotFound => Ok(()),
-                    Err(error) => Err(AppError::Io(error)),
+                    .map_err(|_| AppError::Session("failed to lock PTY child".to_string()))?;
+                child_guard.take()
+            };
+
+            let Some(mut child) = child else {
+                #[cfg(windows)]
+                {
+                    let mut writer_lock = self.writer.lock().await;
+                    let writer_to_drop = writer_lock.take();
+                    let mut master_lock = self.master.lock().await;
+                    let master_to_drop = master_lock.take();
+                    std::thread::spawn(move || {
+                        drop(writer_to_drop);
+                        drop(master_to_drop);
+                    });
                 }
-            })
-            .await
+                return Ok(());
+            };
+
+            let kill_result = {
+                #[cfg(windows)]
+                {
+                    if let Some(pid) = child.process_id() {
+                        let _ = tokio::task::spawn_blocking(move || {
+                            let mut cmd = std::process::Command::new("taskkill");
+                            cmd.arg("/F")
+                                .arg("/T")
+                                .arg("/PID")
+                                .arg(pid.to_string())
+                                .stdout(std::process::Stdio::null())
+                                .stderr(std::process::Stdio::null());
+                            let _ = cmd.status();
+                        })
+                        .await;
+                    }
+                }
+                child.kill()
+            };
+
+            #[cfg(windows)]
+            {
+                // On Windows ConPTY, dropping MasterPty calls ClosePseudoConsole which
+                // blocks synchronously if any child process is still attached.
+                // We drop them in a detached thread to prevent stalling the async executor
+                // or preventing Tokio runtime shutdown if ClosePseudoConsole hangs.
+                let mut writer_lock = self.writer.lock().await;
+                let writer_to_drop = writer_lock.take();
+                let mut master_lock = self.master.lock().await;
+                let master_to_drop = master_lock.take();
+                std::thread::spawn(move || {
+                    drop(writer_to_drop);
+                    drop(master_to_drop);
+                });
+            }
+
+            let should_observe_exit = match &kill_result {
+                Ok(()) => true,
+                Err(error) if error.kind() == ErrorKind::NotFound => true,
+                Err(_) => false,
+            };
+
+            if should_observe_exit {
+                for _ in 0..10 {
+                    match child.try_wait() {
+                        Ok(Some(_)) => break,
+                        Err(error) if error.kind() == ErrorKind::NotFound => break,
+                        Ok(None) => tokio::time::sleep(Duration::from_millis(50)).await,
+                        Err(error) => {
+                            tracing::debug!(
+                                shell_session_id = %self.shell_session_id,
+                                error = %error,
+                                "PTY shell try_wait after kill failed"
+                            );
+                            break;
+                        }
+                    }
+                }
+            }
+
+            match kill_result {
+                Ok(()) => Ok(()),
+                Err(error) if error.kind() == ErrorKind::NotFound => Ok(()),
+                Err(error) => Err(AppError::Io(error)),
+            }
         }
     }
 
@@ -1329,24 +1490,23 @@ mod imp {
 
         #[cfg(not(windows))]
         {
-            let shell_path = if std::path::Path::new("/bin/bash").exists() {
-                "/bin/bash"
+            // Prefer bash for PTY automation sessions when available.
+            // Ubuntu typically maps /bin/sh to dash, and that shell has proven
+            // less reliable for our marker-wrapped PTY command protocol than the
+            // macOS /bin/sh environment that CI was already passing under.
+            // Fall back to plain sh so we still work on minimal systems.
+            if std::path::Path::new("/bin/bash").exists() {
+                let mut builder = CommandBuilder::new("/bin/bash");
+                builder.arg("--noprofile");
+                builder.arg("--norc");
+                builder
             } else {
-                "bash"
-            };
-            let mut builder = CommandBuilder::new(shell_path);
-            builder.arg("--noprofile");
-            builder.arg("--norc");
-            builder.arg("-i");
-            builder
+                CommandBuilder::new("sh")
+            }
         }
     }
 
-    fn prepare_shell(
-        mode: SessionMode,
-        writer: &mut Box<dyn Write + Send>,
-        ready_marker: Option<&str>,
-    ) -> Result<()> {
+    fn prepare_shell(mode: SessionMode, writer: &mut Box<dyn Write + Send>) -> Result<()> {
         if matches!(mode, SessionMode::Interactive) {
             writer.flush().map_err(AppError::Io)?;
             return Ok(());
@@ -1355,23 +1515,12 @@ mod imp {
         #[cfg(windows)]
         {
             writer.write_all(b"prompt $G\r\n").map_err(AppError::Io)?;
-            if let Some(ready_marker) = ready_marker {
-                writer
-                    .write_all(format!("echo {ready_marker}\r\n").as_bytes())
-                    .map_err(AppError::Io)?;
-            }
         }
 
         #[cfg(not(windows))]
         {
-            let mut init_script = String::from("export PS1=''\nunset PROMPT_COMMAND\nstty -echo\n");
-            if let Some(ready_marker) = ready_marker {
-                init_script.push_str("printf '");
-                init_script.push_str(ready_marker);
-                init_script.push_str("\\n'\n");
-            }
             writer
-                .write_all(init_script.as_bytes())
+                .write_all(b"export PS1=''\nunset PROMPT_COMMAND\nstty -echo\n")
                 .map_err(AppError::Io)?;
         }
 
@@ -1379,15 +1528,13 @@ mod imp {
     }
 
     struct ReaderLoopContext {
-        active_sender: Arc<StdMutex<Option<mpsc::UnboundedSender<String>>>>,
+        active_sender: Arc<StdMutex<Option<mpsc::Sender<String>>>>,
         active_process_id: Arc<StdMutex<Option<String>>>,
         closed: Arc<AtomicBool>,
         claimed_by_user: Arc<AtomicBool>,
         event_tx: broadcast::Sender<StreamChunk>,
         shell_session_id: String,
         emit_raw_output: bool,
-        ready_marker: Option<String>,
-        ready_tx: Option<std::sync::mpsc::Sender<std::result::Result<(), String>>>,
     }
 
     fn spawn_reader_loop(mut reader: Box<dyn Read + Send>, context: ReaderLoopContext) {
@@ -1399,92 +1546,108 @@ mod imp {
             event_tx,
             shell_session_id,
             emit_raw_output,
-            ready_marker,
-            ready_tx,
         } = context;
 
-        let _ = std::thread::Builder::new()
-            .name(format!("gestura-pty-reader-{shell_session_id}"))
-            .spawn(move || {
-                let mut buffer = [0_u8; 4096];
-                let mut ready_marker = ready_marker;
-                let mut ready_tx = ready_tx;
-                let mut ready_buffer = String::new();
-                loop {
-                    match reader.read(&mut buffer) {
-                        Ok(0) => {
-                            if let Some(ready_tx) = ready_tx.take() {
-                                let _ = ready_tx
-                                    .send(Err("PTY shell closed before initialization completed"
-                                        .to_string()));
-                            }
-                            closed.store(true, Ordering::SeqCst);
-                            return;
+        tokio::task::spawn_blocking(move || {
+            let mut buffer = [0_u8; 4096];
+            loop {
+                match reader.read(&mut buffer) {
+                    Ok(0) => {
+                        closed.store(true, Ordering::SeqCst);
+                        let _ = active_sender.lock().map(|mut guard| guard.take());
+                        let _ = active_process_id.lock().map(|mut guard| guard.take());
+                        return;
+                    }
+                    Ok(read) => {
+                        let chunk = String::from_utf8_lossy(&buffer[..read]).into_owned();
+                        let sender = active_sender.lock().ok().and_then(|guard| guard.clone());
+                        if let Some(sender) = sender {
+                            let _ = sender.blocking_send(chunk.clone());
                         }
-                        Ok(read) => {
-                            let chunk = String::from_utf8_lossy(&buffer[..read]).into_owned();
-
-                            if let Some(marker) = ready_marker.as_ref() {
-                                ready_buffer.push_str(&chunk);
-                                if ready_buffer.contains(marker) {
-                                    if let Some(ready_tx) = ready_tx.take() {
-                                        let _ = ready_tx.send(Ok(()));
-                                    }
-                                    ready_marker = None;
-                                    ready_buffer.clear();
-                                } else {
-                                    trim_to_tail(&mut ready_buffer, marker.len() + 64);
-                                }
-                            }
-
-                            let sender = active_sender.lock().ok().and_then(|guard| guard.clone());
-                            if let Some(sender) = sender {
-                                let _ = sender.send(chunk.clone());
-                            }
-                            let process_id = active_process_id
-                                .lock()
-                                .ok()
-                                .and_then(|guard| guard.clone());
-                            let should_emit_raw_output = emit_raw_output
-                                || (claimed_by_user.load(Ordering::SeqCst) && process_id.is_none());
-                            if should_emit_raw_output {
-                                let _ = event_tx.send(StreamChunk::ShellOutput {
-                                    process_id: process_id
-                                        .unwrap_or_else(|| shell_session_id.clone()),
-                                    shell_session_id: Some(shell_session_id.clone()),
-                                    stream: ShellOutputStream::Stdout,
-                                    data: chunk,
-                                });
-                            }
-                        }
-                        Err(_) => {
-                            if let Some(ready_tx) = ready_tx.take() {
-                                let _ = ready_tx.send(Err(
-                                    "PTY shell reader failed before initialization completed"
-                                        .to_string(),
-                                ));
-                            }
-                            closed.store(true, Ordering::SeqCst);
-                            return;
+                        let process_id = active_process_id
+                            .lock()
+                            .ok()
+                            .and_then(|guard| guard.clone());
+                        let should_emit_raw_output = emit_raw_output
+                            || (claimed_by_user.load(Ordering::SeqCst) && process_id.is_none());
+                        if should_emit_raw_output {
+                            let _ = event_tx.send(StreamChunk::ShellOutput {
+                                process_id: process_id.unwrap_or_else(|| shell_session_id.clone()),
+                                shell_session_id: Some(shell_session_id.clone()),
+                                stream: ShellOutputStream::Stdout,
+                                data: chunk,
+                            });
                         }
                     }
+                    Err(err) => {
+                        tracing::error!("PTY reader read failed: {:?}", err);
+                        println!("PTY reader read failed: {:?}", err);
+                        closed.store(true, Ordering::SeqCst);
+                        let _ = active_sender.lock().map(|mut guard| guard.take());
+                        let _ = active_process_id.lock().map(|mut guard| guard.take());
+                        return;
+                    }
                 }
-            });
+            }
+        });
     }
 
-    fn spawn_wait_loop(
-        mut child: Box<dyn Child + Send + Sync>,
+    fn spawn_child_monitor(
+        child: Arc<StdMutex<Option<Box<dyn Child + Send + Sync>>>>,
         closed: Arc<AtomicBool>,
         shell_session_id: String,
     ) {
-        let _ = std::thread::Builder::new()
-            .name(format!("gestura-pty-wait-{shell_session_id}"))
-            .spawn(move || {
-                if let Err(error) = child.wait() {
-                    tracing::warn!(shell_session_id = %shell_session_id, error = %error, "PTY shell wait failed");
+        tokio::spawn(async move {
+            loop {
+                if closed.load(Ordering::SeqCst) {
+                    return;
                 }
-                closed.store(true, Ordering::SeqCst);
-            });
+
+                let exit_result = {
+                    let mut child = match child.lock() {
+                        Ok(child) => child,
+                        Err(_) => {
+                            closed.store(true, Ordering::SeqCst);
+                            return;
+                        }
+                    };
+
+                    let poll_result = match child.as_mut() {
+                        Some(child) => child.try_wait().map(|status| status.is_some()),
+                        None => return,
+                    };
+
+                    match poll_result {
+                        Ok(true) => {
+                            child.take();
+                            Some(Ok(()))
+                        }
+                        Ok(false) => None,
+                        Err(error) => {
+                            child.take();
+                            Some(Err(error))
+                        }
+                    }
+                };
+
+                match exit_result {
+                    Some(Ok(())) => {
+                        closed.store(true, Ordering::SeqCst);
+                        return;
+                    }
+                    Some(Err(error)) => {
+                        tracing::warn!(
+                            shell_session_id = %shell_session_id,
+                            error = %error,
+                            "PTY shell exit poll failed"
+                        );
+                        closed.store(true, Ordering::SeqCst);
+                        return;
+                    }
+                    None => tokio::time::sleep(CHILD_EXIT_POLL_INTERVAL).await,
+                }
+            }
+        });
     }
 
     impl SessionOutputParser {
@@ -1597,49 +1760,28 @@ mod imp {
     }
 
     fn find_done_marker(buffer: &str, done_prefix: &str) -> Option<(usize, usize, i32)> {
-        let mut search_from = 0;
-        while let Some(rel_idx) = buffer[search_from..].find(done_prefix) {
-            let idx = search_from + rel_idx;
-            let before_ok = idx == 0 || matches!(buffer.as_bytes()[idx - 1], b'\n' | b'\r');
-            if !before_ok {
-                search_from = idx + done_prefix.len();
-                continue;
-            }
-
-            let code_start = idx + done_prefix.len();
-            let line_end_rel = buffer[code_start..].find('\n')?;
-            let consume_end = code_start + line_end_rel + 1;
-            let Ok(exit_code) = buffer[code_start..code_start + line_end_rel]
-                .trim_end_matches('\r')
-                .parse()
-            else {
-                search_from = idx + done_prefix.len();
-                continue;
-            };
-            let output_end = if idx == 0 {
-                0
-            } else if buffer.as_bytes()[idx - 1] == b'\n' {
-                if idx > 1 && buffer.as_bytes()[idx - 2] == b'\r' {
-                    idx - 2
-                } else {
-                    idx - 1
-                }
-            } else if buffer.as_bytes()[idx - 1] == b'\r' {
-                idx - 1
-            } else {
-                idx
-            };
-            return Some((output_end, consume_end, exit_code));
-        }
-
-        None
+        let marker = format!("\n{done_prefix}");
+        let idx = buffer.find(&marker)?;
+        let code_start = idx + marker.len();
+        let line_end_rel = buffer[code_start..].find('\n')?;
+        let consume_end = code_start + line_end_rel + 1;
+        let exit_code = buffer[code_start..code_start + line_end_rel]
+            .trim_end_matches('\r')
+            .parse()
+            .ok()?;
+        let output_end = if idx > 0 && buffer.as_bytes()[idx - 1] == b'\r' {
+            idx - 1
+        } else {
+            idx
+        };
+        Some((output_end, consume_end, exit_code))
     }
 
     fn find_start_marker(buffer: &str, start_marker: &str) -> Option<usize> {
         let mut search_from = 0;
         while let Some(rel_idx) = buffer[search_from..].find(start_marker) {
             let idx = search_from + rel_idx;
-            let before_ok = idx == 0 || matches!(buffer.as_bytes()[idx - 1], b'\n' | b'\r');
+            let before_ok = idx == 0 || buffer.as_bytes()[idx - 1] == b'\n';
             if !before_ok {
                 search_from = idx + start_marker.len();
                 continue;
@@ -1762,114 +1904,47 @@ mod imp {
         use super::*;
 
         #[cfg(not(target_os = "windows"))]
-        const PTY_TEST_COMMAND_TIMEOUT: Duration = Duration::from_secs(15);
-        #[cfg(not(target_os = "windows"))]
-        const PTY_TEST_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
-
-        #[cfg(not(target_os = "windows"))]
-        fn shell_echo_command(text: &str) -> String {
-            #[cfg(windows)]
-            {
-                format!("echo {text}")
-            }
-
-            #[cfg(not(windows))]
-            {
-                format!("printf {text}")
-            }
+        lazy_static::lazy_static! {
+            static ref PTY_TEST_SEMAPHORE: tokio::sync::Semaphore = tokio::sync::Semaphore::new(1);
         }
 
         #[cfg(not(target_os = "windows"))]
-        fn shell_delayed_echo_command(delay_secs: u64, text: &str) -> String {
-            #[cfg(windows)]
-            {
-                format!(
-                    "ping -n {} 127.0.0.1 >nul && echo {text}",
-                    delay_secs.saturating_add(1)
-                )
-            }
-
-            #[cfg(not(windows))]
-            {
-                format!("sleep {delay_secs} && printf {text}")
-            }
-        }
-
+        const PTY_TEST_TIMEOUT_SECS: u64 = 30;
         #[cfg(not(target_os = "windows"))]
-        fn interactive_echo_input(text: &str) -> String {
-            #[cfg(windows)]
-            {
-                format!("echo {text}\r\n")
-            }
-
-            #[cfg(not(windows))]
-            {
-                format!("printf {text}\n")
-            }
-        }
-
-        #[cfg(not(target_os = "windows"))]
-        async fn execute_in_session_for_test(
-            pool_key: &str,
-            initial_cwd: Option<&str>,
-            command: &str,
-            command_cwd: Option<&str>,
-            timeout_secs: Option<u64>,
-            tx: mpsc::Sender<StreamChunk>,
-        ) -> Result<StreamingCommandResult> {
-            tokio::time::timeout(
-                PTY_TEST_COMMAND_TIMEOUT,
-                execute_in_session(
-                    pool_key,
-                    initial_cwd,
-                    command,
-                    command_cwd,
-                    timeout_secs,
-                    tx,
-                ),
-            )
-            .await
-            .expect("timed out waiting for PTY test command")
-        }
-
-        #[cfg(not(target_os = "windows"))]
-        async fn execute_in_session_with_options_for_test(
-            pool_key: &str,
-            initial_cwd: Option<&str>,
-            command: &str,
-            command_cwd: Option<&str>,
-            options: ShellExecutionOptions,
-            tx: mpsc::Sender<StreamChunk>,
-        ) -> Result<StreamingCommandResult> {
-            tokio::time::timeout(
-                PTY_TEST_COMMAND_TIMEOUT,
-                execute_in_session_with_options(
-                    pool_key,
-                    initial_cwd,
-                    command,
-                    command_cwd,
-                    options,
-                    tx,
-                ),
-            )
-            .await
-            .expect("timed out waiting for PTY test command with custom options")
-        }
-
-        #[cfg(not(target_os = "windows"))]
-        async fn stop_session_for_test(shell_session_id: &str) {
-            let _ = tokio::time::timeout(PTY_TEST_SHUTDOWN_TIMEOUT, stop_session(shell_session_id))
-                .await
-                .expect("timed out stopping PTY session")
-                .expect("stop PTY session");
-        }
+        const PTY_EVENT_TIMEOUT_SECS: u64 = 20;
 
         #[cfg(not(target_os = "windows"))]
         async fn shutdown_session_for_test(pool_key: &str) {
-            tokio::time::timeout(PTY_TEST_SHUTDOWN_TIMEOUT, shutdown_session(pool_key))
-                .await
-                .expect("timed out shutting down PTY session pool")
-                .expect("shutdown PTY session pool");
+            let _ = tokio::time::timeout(Duration::from_secs(2), shutdown_session(pool_key)).await;
+        }
+
+        #[cfg(not(target_os = "windows"))]
+        async fn run_pty_test<F>(pool_key: &'static str, future: F)
+        where
+            F: std::future::Future<Output = ()> + Send + 'static,
+        {
+            let _permit = PTY_TEST_SEMAPHORE.acquire().await.unwrap();
+            shutdown_session_for_test(pool_key).await;
+            let mut handle = tokio::spawn(future);
+            tokio::select! {
+                result = &mut handle => {
+                    shutdown_session_for_test(pool_key).await;
+                    match result {
+                        Ok(()) => {}
+                        Err(error) if error.is_panic() => std::panic::resume_unwind(error.into_panic()),
+                        Err(error) => panic!("PTY test task for pool '{pool_key}' failed to join: {error}"),
+                    }
+                }
+                _ = tokio::time::sleep(Duration::from_secs(PTY_TEST_TIMEOUT_SECS)) => {
+                    handle.abort();
+                    let _ = handle.await;
+                    shutdown_session_for_test(pool_key).await;
+                    panic!(
+                        "PTY test timed out after {}s for pool '{pool_key}'",
+                        PTY_TEST_TIMEOUT_SECS
+                    );
+                }
+            }
         }
 
         #[cfg(not(target_os = "windows"))]
@@ -1883,7 +1958,7 @@ mod imp {
                     interactive,
                     user_managed,
                     ..
-                } = tokio::time::timeout(Duration::from_secs(10), rx.recv())
+                } = tokio::time::timeout(Duration::from_secs(PTY_EVENT_TIMEOUT_SECS), rx.recv())
                     .await
                     .expect("timed out waiting for shell event")
                     .expect("channel closed while waiting for shell event")
@@ -1901,7 +1976,7 @@ mod imp {
                     shell_session_id,
                     state: ShellProcessState::Started,
                     ..
-                } = tokio::time::timeout(Duration::from_secs(10), rx.recv())
+                } = tokio::time::timeout(Duration::from_secs(PTY_EVENT_TIMEOUT_SECS), rx.recv())
                     .await
                     .expect("timed out waiting for command start")
                     .expect("channel closed while waiting for command start")
@@ -1912,6 +1987,34 @@ mod imp {
                     );
                 }
             }
+        }
+
+        #[cfg(not(target_os = "windows"))]
+        fn spawn_chunk_collector(
+            mut rx: mpsc::Receiver<StreamChunk>,
+        ) -> tokio::task::JoinHandle<Vec<StreamChunk>> {
+            tokio::spawn(async move {
+                let mut chunks = Vec::new();
+                while let Some(chunk) = rx.recv().await {
+                    chunks.push(chunk);
+                }
+                chunks
+            })
+        }
+
+        #[cfg(not(target_os = "windows"))]
+        fn simple_output_command(text: &str) -> String {
+            format!("printf {text}")
+        }
+
+        #[cfg(not(target_os = "windows"))]
+        fn delayed_output_command(text: &str) -> String {
+            format!("sleep 2; printf {text}")
+        }
+
+        #[cfg(not(target_os = "windows"))]
+        fn interactive_input_command(text: &str) -> String {
+            format!("printf {text}\n")
         }
 
         #[test]
@@ -1932,75 +2035,6 @@ mod imp {
         }
 
         #[test]
-        fn parser_extracts_done_marker_when_it_starts_a_new_chunk() {
-            let mut parser = SessionOutputParser::new(
-                "__GESTURA_START_abc__".to_string(),
-                "__GESTURA_DONE_abc__:".to_string(),
-            );
-
-            let first = parser.push("__GESTURA_START_abc__\r\n");
-            assert_eq!(first.output, "");
-            assert_eq!(first.exit_code, None);
-
-            let second = parser.push("__GESTURA_DONE_abc__:0\r\n>");
-            assert_eq!(second.output, "");
-            assert_eq!(second.exit_code, Some(0));
-        }
-
-        #[test]
-        fn parser_extracts_done_marker_after_windows_prompt_echo() {
-            let mut parser = SessionOutputParser::new(
-                "__GESTURA_START_abc__".to_string(),
-                "__GESTURA_DONE_abc__:".to_string(),
-            );
-
-            let first =
-                parser.push(">echo __GESTURA_START_abc__\r\n__GESTURA_START_abc__\r\nwarmup\r\n");
-            assert_eq!(first.output, "");
-            assert_eq!(first.exit_code, None);
-
-            let second = parser.push("__GESTURA_DONE_abc__:0\r\n>");
-            assert_eq!(second.output, "warmup");
-            assert_eq!(second.exit_code, Some(0));
-        }
-
-        #[test]
-        fn parser_accepts_start_marker_after_carriage_return_boundary() {
-            let mut parser = SessionOutputParser::new(
-                "__GESTURA_START_abc__".to_string(),
-                "__GESTURA_DONE_abc__:".to_string(),
-            );
-
-            let first = parser.push("noise\r__GESTURA_START_abc__\nhello");
-            assert_eq!(first.output, "");
-            assert_eq!(first.exit_code, None);
-
-            let second = parser.push("\n__GESTURA_DONE_abc__:0\r\n");
-            assert_eq!(second.output, "hello");
-            assert_eq!(second.exit_code, Some(0));
-        }
-
-        #[test]
-        fn parser_skips_malformed_done_marker_before_real_exit_code() {
-            let mut parser = SessionOutputParser::new(
-                "__GESTURA_START_abc__".to_string(),
-                "__GESTURA_DONE_abc__:".to_string(),
-            );
-
-            let first = parser.push("__GESTURA_START_abc__\r\nhello\n");
-            assert_eq!(first.output, "");
-            assert_eq!(first.exit_code, None);
-
-            let second =
-                parser.push("__GESTURA_DONE_abc__:%GESTURA_STATUS%\r\n__GESTURA_DONE_abc__:0\r\n");
-            assert_eq!(
-                second.output,
-                "hello\n__GESTURA_DONE_abc__:%GESTURA_STATUS%"
-            );
-            assert_eq!(second.exit_code, Some(0));
-        }
-
-        #[test]
         #[cfg(not(windows))]
         fn wrap_command_changes_directory_before_execution() {
             let script = wrap_command(
@@ -2015,281 +2049,286 @@ mod imp {
             assert!(script.contains("printf '\\n__GESTURA_DONE__:%s\\n'"));
         }
 
-        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
         #[cfg(not(target_os = "windows"))]
+        #[tokio::test]
         async fn create_session_starts_idle_shell_without_command() {
-            let (tx, mut rx) = mpsc::channel(64);
-            let handle = create_session(
-                "pty-create-session",
-                std::env::current_dir()
-                    .ok()
-                    .and_then(|p| p.to_str().map(ToOwned::to_owned))
-                    .as_deref(),
-                Some(tx),
-            )
-            .await
-            .expect("create PTY session");
+            run_pty_test("pty-create-session", async move {
+                let (tx, mut rx) = mpsc::channel(64);
+                let handle = create_session(
+                    "pty-create-session",
+                    std::env::current_dir()
+                        .ok()
+                        .and_then(|p| p.to_str().map(ToOwned::to_owned))
+                        .as_deref(),
+                    Some(tx),
+                )
+                .await
+                .expect("create PTY session");
 
-            let (shell_session_id, state, interactive, user_managed) =
-                recv_session_lifecycle(&mut rx).await;
-            assert_eq!(shell_session_id, handle.shell_session_id);
-            assert_eq!(state, ShellSessionState::Idle);
-            assert!(interactive);
-            assert!(user_managed);
+                let (shell_session_id, state, interactive, user_managed) =
+                    recv_session_lifecycle(&mut rx).await;
+                assert_eq!(shell_session_id, handle.shell_session_id);
+                assert_eq!(state, ShellSessionState::Idle);
+                assert!(interactive);
+                assert!(user_managed);
 
-            stop_session_for_test(&handle.shell_session_id).await;
+                stop_session(&handle.shell_session_id)
+                    .await
+                    .expect("stop PTY session");
+            })
+            .await;
         }
 
-        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
         #[cfg(not(target_os = "windows"))]
+        #[tokio::test]
         async fn reuses_idle_session_within_same_pool() {
-            let (tx, mut rx) = mpsc::channel(128);
-            let first = execute_in_session_for_test(
-                "pty-reuse-pool",
-                std::env::current_dir()
-                    .ok()
-                    .and_then(|p| p.to_str().map(ToOwned::to_owned))
-                    .as_deref(),
-                &shell_echo_command("first"),
-                None,
-                Some(10),
-                tx.clone(),
-            )
-            .await
-            .expect("first command result");
-            assert!(first.stdout.contains("first"));
+            run_pty_test("pty-reuse-pool", async move {
+                let (tx, rx) = mpsc::channel(128);
+                let collector = spawn_chunk_collector(rx);
+                let first_command = simple_output_command("first");
+                let first = execute_in_session(
+                    "pty-reuse-pool",
+                    std::env::current_dir()
+                        .ok()
+                        .and_then(|p| p.to_str().map(ToOwned::to_owned))
+                        .as_deref(),
+                    first_command.as_str(),
+                    None,
+                    Some(10),
+                    tx.clone(),
+                )
+                .await
+                .expect("first command result");
+                assert!(first.stdout.contains("first"));
 
-            let (_, first_session_id) = recv_command_started(&mut rx).await;
+                let second_command = simple_output_command("second");
+                let second = execute_in_session(
+                    "pty-reuse-pool",
+                    std::env::current_dir()
+                        .ok()
+                        .and_then(|p| p.to_str().map(ToOwned::to_owned))
+                        .as_deref(),
+                    second_command.as_str(),
+                    None,
+                    Some(10),
+                    tx.clone(),
+                )
+                .await
+                .expect("second command result");
+                assert!(second.stdout.contains("second"));
 
-            let second = execute_in_session_for_test(
-                "pty-reuse-pool",
-                std::env::current_dir()
-                    .ok()
-                    .and_then(|p| p.to_str().map(ToOwned::to_owned))
-                    .as_deref(),
-                &shell_echo_command("second"),
-                None,
-                Some(10),
-                tx,
-            )
-            .await
-            .expect("second command result");
-            assert!(second.stdout.contains("second"));
+                shutdown_session("pty-reuse-pool")
+                    .await
+                    .expect("shutdown PTY session pool");
 
-            let (_, second_session_id) = recv_command_started(&mut rx).await;
-            assert_eq!(first_session_id, second_session_id);
+                drop(tx);
+                let chunks = tokio::time::timeout(Duration::from_secs(5), collector)
+                    .await
+                    .expect("timed out collecting reuse-pool shell chunks")
+                    .expect("reuse-pool collector should join");
 
-            shutdown_session_for_test("pty-reuse-pool").await;
+                let started_session_ids = chunks
+                    .iter()
+                    .filter_map(|chunk| match chunk {
+                        StreamChunk::ShellLifecycle {
+                            shell_session_id: Some(shell_session_id),
+                            state: ShellProcessState::Started,
+                            ..
+                        } => Some(shell_session_id.clone()),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>();
+
+                assert!(
+                    started_session_ids.len() >= 2,
+                    "expected at least two started shell lifecycle events, got {chunks:?}"
+                );
+                assert_eq!(started_session_ids[0], started_session_ids[1]);
+            })
+            .await;
         }
 
-        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
         #[cfg(not(target_os = "windows"))]
+        #[tokio::test]
         async fn execute_in_session_emits_session_lifecycle_to_caller_stream() {
-            let (tx, mut rx) = mpsc::channel(128);
-            let result = execute_in_session_for_test(
-                "pty-session-lifecycle-stream",
-                std::env::current_dir()
-                    .ok()
-                    .and_then(|p| p.to_str().map(ToOwned::to_owned))
-                    .as_deref(),
-                &shell_echo_command("streamed"),
-                None,
-                Some(10),
-                tx,
-            )
-            .await
-            .expect("command result");
-            assert!(result.stdout.contains("streamed"));
+            run_pty_test("pty-session-lifecycle-stream", async move {
+                let (tx, rx) = mpsc::channel(128);
+                let collector = spawn_chunk_collector(rx);
+                let command = simple_output_command("streamed");
+                let result = execute_in_session(
+                    "pty-session-lifecycle-stream",
+                    std::env::current_dir()
+                        .ok()
+                        .and_then(|p| p.to_str().map(ToOwned::to_owned))
+                        .as_deref(),
+                    command.as_str(),
+                    None,
+                    Some(10),
+                    tx.clone(),
+                )
+                .await
+                .expect("command result");
+                assert!(result.stdout.contains("streamed"));
 
-            let (busy_session_id, busy_state, interactive, user_managed) =
-                recv_session_lifecycle(&mut rx).await;
-            assert_eq!(busy_state, ShellSessionState::Busy);
-            assert!(!interactive);
-            assert!(!user_managed);
+                shutdown_session("pty-session-lifecycle-stream")
+                    .await
+                    .expect("shutdown PTY session pool");
 
-            let (_, started_session_id) = recv_command_started(&mut rx).await;
-            assert_eq!(started_session_id, busy_session_id);
+                drop(tx);
+                let chunks = tokio::time::timeout(Duration::from_secs(5), collector)
+                    .await
+                    .expect("timed out collecting lifecycle stream chunks")
+                    .expect("lifecycle collector should join");
 
-            let (idle_session_id, idle_state, interactive, user_managed) =
-                recv_session_lifecycle(&mut rx).await;
-            assert_eq!(idle_session_id, busy_session_id);
-            assert_eq!(idle_state, ShellSessionState::Idle);
-            assert!(!interactive);
-            assert!(!user_managed);
+                let (busy_index, busy_session_id) = chunks
+                    .iter()
+                    .enumerate()
+                    .find_map(|(index, chunk)| match chunk {
+                        StreamChunk::ShellSessionLifecycle {
+                            shell_session_id,
+                            state: ShellSessionState::Busy,
+                            interactive: false,
+                            user_managed: false,
+                            ..
+                        } => Some((index, shell_session_id.clone())),
+                        _ => None,
+                    })
+                    .expect("expected busy shell session lifecycle event");
 
-            shutdown_session_for_test("pty-session-lifecycle-stream").await;
+                let started_index = chunks
+                    .iter()
+                    .enumerate()
+                    .find_map(|(index, chunk)| match chunk {
+                        StreamChunk::ShellLifecycle {
+                            shell_session_id: Some(shell_session_id),
+                            state: ShellProcessState::Started,
+                            ..
+                        } if shell_session_id == &busy_session_id => Some(index),
+                        _ => None,
+                    })
+                    .expect("expected started shell lifecycle event for busy session");
+
+                let idle_index = chunks
+                    .iter()
+                    .enumerate()
+                    .find_map(|(index, chunk)| match chunk {
+                        StreamChunk::ShellSessionLifecycle {
+                            shell_session_id,
+                            state: ShellSessionState::Idle,
+                            interactive: false,
+                            user_managed: false,
+                            ..
+                        } if shell_session_id == &busy_session_id => Some(index),
+                        _ => None,
+                    })
+                    .expect("expected idle shell session lifecycle event for busy session");
+
+                assert!(busy_index < started_index);
+                assert!(started_index < idle_index);
+            })
+            .await;
         }
 
-        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
         #[cfg(not(target_os = "windows"))]
+        #[tokio::test]
         async fn allocates_new_session_when_existing_one_is_busy() {
-            let (tx_one, mut rx_one) = mpsc::channel(128);
-            let (tx_two, mut rx_two) = mpsc::channel(128);
-            let first_command = shell_delayed_echo_command(1, "one");
-            let second_command = shell_echo_command("two");
+            run_pty_test("pty-busy-pool", async move {
+                let (tx_one, mut rx_one) = mpsc::channel(128);
+                let (tx_two, mut rx_two) = mpsc::channel(128);
+                let first_command = delayed_output_command("one");
 
-            let first = tokio::spawn(async move {
-                execute_in_session_for_test(
-                    "pty-busy-pool",
-                    std::env::current_dir()
-                        .ok()
-                        .and_then(|p| p.to_str().map(ToOwned::to_owned))
-                        .as_deref(),
-                    &first_command,
-                    None,
-                    Some(10),
-                    tx_one,
-                )
-                .await
-            });
+                let first = tokio::spawn(async move {
+                    execute_in_session(
+                        "pty-busy-pool",
+                        std::env::current_dir()
+                            .ok()
+                            .and_then(|p| p.to_str().map(ToOwned::to_owned))
+                            .as_deref(),
+                        first_command.as_str(),
+                        None,
+                        Some(10),
+                        tx_one,
+                    )
+                    .await
+                });
 
-            let (_, first_session_id) = recv_command_started(&mut rx_one).await;
+                let (_, first_session_id) = recv_command_started(&mut rx_one).await;
+                let second_command = simple_output_command("two");
 
-            let second = tokio::spawn(async move {
-                execute_in_session_for_test(
-                    "pty-busy-pool",
-                    std::env::current_dir()
-                        .ok()
-                        .and_then(|p| p.to_str().map(ToOwned::to_owned))
-                        .as_deref(),
-                    &second_command,
-                    None,
-                    Some(10),
-                    tx_two,
-                )
-                .await
-            });
+                let second = tokio::spawn(async move {
+                    execute_in_session(
+                        "pty-busy-pool",
+                        std::env::current_dir()
+                            .ok()
+                            .and_then(|p| p.to_str().map(ToOwned::to_owned))
+                            .as_deref(),
+                        second_command.as_str(),
+                        None,
+                        Some(10),
+                        tx_two,
+                    )
+                    .await
+                });
 
-            let (_, second_session_id) = recv_command_started(&mut rx_two).await;
-            assert_ne!(first_session_id, second_session_id);
+                let (_, second_session_id) = recv_command_started(&mut rx_two).await;
+                assert_ne!(first_session_id, second_session_id);
 
-            first.await.expect("first join").expect("first result");
-            second.await.expect("second join").expect("second result");
+                first.await.expect("first join").expect("first result");
+                second.await.expect("second join").expect("second result");
 
-            shutdown_session_for_test("pty-busy-pool").await;
+                shutdown_session("pty-busy-pool")
+                    .await
+                    .expect("shutdown PTY session pool");
+            })
+            .await;
         }
 
-        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
         #[cfg(not(target_os = "windows"))]
+        #[tokio::test]
         async fn activity_aware_execution_allows_recently_active_long_running_commands() {
-            let (tx, _rx) = mpsc::channel(128);
-            let command = if cfg!(windows) {
-                "echo warmup && ping -n 3 127.0.0.1 >nul && echo progress && ping -n 3 127.0.0.1 >nul && echo done"
-            } else {
-                "printf warmup && sleep 2 && printf progress && sleep 2 && printf done"
-            };
+            run_pty_test("pty-activity-aware-pool", async move {
+                let (tx, _rx) = mpsc::channel(128);
+                let command =
+                    "printf warmup && sleep 2 && printf progress && sleep 2 && printf done";
 
-            let result = execute_in_session_with_options_for_test(
-                "pty-activity-aware-pool",
-                std::env::current_dir()
-                    .ok()
-                    .and_then(|p| p.to_str().map(ToOwned::to_owned))
-                    .as_deref(),
-                command,
-                None,
-                ShellExecutionOptions {
-                    timeout_secs: Some(1),
-                    allow_long_running: true,
-                    stall_timeout_secs: Some(3),
-                },
-                tx,
-            )
-            .await
-            .expect("activity-aware PTY command result");
+                let result = execute_in_session_with_options(
+                    "pty-activity-aware-pool",
+                    std::env::current_dir()
+                        .ok()
+                        .and_then(|p| p.to_str().map(ToOwned::to_owned))
+                        .as_deref(),
+                    command,
+                    None,
+                    ShellExecutionOptions {
+                        timeout_secs: Some(1),
+                        allow_long_running: true,
+                        stall_timeout_secs: Some(8),
+                    },
+                    tx,
+                )
+                .await
+                .expect("activity-aware PTY command result");
 
-            assert!(result.success);
-            assert!(result.stdout.contains("done"));
+                assert!(result.success);
+                assert!(result.stdout.contains("done"));
 
-            shutdown_session_for_test("pty-activity-aware-pool").await;
+                shutdown_session("pty-activity-aware-pool")
+                    .await
+                    .expect("shutdown activity-aware PTY session pool");
+            })
+            .await;
         }
 
-        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
         #[cfg(not(target_os = "windows"))]
-        async fn execute_in_session_completes_when_caller_stream_is_not_draining() {
-            let (tx, _rx) = mpsc::channel(1);
-
-            let result = execute_in_session_for_test(
-                "pty-non-draining-caller-stream",
-                std::env::current_dir()
-                    .ok()
-                    .and_then(|p| p.to_str().map(ToOwned::to_owned))
-                    .as_deref(),
-                &shell_echo_command("still-completes"),
-                None,
-                Some(10),
-                tx,
-            )
-            .await
-            .expect("PTY command result despite non-draining caller stream");
-
-            assert!(result.success);
-            assert!(result.stdout.contains("still-completes"));
-
-            shutdown_session_for_test("pty-non-draining-caller-stream").await;
-        }
-
-        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-        #[cfg(not(target_os = "windows"))]
+        #[tokio::test]
         async fn activity_aware_execution_reports_continue_wait_before_timing_out_when_quiet_output_has_no_indicator()
          {
-            let (tx, mut rx) = mpsc::channel(128);
-            let command = if cfg!(windows) {
-                "ping -n 6 127.0.0.1 >nul && echo done"
-            } else {
-                "sleep 4 && printf done"
-            };
+            run_pty_test("pty-quiet-activity-aware-pool", async move {
+                let (tx, mut rx) = mpsc::channel(128);
+                let command = "sleep 4 && printf done";
 
-            let result = execute_in_session_with_options_for_test(
-                "pty-quiet-activity-aware-pool",
-                std::env::current_dir()
-                    .ok()
-                    .and_then(|p| p.to_str().map(ToOwned::to_owned))
-                    .as_deref(),
-                command,
-                None,
-                ShellExecutionOptions {
-                    timeout_secs: Some(1),
-                    allow_long_running: true,
-                    stall_timeout_secs: Some(1),
-                },
-                tx,
-            )
-            .await
-            .expect("quiet activity-aware PTY command result");
-
-            shutdown_session_for_test("pty-quiet-activity-aware-pool").await;
-
-            assert!(!result.success);
-            assert_eq!(result.exit_code, 124);
-            assert_eq!(result.failure_kind, Some(ShellRuntimeFailureKind::TimedOut));
-
-            let mut saw_continue_wait_status = false;
-            while let Ok(chunk) = rx.try_recv() {
-                if let StreamChunk::Status { message } = chunk
-                    && message.contains("saw no prompt or error indicator")
-                    && message.contains("will continue waiting")
-                {
-                    saw_continue_wait_status = true;
-                    break;
-                }
-            }
-            assert!(saw_continue_wait_status);
-        }
-
-        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-        #[cfg(not(target_os = "windows"))]
-        async fn activity_aware_execution_times_out_after_repeated_quiet_periods_without_signal() {
-            let (tx, _rx) = mpsc::channel(128);
-            let command = if cfg!(windows) {
-                "ping -n 6 127.0.0.1 >nul && echo done"
-            } else {
-                "sleep 4 && printf done"
-            };
-
-            let result = tokio::time::timeout(
-                Duration::from_secs(8),
-                execute_in_session_with_options(
-                    "pty-quiet-timeout-pool",
+                let result = execute_in_session_with_options(
+                    "pty-quiet-activity-aware-pool",
                     std::env::current_dir()
                         .ok()
                         .and_then(|p| p.to_str().map(ToOwned::to_owned))
@@ -2302,17 +2341,87 @@ mod imp {
                         stall_timeout_secs: Some(1),
                     },
                     tx,
-                ),
-            )
-            .await
-            .expect("quiet PTY command should not hang")
-            .expect("quiet PTY timeout result");
+                )
+                .await
+                .expect("quiet activity-aware PTY command result");
 
-            shutdown_session_for_test("pty-quiet-timeout-pool").await;
+                shutdown_session_for_test("pty-quiet-activity-aware-pool").await;
 
-            assert!(!result.success);
-            assert_eq!(result.exit_code, 124);
-            assert_eq!(result.failure_kind, Some(ShellRuntimeFailureKind::TimedOut));
+                assert!(!result.success);
+                assert_eq!(result.exit_code, 124);
+                assert_eq!(result.failure_kind, Some(ShellRuntimeFailureKind::TimedOut));
+
+                let mut saw_continue_wait_status = false;
+                while let Ok(chunk) = rx.try_recv() {
+                    if let StreamChunk::Status { message } = chunk
+                        && message.contains("saw no prompt or error indicator")
+                        && message.contains("will continue waiting")
+                    {
+                        saw_continue_wait_status = true;
+                        break;
+                    }
+                }
+                assert!(saw_continue_wait_status);
+            })
+            .await;
+        }
+
+        #[cfg(not(target_os = "windows"))]
+        #[tokio::test]
+        async fn activity_aware_execution_times_out_after_repeated_quiet_periods_without_signal() {
+            run_pty_test("pty-quiet-timeout-pool", async move {
+                let (tx, _rx) = mpsc::channel(128);
+                let command = "sleep 4 && printf done";
+
+                let result = tokio::time::timeout(
+                    Duration::from_secs(8),
+                    execute_in_session_with_options(
+                        "pty-quiet-timeout-pool",
+                        std::env::current_dir()
+                            .ok()
+                            .and_then(|p| p.to_str().map(ToOwned::to_owned))
+                            .as_deref(),
+                        command,
+                        None,
+                        ShellExecutionOptions {
+                            timeout_secs: Some(1),
+                            allow_long_running: true,
+                            stall_timeout_secs: Some(1),
+                        },
+                        tx,
+                    ),
+                )
+                .await
+                .expect("quiet PTY command should not hang")
+                .expect("quiet PTY timeout result");
+
+                shutdown_session_for_test("pty-quiet-timeout-pool").await;
+
+                assert!(!result.success);
+                assert_eq!(result.exit_code, 124);
+                assert_eq!(result.failure_kind, Some(ShellRuntimeFailureKind::TimedOut));
+            })
+            .await;
+        }
+
+        #[test]
+        fn error_output_stalls_use_the_shorter_early_signal_timeout() {
+            assert_eq!(
+                early_signal_stall_timeout(Duration::from_secs(30), StallSignal::ErrorOutput),
+                Some(Duration::from_secs(EARLY_SIGNAL_STALL_TIMEOUT_SECS))
+            );
+            assert_eq!(
+                early_signal_stall_timeout(Duration::from_secs(5), StallSignal::ErrorOutput),
+                Some(Duration::from_secs(5))
+            );
+        }
+
+        #[test]
+        fn generic_quiet_stalls_do_not_use_the_early_signal_timeout() {
+            assert_eq!(
+                early_signal_stall_timeout(Duration::from_secs(30), StallSignal::None),
+                None
+            );
         }
 
         #[test]
@@ -2358,116 +2467,133 @@ mod imp {
             );
         }
 
-        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
         #[cfg(not(target_os = "windows"))]
+        #[tokio::test]
         async fn claiming_automation_session_removes_it_from_reuse_pool() {
-            let (tx, mut rx) = mpsc::channel(128);
-            let first = execute_in_session_for_test(
-                "pty-claim-pool",
-                std::env::current_dir()
-                    .ok()
-                    .and_then(|p| p.to_str().map(ToOwned::to_owned))
-                    .as_deref(),
-                &shell_echo_command("first"),
-                None,
-                Some(10),
-                tx.clone(),
-            )
-            .await
-            .expect("first command result");
-            assert!(first.stdout.contains("first"));
-
-            let (_, first_session_id) = recv_command_started(&mut rx).await;
-
-            claim_session(&first_session_id)
+            run_pty_test("pty-claim-pool", async move {
+                let (tx, mut rx) = mpsc::channel(128);
+                let first_command = simple_output_command("first");
+                let first = execute_in_session(
+                    "pty-claim-pool",
+                    std::env::current_dir()
+                        .ok()
+                        .and_then(|p| p.to_str().map(ToOwned::to_owned))
+                        .as_deref(),
+                    first_command.as_str(),
+                    None,
+                    Some(10),
+                    tx.clone(),
+                )
                 .await
-                .expect("claim session")
-                .expect("claimed metadata");
+                .expect("first command result");
+                assert!(first.stdout.contains("first"));
 
-            let metadata = describe_session(&first_session_id)
+                let (_, first_session_id) = recv_command_started(&mut rx).await;
+
+                claim_session(&first_session_id)
+                    .await
+                    .expect("claim session")
+                    .expect("claimed metadata");
+
+                let metadata = describe_session(&first_session_id)
+                    .await
+                    .expect("describe claimed session")
+                    .expect("session metadata");
+                assert!(metadata.user_managed);
+                assert!(!metadata.available_for_reuse);
+
+                let second_command = simple_output_command("second");
+                let second = execute_in_session(
+                    "pty-claim-pool",
+                    std::env::current_dir()
+                        .ok()
+                        .and_then(|p| p.to_str().map(ToOwned::to_owned))
+                        .as_deref(),
+                    second_command.as_str(),
+                    None,
+                    Some(10),
+                    tx.clone(),
+                )
                 .await
-                .expect("describe claimed session")
-                .expect("session metadata");
-            assert!(metadata.user_managed);
-            assert!(!metadata.available_for_reuse);
+                .expect("second command result");
+                assert!(second.stdout.contains("second"));
 
-            let second = execute_in_session_for_test(
-                "pty-claim-pool",
-                std::env::current_dir()
-                    .ok()
-                    .and_then(|p| p.to_str().map(ToOwned::to_owned))
-                    .as_deref(),
-                &shell_echo_command("second"),
-                None,
-                Some(10),
-                tx,
-            )
-            .await
-            .expect("second command result");
-            assert!(second.stdout.contains("second"));
+                let (_, second_session_id) = recv_command_started(&mut rx).await;
+                assert_ne!(first_session_id, second_session_id);
 
-            let (_, second_session_id) = recv_command_started(&mut rx).await;
-            assert_ne!(first_session_id, second_session_id);
-
-            shutdown_session_for_test("pty-claim-pool").await;
+                shutdown_session("pty-claim-pool")
+                    .await
+                    .expect("shutdown PTY session pool");
+            })
+            .await;
         }
 
-        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
         #[cfg(not(target_os = "windows"))]
+        #[tokio::test]
         async fn claimed_automation_session_streams_interactive_output_after_attach() {
-            let (tx, mut rx) = mpsc::channel(128);
-            execute_in_session_for_test(
-                "pty-attach-pool",
-                std::env::current_dir()
-                    .ok()
-                    .and_then(|p| p.to_str().map(ToOwned::to_owned))
-                    .as_deref(),
-                &shell_echo_command("base"),
-                None,
-                Some(10),
-                tx,
-            )
-            .await
-            .expect("seed command result");
-
-            let (_, shell_session_id) = recv_command_started(&mut rx).await;
-
-            let (attach_tx, mut attach_rx) = mpsc::channel(128);
-            subscribe_session(&shell_session_id, attach_tx)
+            run_pty_test("pty-attach-pool", async move {
+                let (tx, mut rx) = mpsc::channel(128);
+                let seed_command = simple_output_command("base");
+                execute_in_session(
+                    "pty-attach-pool",
+                    std::env::current_dir()
+                        .ok()
+                        .and_then(|p| p.to_str().map(ToOwned::to_owned))
+                        .as_deref(),
+                    seed_command.as_str(),
+                    None,
+                    Some(10),
+                    tx,
+                )
                 .await
-                .expect("subscribe to shell session")
-                .expect("session metadata after subscribe");
+                .expect("seed command result");
 
-            claim_session(&shell_session_id)
-                .await
-                .expect("claim session")
-                .expect("claimed session metadata");
+                let (_, shell_session_id) = recv_command_started(&mut rx).await;
 
-            send_input(&shell_session_id, &interactive_echo_input("attached"))
-                .await
-                .expect("send interactive input");
-
-            let mut saw_attached_output = false;
-            for _ in 0..12 {
-                let chunk = tokio::time::timeout(Duration::from_secs(5), attach_rx.recv())
+                let (attach_tx, mut attach_rx) = mpsc::channel(128);
+                subscribe_session(&shell_session_id, attach_tx)
                     .await
-                    .expect("timed out waiting for attached shell output")
-                    .expect("attach channel closed unexpectedly");
+                    .expect("subscribe to shell session")
+                    .expect("session metadata after subscribe");
 
-                if let StreamChunk::ShellOutput { data, .. } = chunk
-                    && data.contains("attached")
-                {
-                    saw_attached_output = true;
-                    break;
+                claim_session(&shell_session_id)
+                    .await
+                    .expect("claim session")
+                    .expect("claimed session metadata");
+
+                let attached_input = interactive_input_command("attached");
+                send_input(&shell_session_id, attached_input.as_str())
+                    .await
+                    .expect("send interactive input");
+
+                let mut saw_attached_output = false;
+                let deadline =
+                    tokio::time::Instant::now() + Duration::from_secs(PTY_EVENT_TIMEOUT_SECS);
+                while tokio::time::Instant::now() < deadline {
+                    let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+                    let chunk = tokio::time::timeout(remaining, attach_rx.recv())
+                        .await
+                        .expect("timed out waiting for attached shell output")
+                        .expect("attach channel closed unexpectedly");
+
+                    if let StreamChunk::ShellOutput { data, .. } = chunk
+                        && data.contains("attached")
+                    {
+                        saw_attached_output = true;
+                        break;
+                    }
                 }
-            }
 
-            assert!(
-                saw_attached_output,
-                "claimed automation session did not stream attached shell output"
-            );
+                assert!(
+                    saw_attached_output,
+                    "claimed automation session did not stream attached shell output"
+                );
 
-            shutdown_session_for_test("pty-attach-pool").await;
+                shutdown_session("pty-attach-pool")
+                    .await
+                    .expect("shutdown attached PTY session pool");
+            })
+            .await;
         }
     }
 }

@@ -23,6 +23,71 @@ pub struct EffectiveLlmConfig {
     pub model: String,
 }
 
+fn canonical_known_provider(provider: &str) -> Option<&'static str> {
+    let trimmed = provider.trim();
+    KNOWN_LLM_PROVIDERS
+        .iter()
+        .copied()
+        .find(|candidate| candidate.eq_ignore_ascii_case(trimmed))
+}
+
+fn provider_has_runtime_configuration(cfg: &AppConfig, provider: &str) -> bool {
+    match provider {
+        "openai" => cfg
+            .llm
+            .openai
+            .as_ref()
+            .is_some_and(|config| !config.api_key.trim().is_empty()),
+        "anthropic" => cfg
+            .llm
+            .anthropic
+            .as_ref()
+            .is_some_and(|config| !config.api_key.trim().is_empty()),
+        "grok" => cfg
+            .llm
+            .grok
+            .as_ref()
+            .is_some_and(|config| !config.api_key.trim().is_empty()),
+        "gemini" => cfg
+            .llm
+            .gemini
+            .as_ref()
+            .is_some_and(|config| !config.api_key.trim().is_empty()),
+        "ollama" => cfg.llm.ollama.is_some(),
+        _ => false,
+    }
+}
+
+fn fallback_primary_provider(cfg: &AppConfig) -> &'static str {
+    for provider in ["anthropic", "openai", "gemini", "grok"] {
+        if provider_has_runtime_configuration(cfg, provider) {
+            return provider;
+        }
+    }
+
+    if provider_has_runtime_configuration(cfg, "ollama") {
+        return "ollama";
+    }
+
+    "anthropic"
+}
+
+fn normalize_active_provider(cfg: &mut AppConfig) {
+    if let Some(provider) = canonical_known_provider(&cfg.llm.primary) {
+        cfg.llm.primary = provider.to_string();
+        return;
+    }
+
+    let invalid_provider = cfg.llm.primary.trim().to_string();
+    let fallback = fallback_primary_provider(cfg);
+    tracing::warn!(
+        provider = %invalid_provider,
+        fallback_provider = %fallback,
+        "Repairing invalid active LLM provider before resolving session overrides"
+    );
+    cfg.llm.primary = fallback.to_string();
+}
+
 /// Apply CLI-provided provider and/or model overrides to an in-memory config.
 ///
 /// This is a convenience wrapper around [`apply_session_llm_overrides`] intended for
@@ -92,11 +157,20 @@ pub fn apply_session_llm_overrides(
     session_llm: Option<&SessionLlmConfig>,
     api_key_lookup: impl Fn(&str) -> Option<String>,
 ) -> EffectiveLlmConfig {
+    normalize_active_provider(cfg);
+
     if let Some(session_llm) = session_llm {
         if let Some(provider) = session_llm.provider.as_deref().map(str::trim)
             && !provider.is_empty()
         {
-            cfg.llm.primary = provider.to_string();
+            if let Some(provider) = canonical_known_provider(provider) {
+                cfg.llm.primary = provider.to_string();
+            } else {
+                tracing::warn!(
+                    provider = %provider,
+                    "Ignoring invalid session-scoped LLM provider override"
+                );
+            }
         }
 
         if let Some(model) = session_llm.model.as_deref().map(str::trim)
@@ -532,6 +606,41 @@ mod tests {
         assert!(is_known_llm_provider("Ollama"));
         assert!(!is_known_llm_provider("unknown"));
         assert!(!is_known_llm_provider(""));
+    }
+
+    #[test]
+    fn apply_session_llm_overrides_repairs_invalid_global_provider() {
+        let mut cfg = AppConfig::default();
+        cfg.llm.primary = "echo".to_string();
+        cfg.llm.openai = Some(OpenAiConfig {
+            api_key: "sk-openai".to_string(),
+            ..Default::default()
+        });
+
+        let effective = apply_session_llm_overrides(&mut cfg, None, |_| None);
+
+        assert_eq!(effective.provider, "openai");
+        assert_eq!(cfg.llm.primary, "openai");
+        assert!(!effective.model.trim().is_empty());
+    }
+
+    #[test]
+    fn apply_session_llm_overrides_ignores_invalid_session_provider_override() {
+        let mut cfg = AppConfig::default();
+        cfg.llm.primary = "openai".to_string();
+        cfg.llm.openai = Some(OpenAiConfig {
+            api_key: "sk-openai".to_string(),
+            ..Default::default()
+        });
+        let session = SessionLlmConfig {
+            provider: Some("echo".to_string()),
+            model: None,
+        };
+
+        let effective = apply_session_llm_overrides(&mut cfg, Some(&session), |_| None);
+
+        assert_eq!(effective.provider, "openai");
+        assert_eq!(cfg.llm.primary, "openai");
     }
 
     #[test]

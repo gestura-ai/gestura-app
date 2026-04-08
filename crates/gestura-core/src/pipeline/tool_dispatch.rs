@@ -2412,7 +2412,8 @@ impl AgentPipeline {
     }
 
     async fn execute_shell_stream_via_session(
-        workspace: &SessionWorkspace,
+        pool_key: &str,
+        initial_cwd: Option<&str>,
         command: &str,
         cwd: Option<&str>,
         env: Option<&std::collections::HashMap<String, String>>,
@@ -2422,10 +2423,9 @@ impl AgentPipeline {
         let session_command = Self::render_session_shell_command(command, env)
             .or_else(|| env.is_none().then(|| command.to_string()))?;
 
-        let workspace_root = workspace.root().to_string_lossy().to_string();
         let result = crate::tools::shell_sessions::execute_in_session_with_options(
-            workspace.session_id.as_str(),
-            Some(workspace_root.as_str()),
+            pool_key,
+            initial_cwd,
             &session_command,
             cwd,
             execution_options,
@@ -3231,7 +3231,13 @@ impl AgentPipeline {
             "[ToolDispatch] Calling execute_tool"
         );
         let result = self
-            .execute_tool(&name, &arguments, workspace, Some(tx))
+            .execute_tool(
+                &name,
+                &arguments,
+                workspace,
+                session_id.as_deref(),
+                Some(tx),
+            )
             .await;
         let duration_ms = start_time.elapsed().as_millis() as u64;
         tracing::debug!(
@@ -3288,6 +3294,7 @@ impl AgentPipeline {
         name: &str,
         arguments: &str,
         workspace: Option<&SessionWorkspace>,
+        session_id: Option<&str>,
         stream_tx: Option<&mpsc::Sender<StreamChunk>>,
     ) -> ToolResult {
         let start = Instant::now();
@@ -3308,7 +3315,7 @@ impl AgentPipeline {
         let result = async {
             match name {
                 "shell" | "bash" | "execute" => {
-                    self.execute_shell_tool(arguments, workspace, stream_tx)
+                    self.execute_shell_tool(arguments, workspace, session_id, stream_tx)
                         .await
                 }
                 "file" | "read_file" | "write_file" | "edit_file" => {
@@ -3933,7 +3940,7 @@ impl AgentPipeline {
     /// Execute shell tool with workspace sandboxing.
     ///
     /// When `stream_tx` is `Some`, the command is executed via PTY session
-    /// streaming when a session workspace is available so chunks carry a
+    /// streaming when a session pool key is available so chunks carry a
     /// stable `shell_session_id` for the UI. Otherwise it falls back to the
     /// legacy streaming path (`shell_streaming`). When `None`,
     /// the legacy blocking path (`shell_async`) is used.
@@ -3941,6 +3948,7 @@ impl AgentPipeline {
         &self,
         arguments: &str,
         workspace: Option<&SessionWorkspace>,
+        session_id: Option<&str>,
         stream_tx: Option<&mpsc::Sender<StreamChunk>>,
     ) -> ToolResult {
         use crate::session_workspace::is_shell_command_allowed;
@@ -4003,6 +4011,10 @@ impl AgentPipeline {
                 let (command, env) = Self::harden_noninteractive_shell_command(command, env);
                 let command =
                     Self::strip_redundant_shell_cwd_prefix(workspace, &command, cwd.as_deref());
+                let session_pool_key = workspace.map(|ws| ws.session_id.as_str()).or(session_id);
+                let session_initial_cwd = workspace
+                    .map(|ws| ws.root().to_string_lossy().to_string())
+                    .or_else(|| cwd.clone());
 
                 // Optional timeout (seconds). Use a longer default for build/test/install flows.
                 let timeout_secs = Self::effective_shell_timeout_secs(
@@ -4029,9 +4041,10 @@ impl AgentPipeline {
                 if let Some(tx) = stream_tx {
                     use crate::tools::shell_streaming;
 
-                    if let Some(workspace) = workspace
+                    if let Some(pool_key) = session_pool_key
                         && let Some(result) = Self::execute_shell_stream_via_session(
-                            workspace,
+                            pool_key,
+                            session_initial_cwd.as_deref(),
                             &command,
                             cwd.as_deref(),
                             env.as_ref(),
@@ -4105,6 +4118,10 @@ impl AgentPipeline {
 
                 let cwd = workspace.map(|ws| ws.root().to_string_lossy().to_string());
                 let (command, env) = Self::harden_noninteractive_shell_command(arguments, None);
+                let session_pool_key = workspace.map(|ws| ws.session_id.as_str()).or(session_id);
+                let session_initial_cwd = workspace
+                    .map(|ws| ws.root().to_string_lossy().to_string())
+                    .or_else(|| cwd.clone());
                 let timeout_secs = Self::default_shell_timeout_secs(&command);
                 let execution_options = crate::tools::shell_sessions::ShellExecutionOptions {
                     timeout_secs: Some(timeout_secs),
@@ -4119,9 +4136,10 @@ impl AgentPipeline {
                 if let Some(tx) = stream_tx {
                     use crate::tools::shell_streaming;
 
-                    if let Some(workspace) = workspace
+                    if let Some(pool_key) = session_pool_key
                         && let Some(result) = Self::execute_shell_stream_via_session(
-                            workspace,
+                            pool_key,
+                            session_initial_cwd.as_deref(),
                             &command,
                             cwd.as_deref(),
                             env.as_ref(),
@@ -5451,6 +5469,19 @@ mod tests {
         .await
         .expect("timed out shutting down PTY session pool")
         .expect("shutdown PTY session pool");
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    fn spawn_stream_collector(
+        mut rx: tokio::sync::mpsc::Receiver<gestura_core_streaming::StreamChunk>,
+    ) -> tokio::task::JoinHandle<Vec<gestura_core_streaming::StreamChunk>> {
+        tokio::spawn(async move {
+            let mut chunks = Vec::new();
+            while let Some(chunk) = rx.recv().await {
+                chunks.push(chunk);
+            }
+            chunks
+        })
     }
 
     #[test]
@@ -7479,6 +7510,7 @@ mod tests {
                 .to_string(),
                 Some(&workspace),
                 None,
+                None,
             )
             .await;
 
@@ -8678,6 +8710,7 @@ mod tests {
                 .to_string(),
                 Some(&workspace),
                 None,
+                None,
             )
             .await;
 
@@ -8700,7 +8733,8 @@ mod tests {
         let workspace =
             SessionWorkspace::from_directory("shell-keepalive-test", temp.path().to_path_buf())
                 .expect("workspace");
-        let (tx, mut rx) = tokio::sync::mpsc::channel(256);
+        let (tx, rx) = tokio::sync::mpsc::channel(256);
+        let collector = spawn_stream_collector(rx);
         let silent_command = silent_shell_test_command();
 
         let result = tokio::spawn({
@@ -8715,38 +8749,38 @@ mod tests {
                         })
                         .to_string(),
                         Some(&workspace),
+                        None,
                         Some(&tx),
                     )
                     .await
             }
         });
 
-        let mut saw_keepalive = false;
-        for _ in 0..8 {
-            let chunk = tokio::time::timeout(tokio::time::Duration::from_secs(2), rx.recv())
-                .await
-                .expect("stream chunk timeout")
-                .expect("stream should remain open while command runs");
-
-            if let StreamChunk::Status { message } = chunk
-                && message.contains("Tool `shell` still running...")
-            {
-                saw_keepalive = true;
-                break;
-            }
-        }
-
         let tool_result = tokio::time::timeout(STREAMING_SHELL_TOOL_TEST_TIMEOUT, result)
             .await
             .expect("streaming shell keepalive test timed out")
             .expect("shell execution task should join");
+
+        shutdown_shell_session_for_test("shell-keepalive-test").await;
+        drop(tx);
+        let chunks = tokio::time::timeout(STREAMING_SHELL_TOOL_SHUTDOWN_TIMEOUT, collector)
+            .await
+            .expect("timed out collecting shell keepalive chunks")
+            .expect("shell keepalive collector should join");
+
+        let saw_keepalive = chunks.iter().any(|chunk| {
+            matches!(
+                chunk,
+                StreamChunk::Status { message }
+                    if message.contains("Tool `shell` still running...")
+            )
+        });
+
         assert!(matches!(tool_result, ToolResult::Success(_)));
         assert!(
             saw_keepalive,
-            "expected a keepalive status for silent shell work"
+            "expected a keepalive status for silent shell work, got {chunks:?}"
         );
-
-        shutdown_shell_session_for_test("shell-keepalive-test").await;
     }
 
     #[tokio::test]
@@ -8786,6 +8820,7 @@ mod tests {
                 .expect("workspace");
         let app_dir = temp.path().join("sample-app");
         std::fs::create_dir_all(&app_dir).expect("create app dir");
+        let canonical_app_dir = std::fs::canonicalize(&app_dir).unwrap_or_else(|_| app_dir.clone());
         let (tx, mut rx) = tokio::sync::mpsc::channel(256);
         let drain = tokio::spawn(async move { while rx.recv().await.is_some() {} });
         let command = cwd_echo_command("sample-app");
@@ -8801,6 +8836,7 @@ mod tests {
                 })
                 .to_string(),
                 Some(&workspace),
+                None,
                 Some(&tx),
             ),
         )
@@ -8816,10 +8852,80 @@ mod tests {
 
         match result {
             ToolResult::Success(stdout) => {
-                assert!(stdout.contains(app_dir.to_string_lossy().as_ref()));
+                assert!(
+                    stdout.contains(app_dir.to_string_lossy().as_ref())
+                        || stdout.contains(canonical_app_dir.to_string_lossy().as_ref()),
+                    "expected stdout to include requested cwd, got {stdout:?}"
+                );
             }
             other => panic!("expected success, got {other:?}"),
         }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[cfg(not(target_os = "windows"))]
+    async fn streaming_shell_tool_uses_agent_session_pool_without_workspace() {
+        use gestura_core_streaming::StreamChunk;
+
+        let pipeline = AgentPipeline::new(AppConfig::default());
+        let temp = TempDir::new().expect("temp dir");
+        let session_id = format!("shell-stream-session-only-{}", uuid::Uuid::new_v4());
+        let cwd = temp.path().to_string_lossy().to_string();
+        let (tx, rx) = tokio::sync::mpsc::channel(256);
+        let collector = spawn_stream_collector(rx);
+
+        let result = tokio::spawn({
+            let tx = tx.clone();
+            let session_id = session_id.clone();
+            let cwd = cwd.clone();
+            async move {
+                pipeline
+                    .execute_tool(
+                        "shell",
+                        &json!({
+                            "command": "printf 'session-owned'",
+                            "cwd": cwd,
+                            "timeout_secs": 10,
+                        })
+                        .to_string(),
+                        None,
+                        Some(session_id.as_str()),
+                        Some(&tx),
+                    )
+                    .await
+            }
+        });
+
+        let tool_result = tokio::time::timeout(STREAMING_SHELL_TOOL_TEST_TIMEOUT, result)
+            .await
+            .expect("streaming shell agent-session pool test timed out")
+            .expect("shell execution task should join");
+
+        shutdown_shell_session_for_test(&session_id).await;
+        drop(tx);
+        let chunks = tokio::time::timeout(STREAMING_SHELL_TOOL_SHUTDOWN_TIMEOUT, collector)
+            .await
+            .expect("timed out collecting agent-session shell chunks")
+            .expect("agent-session collector should join");
+
+        let saw_shell_session_id = chunks.iter().any(|chunk| {
+            matches!(
+                chunk,
+                StreamChunk::ShellLifecycle {
+                    shell_session_id: Some(_),
+                    ..
+                } | StreamChunk::ShellOutput {
+                    shell_session_id: Some(_),
+                    ..
+                }
+            )
+        });
+
+        assert!(matches!(tool_result, ToolResult::Success(_)));
+        assert!(
+            saw_shell_session_id,
+            "expected streamed shell events to include a shell_session_id, got {chunks:?}"
+        );
     }
 
     #[tokio::test]

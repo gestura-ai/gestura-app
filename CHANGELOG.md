@@ -5,19 +5,37 @@ All notable changes to Gestura.app will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## Unreleased / Approaching 1.0
+## [Unreleased]
+
+Current development on the `dev` branch is tracking the `0.8.0` release line as the baseline for upcoming changes.
 
 ### Changed
 
-- Gestura.app is now documented as an **intent-first AI assistant**: voice, chat, Haptic Harmony ring gestures, and future input adapters are treated as sources of the same normalized intent flow rather than as separate product paths.
-- The current implementation continues to preserve the Core-First workflow while clarifying that modality capture feeds one shared execution model across GUI, CLI, and automation surfaces.
+- Updated the changelog to reflect `0.8.0` as the current `dev` branch release line.
+- Inline chat shell cards now render through the same xterm-based terminal surface used by Shell Manager, so redraw-heavy output keeps terminal formatting instead of degrading into a plain ANSI transcript.
+- Agent chat now prioritizes shell lifecycle/output delivery and materializes the streaming shell card on the first lifecycle event instead of waiting for later message-state commits.
+- Agent chat now paints a neutral streaming placeholder before starting shell-backed streaming work, so the conversation responds immediately without showing a fake `Thought Process` block while the first shell session initializes.
+
+### Fixed
+
+- User chat bubbles now preserve white body text in light mode while keeping user-authored links black for contrast.
+- Agent chat scrolling no longer feels sticky when users try to scroll up during active streaming output.
+- Shell tool executions now preserve session routing metadata across normal runs, confirmed follow-up execution, and reflection retries so PTY-backed sessions keep their `shell_session_id` and remain linkable in Shell Manager.
+- Inline chat shell output now shows the executed command, strips leaked control-sequence artifacts more reliably, and surfaces the Shell Manager link as soon as the shell session starts instead of after the stream finishes.
+- First shell requests now register shell stream listeners in parallel, preserve `shell_session_id` on output-first events, and keep the chat timeline synchronized with live shell activity instead of showing the session only after the process is already underway.
+
+
+### Added
+
+- Shell sessions now surface early stall signals for interactive prompts and error output, providing faster feedback when a command is waiting for user input or has encountered an error.
+- Migrated Windows release signing from local PFX certificate to cloud-based SSL.com eSigner, with Python/Java toolchain setup and TOTP-based authentication.
 
 ### Planned
 
 - `gestura-core-tasks` is being positioned as the home for optional advanced primitives that activate only for complex multi-step intents.
 - Upcoming work focuses on TaskRegistry-backed coordination, bounded verification loops, and semantic client flows that remain general-purpose and reusable across domains.
 
-## [Unreleased]
+## [0.8.0]
 
 ### Core-First Architecture Migration (Complete)
 
@@ -143,7 +161,7 @@ A comprehensive refactoring to consolidate all business logic in `gestura-core`,
 - CI/CD workflows updated for workspace builds
 - Updated package.json to reflect gestura-app instead of homepage project
 - Added version field to tauri.conf.json for proper Tauri versioning
-- Synchronized versions across all configuration files (currently 0.2.0)
+- Synchronized versions across all configuration files (currently 0.8.0)
 
 ### Fixed
 - Duplicate system tray icons issue resolved through configuration cleanup

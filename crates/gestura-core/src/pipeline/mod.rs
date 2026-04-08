@@ -1421,6 +1421,7 @@ impl AgentPipeline {
                         base_prompt: &reflection_retry_prompt,
                         tools: reflection_retry_tools.clone(),
                         context: reflection_retry_context.clone(),
+                        session_id: request.metadata.session_id.as_deref(),
                         workspace: workspace.as_ref(),
                     },
                 )
@@ -1620,7 +1621,13 @@ impl AgentPipeline {
 
         let start_time = Instant::now();
         let result = self
-            .execute_tool(&tool_name, &args, workspace, Some(tx))
+            .execute_tool(
+                &tool_name,
+                &args,
+                workspace,
+                request.metadata.session_id.as_deref(),
+                Some(tx),
+            )
             .await;
         let duration_ms = start_time.elapsed().as_millis() as u64;
 
@@ -2198,6 +2205,7 @@ impl AgentPipeline {
                         base_prompt: &reflection_retry_prompt,
                         tools: reflection_retry_tools,
                         context: reflection_retry_context,
+                        session_id: request.metadata.session_id.as_deref(),
                         workspace: workspace.as_ref(),
                     },
                 )
