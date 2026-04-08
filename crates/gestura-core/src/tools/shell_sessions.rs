@@ -1132,7 +1132,10 @@ mod imp {
 
                             if start.elapsed() >= timeout {
                                 if idle_for < stall_timeout {
-                                    tokio::time::sleep(Duration::from_millis(50)).await;
+                                    let sleep_time = stall_timeout
+                                        .saturating_sub(idle_for)
+                                        .min(Duration::from_millis(50));
+                                    tokio::time::sleep(sleep_time).await;
                                     continue;
                                 }
 
@@ -1321,15 +1324,12 @@ mod imp {
         async fn interrupt(&self) -> Result<()> {
             let mut writer_lock = self.writer.lock().await;
             let mut writer = writer_lock.take().ok_or_else(Self::closed_session_error)?;
-            let (tx, rx) = tokio::sync::oneshot::channel();
-            std::thread::spawn(move || {
+            let (res, writer) = tokio::task::spawn_blocking(move || {
                 let res = writer.write_all(&[3]).and_then(|_| writer.flush());
-                let _ = tx.send((res, writer));
-            });
-            let (res, writer) = tokio::time::timeout(Duration::from_secs(2), rx)
-                .await
-                .map_err(|_| AppError::Session("interrupt write timed out".to_string()))?
-                .map_err(|_| AppError::Session("interrupt write thread died".to_string()))?;
+                (res, writer)
+            })
+            .await
+            .expect("spawn_blocking panicked");
             *writer_lock = Some(writer);
             res.map_err(AppError::Io)?;
             Ok(())
@@ -1366,7 +1366,7 @@ mod imp {
                     let writer_to_drop = writer_lock.take();
                     let mut master_lock = self.master.lock().await;
                     let master_to_drop = master_lock.take();
-                    std::thread::spawn(move || {
+                    tokio::task::spawn_blocking(move || {
                         drop(writer_to_drop);
                         drop(master_to_drop);
                     });
@@ -1404,7 +1404,7 @@ mod imp {
                 let writer_to_drop = writer_lock.take();
                 let mut master_lock = self.master.lock().await;
                 let master_to_drop = master_lock.take();
-                std::thread::spawn(move || {
+                tokio::task::spawn_blocking(move || {
                     drop(writer_to_drop);
                     drop(master_to_drop);
                 });
@@ -1545,12 +1545,14 @@ mod imp {
             emit_raw_output,
         } = context;
 
-        std::thread::spawn(move || {
+        tokio::task::spawn_blocking(move || {
             let mut buffer = [0_u8; 4096];
             loop {
                 match reader.read(&mut buffer) {
                     Ok(0) => {
                         closed.store(true, Ordering::SeqCst);
+                        let _ = active_sender.lock().map(|mut guard| guard.take());
+                        let _ = active_process_id.lock().map(|mut guard| guard.take());
                         return;
                     }
                     Ok(read) => {
@@ -1574,8 +1576,12 @@ mod imp {
                             });
                         }
                     }
-                    Err(_) => {
+                    Err(err) => {
+                        tracing::error!("PTY reader read failed: {:?}", err);
+                        println!("PTY reader read failed: {:?}", err);
                         closed.store(true, Ordering::SeqCst);
+                        let _ = active_sender.lock().map(|mut guard| guard.take());
+                        let _ = active_process_id.lock().map(|mut guard| guard.take());
                         return;
                     }
                 }
