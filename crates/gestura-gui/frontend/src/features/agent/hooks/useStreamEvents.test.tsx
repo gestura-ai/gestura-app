@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
   useStreamEvents,
+  type StreamEventAction,
   type StreamEventDispatch,
 } from './useStreamEvents';
 
@@ -25,6 +26,12 @@ function HookHarness(props: { sessionId: string; dispatch: StreamEventDispatch }
   return null;
 }
 
+function createDispatchMock() {
+  return vi.fn((action: StreamEventAction) => {
+    void action;
+  });
+}
+
 describe('useStreamEvents', () => {
   beforeEach(() => {
     listeners.clear();
@@ -40,10 +47,6 @@ describe('useStreamEvents', () => {
       };
     }
   });
-
-  function createDispatchMock() {
-    return vi.fn<StreamEventDispatch>();
-  }
 
   it('refreshes tasks when a task tool result succeeds', async () => {
     const dispatch = createDispatchMock();
@@ -170,6 +173,89 @@ describe('useStreamEvents', () => {
       expect(dispatch).toHaveBeenCalledWith({ type: 'chunk', chunk: 'hello world' });
     });
     expect(dispatch).toHaveBeenCalledTimes(1);
+  });
+
+  it('flushes shell output without waiting for animation-frame batching', async () => {
+    const dispatch = createDispatchMock();
+    const requestAnimationFrameMock = vi.fn(() => 123);
+    window.requestAnimationFrame = requestAnimationFrameMock;
+    window.cancelAnimationFrame = vi.fn();
+
+    render(<HookHarness sessionId="session-123" dispatch={dispatch} />);
+
+    await waitFor(() => {
+      expect(listeners.has('agent-stream-shell-output')).toBe(true);
+    });
+
+    await act(async () => {
+      listeners.get('agent-stream-shell-output')?.({
+        payload: {
+          session_id: 'session-123',
+          process_id: 'shell-proc-1',
+          stream: 'Stdout',
+          data: 'progress\r',
+        },
+      });
+      await Promise.resolve();
+    });
+
+    expect(dispatch).toHaveBeenCalledWith({
+      type: 'shell-output',
+      processId: 'shell-proc-1',
+      shellSessionId: null,
+      stream: 'Stdout',
+      data: 'progress\r',
+    });
+    expect(requestAnimationFrameMock).not.toHaveBeenCalled();
+  });
+
+  it('preserves shell session ids on output events for output-first hydration', async () => {
+    const dispatch = createDispatchMock();
+    render(<HookHarness sessionId="session-123" dispatch={dispatch} />);
+
+    await waitFor(() => {
+      expect(listeners.has('agent-stream-shell-output')).toBe(true);
+    });
+
+    await act(async () => {
+      listeners.get('agent-stream-shell-output')?.({
+        payload: {
+          session_id: 'session-123',
+          process_id: 'shell-proc-1',
+          shell_session_id: 'shell-session-1',
+          stream: 'Stdout',
+          data: 'progress\r',
+        },
+      });
+      await Promise.resolve();
+    });
+
+    expect(dispatch).toHaveBeenCalledWith({
+      type: 'shell-output',
+      processId: 'shell-proc-1',
+      shellSessionId: 'shell-session-1',
+      stream: 'Stdout',
+      data: 'progress\r',
+    });
+  });
+
+  it('registers shell listeners even if earlier listeners are still pending', async () => {
+    const resolveProbeRef: { current: null | (() => void) } = { current: null };
+    listenMock.mockImplementationOnce(() => new Promise((resolve) => {
+      resolveProbeRef.current = () => resolve(vi.fn());
+    }));
+
+    const dispatch = createDispatchMock();
+    render(<HookHarness sessionId="session-123" dispatch={dispatch} />);
+
+    await waitFor(() => {
+      expect(listeners.has('agent-stream-shell-output')).toBe(true);
+    });
+
+    if (resolveProbeRef.current) {
+      resolveProbeRef.current();
+    }
+    await Promise.resolve();
   });
 
   it('normalizes backend voice agent-message payloads into chat actions', async () => {

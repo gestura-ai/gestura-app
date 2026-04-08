@@ -3,6 +3,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import type { ShellBlock, ShellSessionRecord } from '../types';
 import { ansiToHtml } from '../utils/ansi';
 import { describeShellActivity } from '../utils/shellActivity';
+import { InteractiveShellTerminal } from './InteractiveShellTerminal';
 
 type RenderableShell = ShellBlock | ShellSessionRecord;
 
@@ -78,6 +79,35 @@ function workingDirectory(block: RenderableShell): string | null {
   return block.cwd ?? null;
 }
 
+function buildReadOnlyTerminalShell(block: RenderableShell): ShellSessionRecord {
+  if (isShellSessionRecord(block)) return block;
+
+  return {
+    kind: 'shell-session',
+    id: block.id,
+    shellSessionId: block.shellSessionId ?? block.processId,
+    cwd: block.cwd,
+    state: block.state === 'Failed'
+      ? 'Failed'
+      : block.state === 'Stopped'
+        ? 'Stopped'
+        : block.state === 'Completed'
+          ? 'Idle'
+          : 'Busy',
+    interactive: false,
+    userManaged: false,
+    activeProcessId: block.processId,
+    activeCommand: block.command,
+    lastExitCode: block.exitCode ?? null,
+    durationMs: block.durationMs ?? null,
+    startedAt: block.startedAt ?? null,
+    lastActivityAt: block.lastActivityAt ?? null,
+    lines: block.lines,
+    collapsed: block.collapsed,
+    availableForReuse: false,
+  };
+}
+
 export const ShellConsoleView: React.FC<ShellConsoleViewProps> = ({
   block,
   variant = 'inline',
@@ -93,6 +123,7 @@ export const ShellConsoleView: React.FC<ShellConsoleViewProps> = ({
   const copyValue = commandLabel(block);
   const commandCwd = workingDirectory(block);
   const activity = describeShellActivity(block, activityNow);
+  const useTerminalRenderer = variant === 'inline' && block.lines.length > 0;
 
   useEffect(() => {
     if (isCollapsed || !outputRef.current) return;
@@ -166,15 +197,26 @@ export const ShellConsoleView: React.FC<ShellConsoleViewProps> = ({
               )}
             </div>
           )}
-          <div className={`shell-console-output shell-console-output--${variant}`} ref={outputRef}>
+          <div
+            className={`shell-console-output shell-console-output--${variant}${useTerminalRenderer ? ' shell-console-output--terminal' : ''}`}
+            ref={outputRef}
+          >
             {block.lines.length > 0 ? (
-              block.lines.map((line, index) => (
-                <div
-                  key={index}
-                  className={`shell-line${line.stream === 'Stderr' ? ' shell-stderr' : ''}`}
-                  dangerouslySetInnerHTML={{ __html: ansiToHtml(line.data) }}
+              useTerminalRenderer ? (
+                <InteractiveShellTerminal
+                  shell={buildReadOnlyTerminalShell(block)}
+                  readOnly
+                  className="interactive-shell-terminal--inline"
                 />
-              ))
+              ) : (
+                block.lines.map((line, index) => (
+                  <div
+                    key={index}
+                    className={`shell-line${line.stream === 'Stderr' ? ' shell-stderr' : ''}`}
+                    dangerouslySetInnerHTML={{ __html: ansiToHtml(line.data) }}
+                  />
+                ))
+              )
             ) : (
               <div className="shell-line shell-line--empty">
                 {isShellSessionRecord(block) ? 'Interactive shell is idle and waiting for activity…' : 'Waiting for output…'}

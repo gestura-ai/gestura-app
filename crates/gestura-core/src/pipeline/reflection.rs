@@ -97,6 +97,7 @@ pub(super) struct ReflectionReexecutionContext<'a> {
     pub base_prompt: &'a str,
     pub tools: Vec<&'static ToolDefinition>,
     pub context: crate::context::ResolvedContext,
+    pub session_id: Option<&'a str>,
     pub workspace: Option<&'a SessionWorkspace>,
 }
 
@@ -732,6 +733,7 @@ impl AgentPipeline {
                 retry_prompt,
                 retry_ctx.tools,
                 retry_ctx.context,
+                retry_ctx.session_id,
                 retry_ctx.workspace,
             )
             .await
@@ -768,6 +770,7 @@ impl AgentPipeline {
         initial_prompt: String,
         tools: Vec<&'static ToolDefinition>,
         context: crate::context::ResolvedContext,
+        session_id: Option<&str>,
         workspace: Option<&SessionWorkspace>,
     ) -> Result<AgentResponse, AppError> {
         let mut response = AgentResponse {
@@ -872,7 +875,7 @@ impl AgentPipeline {
                             );
                             pending_parallel_signatures.clear();
                         }
-                        self.execute_tool(&tc.name, &tc.arguments, workspace, None)
+                        self.execute_tool(&tc.name, &tc.arguments, workspace, session_id, None)
                             .await
                     }
                     crate::tools::policy::ToolCallDecision::Blocked { reason } => {

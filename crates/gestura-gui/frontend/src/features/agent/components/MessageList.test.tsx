@@ -1,6 +1,6 @@
 import { useState } from 'react';
-import { fireEvent, render, screen, within } from '@testing-library/react';
-import { describe, expect, it, vi } from 'vitest';
+import { cleanup, fireEvent, render, screen, within } from '@testing-library/react';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type { AgentMessage, TaskHierarchy } from '../types';
 import { parseMarkdown } from '../utils/markdown';
@@ -11,16 +11,37 @@ vi.mock('@tauri-apps/api/core', () => ({
   convertFileSrc: (path: string) => `asset://${path}`,
 }));
 
+vi.mock('./InteractiveShellTerminal', () => ({
+  InteractiveShellTerminal: ({
+    shell,
+    readOnly,
+    className,
+  }: {
+    shell: { lines: Array<{ data: string }> };
+    readOnly?: boolean;
+    className?: string;
+  }) => (
+    <div data-testid="interactive-shell-terminal" data-read-only={readOnly ? 'true' : 'false'} className={className}>
+      {shell.lines.map((line) => line.data).join('')}
+    </div>
+  ),
+}));
+
+afterEach(() => {
+  cleanup();
+});
+
 function renderMessageList(
   messages: AgentMessage[],
   tasks: TaskHierarchy = [],
   onRevealShellSession = vi.fn(),
   userScrolledUp = false,
+  streamingMessage: AgentMessage | null = null,
 ) {
   render(
     <MessageList
       messages={messages}
-      streamingMessage={null}
+      streamingMessage={streamingMessage}
       tasks={tasks}
       userScrolledUp={userScrolledUp}
       onScrollChange={vi.fn()}
@@ -32,6 +53,23 @@ function renderMessageList(
 }
 
 describe('MessageList', () => {
+  it('renders a neutral streaming placeholder instead of a fake thought block', () => {
+    const streamingMessage: AgentMessage = {
+      id: 'streaming-placeholder',
+      role: 'assistant',
+      rawMarkdown: '',
+      isStreaming: true,
+      timestamp: Date.now(),
+      blocks: [],
+    };
+
+    renderMessageList([], [], vi.fn(), false, streamingMessage);
+
+    expect(screen.getByTestId('message-streaming-placeholder')).toBeInTheDocument();
+    expect(screen.queryByText('Thought Process')).not.toBeInTheDocument();
+    expect(screen.queryByText('Thinking Process…')).not.toBeInTheDocument();
+  });
+
   it('scrolls to the latest content with a single click on the new-messages badge', () => {
     const message: AgentMessage = {
       id: 'message-scroll',
@@ -65,7 +103,7 @@ describe('MessageList', () => {
 
     fireEvent.click(screen.getByRole('button', { name: /new messages/i }));
 
-    expect(messagesContainer.scrollTop).toBe(480);
+    expect(messagesContainer.scrollTop).toBe(360);
     expect(screen.queryByRole('button', { name: /new messages/i })).not.toBeInTheDocument();
   });
 
@@ -133,6 +171,32 @@ describe('MessageList', () => {
     expect(screen.queryByText('task-run-tests')).not.toBeInTheDocument();
   });
 
+  it('does not auto-link task references inside user-authored text', () => {
+    const tasks: TaskHierarchy = [{
+      id: 'task-run-tests',
+      name: 'Run tests',
+      description: 'Verify the build.',
+      status: 'NotStarted',
+      subtasks: [],
+    }];
+
+    renderMessageList([{
+      id: 'message-user-task-text',
+      role: 'user',
+      rawMarkdown: 'I typed Run tests and task-run-tests in my prompt.',
+      isStreaming: false,
+      timestamp: Date.now(),
+      blocks: [{
+        kind: 'text',
+        id: 'text-user-task-text',
+        content: 'I typed Run tests and task-run-tests in my prompt.',
+      }],
+    }], tasks);
+
+    expect(screen.queryByRole('link', { name: 'Run tests' })).not.toBeInTheDocument();
+    expect(screen.getByText(/I typed Run tests and task-run-tests in my prompt\./i)).toBeInTheDocument();
+  });
+
   it('hides duplicate shell tool cards and links inline shells to the manager', () => {
     const onRevealShellSession = vi.fn();
 
@@ -163,7 +227,7 @@ describe('MessageList', () => {
           state: 'Running',
           durationMs: 42,
           lastActivityAt: Date.now(),
-          lines: [],
+          lines: [{ stream: 'Stdout', data: 'running tests...\n' }],
           collapsed: true,
         },
       ],
@@ -176,6 +240,8 @@ describe('MessageList', () => {
 
     fireEvent.click(screen.getByRole('button', { name: /cargo test/i }));
     expect(screen.getByText('/workspace')).toBeInTheDocument();
+    expect(screen.getByTestId('interactive-shell-terminal')).toHaveTextContent('running tests...');
+    expect(screen.getByTestId('interactive-shell-terminal')).toHaveAttribute('data-read-only', 'true');
 
     fireEvent.click(screen.getByRole('button', { name: 'Open in Shell Session Manager' }));
     expect(onRevealShellSession).toHaveBeenCalledWith('shell-session-1');

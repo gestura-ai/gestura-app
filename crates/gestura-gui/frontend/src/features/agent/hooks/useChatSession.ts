@@ -34,6 +34,7 @@ import type {
   TextBlock,
   ToolBlock,
   ShellBlock,
+  ShellLine,
   NarrationBlock,
   ToolConfirmation,
   ToolConfirmationDecision,
@@ -42,6 +43,7 @@ import type {
   KnowledgeItem,
   StatusState,
 } from '../types';
+import { buildShellCommandLine } from '../utils/shellTranscript';
 
 // ─── Queued item ──────────────────────────────────────────────────────────────
 
@@ -265,6 +267,7 @@ function toReplayAction(entry: SessionActivityEvent): StreamEventAction | null {
         ? {
           type: 'shell-output',
           processId: payloadRecord.process_id,
+          shellSessionId: payloadRecord.shell_session_id != null ? String(payloadRecord.shell_session_id) : null,
           stream: (payloadRecord.stream as 'Stdout' | 'Stderr') ?? 'Stdout',
           data: String(payloadRecord.data ?? ''),
         }
@@ -649,6 +652,45 @@ function makeStreamingMessage(): AgentMessage {
   return { id: nanoid(), role: 'assistant', rawMarkdown: '', blocks: [], isStreaming: true, timestamp: Date.now() };
 }
 
+function makeStreamingMessageWithId(id: string): AgentMessage {
+  return { id, role: 'assistant', rawMarkdown: '', blocks: [], isStreaming: true, timestamp: Date.now() };
+}
+
+function findShellBlockIndex(
+  blocks: MsgBlock[],
+  processId: string | null | undefined,
+  shellSessionId?: string | null,
+): number {
+  return blocks.findIndex((block) => {
+    if (block.kind !== 'shell') return false;
+    if (processId && block.processId === processId) return true;
+    return Boolean(shellSessionId && block.shellSessionId === shellSessionId);
+  });
+}
+
+function mergeShellCommandLine(lines: ShellLine[], commandLine: ShellLine | null): ShellLine[] {
+  if (!commandLine) return lines;
+  return lines.some((line) => line.stream === commandLine.stream && line.data === commandLine.data)
+    ? lines
+    : [commandLine, ...lines];
+}
+
+function isStreamingPlaceholderMessage(message: AgentMessage | null | undefined): boolean {
+  if (!message || message.rawMarkdown.trim()) return false;
+  return message.blocks.length === 0;
+}
+
+async function waitForNextPaint(): Promise<void> {
+  if (typeof window !== 'undefined' && typeof window.requestAnimationFrame === 'function') {
+    await new Promise<void>((resolve) => {
+      window.requestAnimationFrame(() => resolve());
+    });
+    return;
+  }
+
+  await new Promise<void>((resolve) => setTimeout(resolve, 0));
+}
+
 // ─── Hook ─────────────────────────────────────────────────────────────────────
 
 export function useChatSession(sessionId: string): ChatSessionState {
@@ -864,22 +906,49 @@ export function useChatSession(sessionId: string): ChatSessionState {
     setMemoryRevision((prev) => prev + 1);
   }, []);
 
+  const seedStreamingPlaceholder = useCallback((): string => {
+    if (streamingMsgIdRef.current) {
+      return streamingMsgIdRef.current;
+    }
+
+    const msg = makeStreamingMessage();
+
+    streamingMsgIdRef.current = msg.id;
+    currentThinkingIdRef.current = null;
+    currentTextBlockIdRef.current = null;
+    currentToolBlockIdRef.current = null;
+    currentToolCallIdRef.current = null;
+    toolBlockIdsByCallIdRef.current.clear();
+    setStreamingMessage(msg);
+    return msg.id;
+  }, []);
+
   // ── Ensure streaming message exists ────────────────────────────────────────
   const ensureStreamingMsg = useCallback((): string => {
-    if (!streamingMsgIdRef.current) {
-      const newMsg = makeStreamingMessage();
-      streamingMsgIdRef.current = newMsg.id;
-      setStreamingMessage(newMsg);
-      return newMsg.id;
+    if (streamingMsgIdRef.current) {
+      const existingId = streamingMsgIdRef.current;
+      setStreamingMessage((prev) => prev ?? makeStreamingMessageWithId(existingId));
+      return existingId;
     }
-    return streamingMsgIdRef.current;
+
+    const newMsg = makeStreamingMessage();
+    streamingMsgIdRef.current = newMsg.id;
+    setStreamingMessage((prev) => prev ?? newMsg);
+    return newMsg.id;
   }, []);
 
   // ── Block updater helpers ───────────────────────────────────────────────────
   const updateStreamingBlocks = useCallback((updater: (blocks: MsgBlock[]) => MsgBlock[]) => {
     setStreamingMessage((prev) => {
-      if (!prev) return prev;
-      return { ...prev, blocks: updater(prev.blocks) };
+      if (prev) {
+        return { ...prev, blocks: updater(prev.blocks) };
+      }
+
+      const streamingMsgId = streamingMsgIdRef.current;
+      if (!streamingMsgId) return prev;
+
+      const base = makeStreamingMessageWithId(streamingMsgId);
+      return { ...base, blocks: updater(base.blocks) };
     });
   }, []);
 
@@ -1062,7 +1131,9 @@ export function useChatSession(sessionId: string): ChatSessionState {
         if (currentThinkingIdRef.current) {
           const tid = currentThinkingIdRef.current;
           updateStreamingBlocks((blocks) =>
-            blocks.map((b) => b.id === tid && b.kind === 'thinking' ? { ...b, done: true } : b)
+            blocks.map((b) => b.id === tid && b.kind === 'thinking'
+              ? { ...b, done: true, collapsed: b.collapsed || !b.content.trim() }
+              : b)
           );
           currentThinkingIdRef.current = null;
         }
@@ -1155,31 +1226,50 @@ export function useChatSession(sessionId: string): ChatSessionState {
 
       case 'shell-lifecycle': {
         ensureStreamingMsg();
+        if (currentThinkingIdRef.current) {
+          const tid = currentThinkingIdRef.current;
+          updateStreamingBlocks((blocks) =>
+            blocks.map((b) => b.id === tid && b.kind === 'thinking'
+              ? { ...b, done: true, collapsed: b.collapsed || !b.content.trim() }
+              : b)
+          );
+          currentThinkingIdRef.current = null;
+        }
         const pid = action.processId;
         const p = action.payload;
+        const shellSessionId = p['shell_session_id'] != null ? String(p['shell_session_id']) : null;
         const activityAt = Date.now();
         updateStreamingBlocks((blocks) => {
-          const idx = blocks.findIndex((b) => b.kind === 'shell' && b.processId === pid);
+          const idx = findShellBlockIndex(blocks, pid, shellSessionId);
+          const nextState = normalizeShellState(p['state']);
+          const nextCommand = p['command'] != null ? String(p['command']) : '';
           if (idx >= 0) {
             const existing = blocks[idx] as ShellBlock;
+            const command = nextCommand || existing.command;
+            const commandLine = nextState === 'Started' && command !== existing.command
+              ? buildShellCommandLine(command)
+              : null;
             const updated: ShellBlock = {
               ...existing,
-              shellSessionId: p['shell_session_id'] != null
-                ? String(p['shell_session_id'])
-                : (existing.shellSessionId ?? null),
-              state: normalizeShellState(p['state'] ?? existing.state),
+              processId: pid || existing.processId,
+              shellSessionId: shellSessionId ?? (existing.shellSessionId ?? null),
+              command,
+              cwd: p['cwd'] != null ? String(p['cwd']) : existing.cwd,
+              state: nextState,
               exitCode: p['exit_code'] != null ? Number(p['exit_code']) : existing.exitCode,
               durationMs: p['duration_ms'] != null ? Number(p['duration_ms']) : existing.durationMs,
               startedAt: existing.startedAt ?? activityAt,
               lastActivityAt: activityAt,
+              lines: mergeShellCommandLine(existing.lines, commandLine),
             };
             return blocks.map((b, i) => i === idx ? updated : b);
           } else {
+            const commandLine = buildShellCommandLine(nextCommand);
             const newBlock: ShellBlock = {
               kind: 'shell', id: nanoid(), processId: pid,
-              shellSessionId: p['shell_session_id'] != null ? String(p['shell_session_id']) : null,
-              command: String(p['command'] ?? ''), cwd: p['cwd'] ? String(p['cwd']) : null,
-              state: normalizeShellState(p['state']), lines: [], collapsed: true,
+              shellSessionId,
+              command: nextCommand, cwd: p['cwd'] ? String(p['cwd']) : null,
+              state: nextState, lines: commandLine ? [commandLine] : [], collapsed: true,
               startedAt: activityAt,
               lastActivityAt: activityAt,
             };
@@ -1191,20 +1281,54 @@ export function useChatSession(sessionId: string): ChatSessionState {
       }
 
       case 'shell-output': {
-        const pid = action.processId;
+        ensureStreamingMsg();
+        if (currentThinkingIdRef.current) {
+          const tid = currentThinkingIdRef.current;
+          updateStreamingBlocks((blocks) =>
+            blocks.map((b) => b.id === tid && b.kind === 'thinking'
+              ? { ...b, done: true, collapsed: b.collapsed || !b.content.trim() }
+              : b)
+          );
+          currentThinkingIdRef.current = null;
+        }
+        const pid = action.processId || action.shellSessionId || '';
+        if (!pid) break;
         const activityAt = Date.now();
-        updateStreamingBlocks((blocks) =>
-          blocks.map((b) =>
-            b.kind === 'shell' && b.processId === pid
-              ? {
-                ...b,
-                startedAt: b.startedAt ?? activityAt,
+        updateStreamingBlocks((blocks) => {
+          const idx = findShellBlockIndex(blocks, action.processId, action.shellSessionId);
+          if (idx >= 0) {
+            return blocks.map((block, blockIndex) => {
+              if (blockIndex !== idx || block.kind !== 'shell') return block;
+              return {
+                ...block,
+                processId: action.processId || block.processId,
+                shellSessionId: action.shellSessionId ?? (block.shellSessionId ?? null),
+                state: block.state === 'Completed' || block.state === 'Failed' || block.state === 'Stopped'
+                  ? block.state
+                  : 'Running',
+                startedAt: block.startedAt ?? activityAt,
                 lastActivityAt: activityAt,
-                lines: [...b.lines, { stream: action.stream, data: action.data }],
-              }
-              : b
-          )
-        );
+                lines: [...block.lines, { stream: action.stream, data: action.data }],
+              };
+            });
+          }
+
+          const newBlock: ShellBlock = {
+            kind: 'shell',
+            id: nanoid(),
+            processId: pid,
+            shellSessionId: action.shellSessionId ?? null,
+            command: '',
+            cwd: null,
+            state: 'Running',
+            lines: [{ stream: action.stream, data: action.data }],
+            collapsed: true,
+            startedAt: activityAt,
+            lastActivityAt: activityAt,
+          };
+          currentTextBlockIdRef.current = null;
+          return [...blocks, newBlock];
+        });
         break;
       }
 
@@ -1478,12 +1602,22 @@ export function useChatSession(sessionId: string): ChatSessionState {
       isStreaming: false, timestamp: Date.now(),
     };
     setMessages((prev) => [...prev, userMsg]);
-    void sendMessageStreaming({ session_id: sessionId, message: text, task_id: taskId ?? null }).catch((err) => {
+    seedStreamingPlaceholder();
+
+    await waitForNextPaint();
+
+    void Promise.resolve(
+      sendMessageStreaming({ session_id: sessionId, message: text, task_id: taskId ?? null }),
+    ).catch((err) => {
+      if (isStreamingPlaceholderMessage(streamingMessageRef.current)) {
+        setStreamingMessage(null);
+        resetStreamingCursor();
+      }
       updateStatus({ text: `Error: ${String(err)}`, kind: 'error' });
       setIsProcessing(false);
       isProcessingRef.current = false;
     });
-  }, [resetStreamingCursor, sessionId, updateStatus]);
+  }, [resetStreamingCursor, seedStreamingPlaceholder, sessionId, updateStatus]);
 
   useEffect(() => {
     triggerSendRef.current = triggerSend;

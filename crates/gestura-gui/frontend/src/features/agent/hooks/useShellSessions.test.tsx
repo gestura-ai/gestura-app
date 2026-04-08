@@ -54,6 +54,7 @@ describe('useShellSessions', () => {
 
     expect(result.current[0]?.startedAt).toBe(1_000);
     expect(result.current[0]?.lastActivityAt).toBe(1_000);
+    expect(result.current[0]?.lines[0]?.data).toContain('cargo test');
 
     now = 6_000;
     act(() => {
@@ -83,5 +84,23 @@ describe('useShellSessions', () => {
     rerender({ restoreHistory: true });
 
     await waitFor(() => expect(getSessionActivityLogMock).toHaveBeenCalledWith('session-1'));
+  });
+
+  it('registers shell output listeners even if the first shell listener is still pending', async () => {
+    const resolveFirstListenerRef: { current: null | (() => void) } = { current: null };
+    listenMock.mockImplementationOnce(() => new Promise((resolve) => {
+      resolveFirstListenerRef.current = () => resolve(() => undefined);
+    }));
+
+    renderHook(() => useShellSessions('session-1'));
+
+    await waitFor(() => {
+      expect((listeners.get('agent-stream-shell-output') ?? []).length).toBeGreaterThan(0);
+    });
+
+    if (resolveFirstListenerRef.current) {
+      resolveFirstListenerRef.current();
+    }
+    await Promise.resolve();
   });
 });

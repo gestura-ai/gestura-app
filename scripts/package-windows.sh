@@ -52,8 +52,10 @@ Options:
   -h, --help           Show this help
 
 Env:
-  WINDOWS_CERT_THUMBPRINT  If set, patches tauri.conf.json so Tauri signs the
-                           MSI during the build.
+  ESIGNER_USERNAME         SSL.com eSigner username.
+  ESIGNER_PASSWORD         SSL.com eSigner password.
+  ESIGNER_CREDENTIAL_ID    SSL.com signing credential ID.
+  ESIGNER_TOTP_SECRET      SSL.com TOTP secret (base64 or base32).
 EOF
 }
 
@@ -91,15 +93,24 @@ check_prerequisites() {
     die "Missing required command: pwsh or powershell.exe"
   fi
 
-  if [ -n "${WINDOWS_CERT_THUMBPRINT:-}" ]; then
+  if windows_signing_enabled; then
     require_cmd node
+    require_cmd python
+    require_cmd java
   fi
 }
 
-# patch_tauri_windows_signing injects the certificate thumbprint into the Tauri
+windows_signing_enabled() {
+  [ -n "${ESIGNER_USERNAME:-}" ] && \
+  [ -n "${ESIGNER_PASSWORD:-}" ] && \
+  [ -n "${ESIGNER_CREDENTIAL_ID:-}" ] && \
+  [ -n "${ESIGNER_TOTP_SECRET:-}" ]
+}
+
+# patch_tauri_windows_signing injects a custom Tauri sign command into the
 # config for the duration of the packaging run.
 patch_tauri_windows_signing() {
-  if [ -z "${WINDOWS_CERT_THUMBPRINT:-}" ]; then
+  if ! windows_signing_enabled; then
     return 0
   fi
 
@@ -110,17 +121,20 @@ patch_tauri_windows_signing() {
 const fs = require('fs');
 
 const confPath = process.argv[2];
-const thumbprint = process.env.WINDOWS_CERT_THUMBPRINT;
 const config = JSON.parse(fs.readFileSync(confPath, 'utf8'));
 
 config.bundle ??= {};
 config.bundle.windows ??= {};
-config.bundle.windows.certificateThumbprint = thumbprint;
+config.bundle.windows.certificateThumbprint = null;
+config.bundle.windows.signCommand = {
+  cmd: 'python',
+  args: ['../../scripts/sign-windows-esigner.py', '%1']
+};
 
 fs.writeFileSync(confPath, `${JSON.stringify(config, null, 2)}\n`);
 NODE
 
-  log_info "Injected Windows certificate thumbprint into ${TAURI_CONF_PATH}"
+  log_info "Injected Windows eSigner signCommand into ${TAURI_CONF_PATH}"
 }
 
 # restore_tauri_windows_signing restores the original Tauri config after patching.
@@ -162,20 +176,14 @@ stage_cli() {
 
 # sign_cli signs the standalone CLI executable before it is archived.
 sign_cli() {
-  if [ -z "${WINDOWS_CERT_THUMBPRINT:-}" ]; then
+  if ! windows_signing_enabled; then
     return 0
   fi
 
   local cli_src="target/${TARGET_TRIPLE}/release/${APP_NAME}.exe"
   [ -f "$cli_src" ] || die "CLI binary not found at ${cli_src}"
 
-  if command -v pwsh >/dev/null 2>&1; then
-    CLI_SRC="$cli_src" WINDOWS_CERT_THUMBPRINT="$WINDOWS_CERT_THUMBPRINT" \
-      pwsh -NoProfile -Command "\$signtool = (Get-Command signtool.exe -ErrorAction Stop).Source; & \$signtool sign /sha1 \$env:WINDOWS_CERT_THUMBPRINT /fd SHA256 /tr http://timestamp.digicert.com /td SHA256 \$env:CLI_SRC"
-  else
-    CLI_SRC="$cli_src" WINDOWS_CERT_THUMBPRINT="$WINDOWS_CERT_THUMBPRINT" \
-      powershell.exe -NoProfile -Command "\$signtool = (Get-Command signtool.exe -ErrorAction Stop).Source; & \$signtool sign /sha1 \$env:WINDOWS_CERT_THUMBPRINT /fd SHA256 /tr http://timestamp.digicert.com /td SHA256 \$env:CLI_SRC"
-  fi
+  python scripts/sign-windows-esigner.py "$cli_src"
 
   log_info "Signed ${cli_src}"
 }

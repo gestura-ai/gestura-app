@@ -71,8 +71,10 @@ jobs:
           _APPLE_INSTALLER_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_INSTALLER_CERTIFICATE_PASSWORD }}
           _APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
           _KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
-          _WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
-          _WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
+          _ESIGNER_USERNAME: ${{ secrets.ESIGNER_USERNAME }}
+          _ESIGNER_PASSWORD: ${{ secrets.ESIGNER_PASSWORD }}
+          _ESIGNER_CREDENTIAL_ID: ${{ secrets.ESIGNER_CREDENTIAL_ID }}
+          _ESIGNER_TOTP_SECRET: ${{ secrets.ESIGNER_TOTP_SECRET }}
           # Non-sensitive identifiers (repository variables) — checked for presence
           _APPLE_SIGNING_IDENTITY: ${{ vars.APPLE_SIGNING_IDENTITY }}
           _APPLE_INSTALLER_IDENTITY: ${{ vars.APPLE_INSTALLER_IDENTITY }}
@@ -96,7 +98,11 @@ jobs:
           echo "has_macos_signing=${macos_ok}" >> "$GITHUB_OUTPUT"
 
           windows_ok=true
-          for v in "$_WINDOWS_CERTIFICATE" "$_WINDOWS_CERTIFICATE_PASSWORD"; do
+          for v in \
+            "$_ESIGNER_USERNAME" \
+            "$_ESIGNER_PASSWORD" \
+            "$_ESIGNER_CREDENTIAL_ID" \
+            "$_ESIGNER_TOTP_SECRET"; do
             [ -n "$v" ] || { windows_ok=false; break; }
           done
           echo "has_windows_signing=${windows_ok}" >> "$GITHUB_OUTPUT"
@@ -392,8 +398,10 @@ jobs:
     env:
       TAG: ${{ needs.prepare.outputs.tag }}
       PLATFORM_FEATURES: ${{ needs.prepare.outputs.windows_features }}
-      WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
-      WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
+      ESIGNER_USERNAME: ${{ secrets.ESIGNER_USERNAME }}
+      ESIGNER_PASSWORD: ${{ secrets.ESIGNER_PASSWORD }}
+      ESIGNER_CREDENTIAL_ID: ${{ secrets.ESIGNER_CREDENTIAL_ID }}
+      ESIGNER_TOTP_SECRET: ${{ secrets.ESIGNER_TOTP_SECRET }}
     steps:
       - name: Checkout release commit
         uses: actions/checkout@v4
@@ -422,6 +430,19 @@ jobs:
           cache: npm
           cache-dependency-path: crates/gestura-gui/frontend/package-lock.json
 
+      - name: Setup Python for Windows signing
+        if: needs.prepare.outputs.has_windows_signing == 'true'
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+
+      - name: Setup Java for Windows signing
+        if: needs.prepare.outputs.has_windows_signing == 'true'
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
       - name: Install Windows build dependencies
         shell: pwsh
         run: |
@@ -430,26 +451,14 @@ jobs:
           "C:\Program Files\LLVM\bin" | Out-File -FilePath $env:GITHUB_PATH -Append
           "LIBCLANG_PATH=C:\Program Files\LLVM\bin" | Out-File -FilePath $env:GITHUB_ENV -Append
 
-      - name: Import Windows signing certificate
-        id: import-cert
+      - name: Install Windows signing tool
         if: needs.prepare.outputs.has_windows_signing == 'true'
         shell: pwsh
         run: |
-          $certBytes = [Convert]::FromBase64String($env:WINDOWS_CERTIFICATE)
-          $certPath = Join-Path $env:RUNNER_TEMP 'gestura-release-signing.pfx'
-          [IO.File]::WriteAllBytes($certPath, $certBytes)
-
-          $securePassword = ConvertTo-SecureString -String $env:WINDOWS_CERTIFICATE_PASSWORD -Force -AsPlainText
-          Import-PfxCertificate -FilePath $certPath -CertStoreLocation Cert:\CurrentUser\My -Password $securePassword | Out-Null
-
-          $cert = Get-PfxCertificate -FilePath $certPath
-          "thumbprint=$($cert.Thumbprint)" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
-          Remove-Item $certPath -Force
+          choco install jsign -y
 
       - name: Build Windows release assets
         shell: bash
-        env:
-          WINDOWS_CERT_THUMBPRINT: ${{ steps.import-cert.outputs.thumbprint }}
         run: |
           ./scripts/package-windows.sh \
             --tag "$TAG" \

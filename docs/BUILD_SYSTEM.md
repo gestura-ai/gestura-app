@@ -267,9 +267,9 @@ $env:LIBCLANG_PATH = "C:\Program Files\LLVM\bin"
 - Consider adding to release matrix when Windows on ARM market share grows
 
 **Code Signing**: Windows builds can be signed using Authenticode certificates:
-- Certificate stored as base64-encoded PFX in `WINDOWS_CERTIFICATE` secret
-- Timestamp server: `http://timestamp.digicert.com` (configured in `tauri.conf.json`)
-- Signatures verified in CI using `Get-AuthenticodeSignature`
+- CI uses SSL.com eSigner secrets (`ESIGNER_USERNAME`, `ESIGNER_PASSWORD`, `ESIGNER_CREDENTIAL_ID`, `ESIGNER_TOTP_SECRET`)
+- Tauri release builds use a temporary custom `signCommand` for eSigner-backed signing
+- Standalone Windows CLI archives are signed before zipping, and signatures are verified in CI using `Get-AuthenticodeSignature`
 
 ### Add Rust Targets
 ```bash
@@ -387,7 +387,7 @@ The `.actrc` file maps platform runners to Ubuntu containers:
 | `macos-permissions` feature | Requires objc/cocoa frameworks |
 | Gatekeeper validation (`spctl`) | macOS-only |
 | Windows GUI builds | Requires Windows SDK and MSVC toolchain |
-| Windows code signing | Requires Authenticode certificate |
+| Windows code signing | Requires Windows runner, SSL.com eSigner secrets, and signing tools |
 | `windows-permissions` feature | Requires WinRT APIs and Windows runtime |
 | WebView2-dependent features | Windows-only runtime |
 | NSIS/WiX installer generation | Windows-only build tools |

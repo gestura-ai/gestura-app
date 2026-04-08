@@ -7,17 +7,76 @@
 import { escapeHtml } from './markdown';
 
 const COLOR_MAP = ['black', 'red', 'green', 'yellow', 'blue', 'magenta', 'cyan', 'white'] as const;
+const ESC = String.fromCharCode(27);
+const BEL = String.fromCharCode(7);
+const OSC_SEQUENCE = new RegExp(`${ESC}\\][^${BEL}${ESC}]*(?:${BEL}|${ESC}\\\\)`, 'g');
+const DCS_SEQUENCE = new RegExp(`${ESC}P[\\s\\S]*?${ESC}\\\\`, 'g');
+const CSI_SEQUENCE = new RegExp(`${ESC}\\[[0-9:;<=>?]*[ -/]*[@-~]`, 'g');
+const SINGLE_ESCAPE_SEQUENCE = new RegExp(`${ESC}[@-Z\\-_]`, 'g');
+
+function stripNonSgrSequences(raw: string): string {
+  return raw
+    .replace(OSC_SEQUENCE, '')
+    .replace(DCS_SEQUENCE, '')
+    .replace(CSI_SEQUENCE, (sequence) => (sequence.endsWith('m') ? sequence : ''))
+    .replace(SINGLE_ESCAPE_SEQUENCE, '');
+}
+
+function normalizeTerminalText(raw: string): string {
+  const sanitized = stripNonSgrSequences(raw);
+  let normalized = '';
+  let currentLine = '';
+
+  for (let index = 0; index < sanitized.length; index += 1) {
+    const char = sanitized[index];
+
+    if (char === '\x1b' && sanitized[index + 1] === '[') {
+      let sgrEnd = index + 2;
+      while (sgrEnd < sanitized.length && sanitized[sgrEnd] !== 'm') {
+        sgrEnd += 1;
+      }
+      if (sgrEnd < sanitized.length) {
+        currentLine += sanitized.slice(index, sgrEnd + 1);
+        index = sgrEnd;
+        continue;
+      }
+    }
+
+    if (char === '\r') {
+      currentLine = '';
+      continue;
+    }
+
+    if (char === '\b') {
+      currentLine = currentLine.slice(0, -1);
+      continue;
+    }
+
+    if (char === '\n') {
+      normalized += `${currentLine}\n`;
+      currentLine = '';
+      continue;
+    }
+
+    if (char === '\t' || char >= ' ') {
+      currentLine += char;
+    }
+  }
+
+  return normalized + currentLine;
+}
 
 /** Convert raw terminal output with ANSI escapes into safe HTML. */
 export function ansiToHtml(raw: string): string {
+  const normalized = normalizeTerminalText(raw);
   const SGR = new RegExp(String.fromCharCode(27) + "\\[([0-9;]*)m", "g");
   let html = '';
   let last = 0;
   const openSpans: number[] = [];
 
-  for (const m of raw.matchAll(SGR)) {
+  for (const m of normalized.matchAll(SGR)) {
     if (m.index !== undefined && m.index > last) {
-      html += escapeHtml(raw.slice(last, m.index));
+      html += escapeHtml(normalized.slice(last, m.index));
     }
     last = (m.index ?? 0) + m[0].length;
 
@@ -49,7 +108,7 @@ export function ansiToHtml(raw: string): string {
     }
   }
 
-  if (last < raw.length) html += escapeHtml(raw.slice(last));
+  if (last < normalized.length) html += escapeHtml(normalized.slice(last));
   html += '</span>'.repeat(openSpans.length);
   return html;
 }
