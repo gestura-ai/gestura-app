@@ -42,8 +42,14 @@ import type {
   TaskRuntimeSnapshot,
   KnowledgeItem,
   StatusState,
+  ShellSessionRecord,
 } from '../types';
 import { buildShellCommandLine } from '../utils/shellTranscript';
+import {
+  applyShellLifecyclePayload,
+  applyShellOutputPayload,
+  applyShellSessionLifecyclePayload,
+} from '../utils/shellSessionState';
 
 // ─── Queued item ──────────────────────────────────────────────────────────────
 
@@ -261,6 +267,14 @@ function toReplayAction(entry: SessionActivityEvent): StreamEventAction | null {
     case 'agent-stream-shell-lifecycle':
       return payloadRecord && typeof payloadRecord.process_id === 'string'
         ? { type: 'shell-lifecycle', processId: payloadRecord.process_id, payload: payloadRecord }
+        : null;
+    case 'agent-stream-shell-session-lifecycle':
+      return payloadRecord && typeof payloadRecord.shell_session_id === 'string'
+        ? {
+          type: 'shell-session-lifecycle',
+          shellSessionId: payloadRecord.shell_session_id,
+          payload: payloadRecord,
+        }
         : null;
     case 'agent-stream-shell-output':
       return payloadRecord && typeof payloadRecord.process_id === 'string'
@@ -666,6 +680,27 @@ function findShellBlockIndex(
     if (processId && block.processId === processId) return true;
     return Boolean(shellSessionId && block.shellSessionId === shellSessionId);
   });
+}
+
+function findShellSessionBlockIndex(blocks: MsgBlock[], shellSessionId: string | null | undefined): number {
+  if (!shellSessionId) return -1;
+  return blocks.findIndex((block) => block.kind === 'shell-session' && block.shellSessionId === shellSessionId);
+}
+
+function updateShellSessionBlock(
+  blocks: MsgBlock[],
+  shellSessionId: string,
+  updater: (current: ShellSessionRecord[]) => ShellSessionRecord[],
+): MsgBlock[] {
+  const index = findShellSessionBlockIndex(blocks, shellSessionId);
+  if (index >= 0) {
+    const updated = updater([blocks[index] as ShellSessionRecord])[0];
+    if (!updated) return blocks;
+    return blocks.map((block, blockIndex) => (blockIndex === index ? updated : block));
+  }
+
+  const created = updater([])[0];
+  return created ? [...blocks, created] : blocks;
 }
 
 function mergeShellCommandLine(lines: ShellLine[], commandLine: ShellLine | null): ShellLine[] {
@@ -1224,6 +1259,27 @@ export function useChatSession(sessionId: string): ChatSessionState {
         break;
       }
 
+      case 'shell-session-lifecycle': {
+        ensureStreamingMsg();
+        if (currentThinkingIdRef.current) {
+          const tid = currentThinkingIdRef.current;
+          updateStreamingBlocks((blocks) =>
+            blocks.map((b) => b.id === tid && b.kind === 'thinking'
+              ? { ...b, done: true, collapsed: b.collapsed || !b.content.trim() }
+              : b)
+          );
+          currentThinkingIdRef.current = null;
+        }
+        const activityAt = Date.now();
+        updateStreamingBlocks((blocks) => updateShellSessionBlock(
+          blocks,
+          action.shellSessionId,
+          (current) => applyShellSessionLifecyclePayload(current, action.payload, activityAt),
+        ));
+        currentTextBlockIdRef.current = null;
+        break;
+      }
+
       case 'shell-lifecycle': {
         ensureStreamingMsg();
         if (currentThinkingIdRef.current) {
@@ -1239,6 +1295,15 @@ export function useChatSession(sessionId: string): ChatSessionState {
         const p = action.payload;
         const shellSessionId = p['shell_session_id'] != null ? String(p['shell_session_id']) : null;
         const activityAt = Date.now();
+        if (shellSessionId) {
+          updateStreamingBlocks((blocks) => updateShellSessionBlock(
+            blocks,
+            shellSessionId,
+            (current) => applyShellLifecyclePayload(current, p, activityAt),
+          ));
+          currentTextBlockIdRef.current = null;
+          break;
+        }
         updateStreamingBlocks((blocks) => {
           const idx = findShellBlockIndex(blocks, pid, shellSessionId);
           const nextState = normalizeShellState(p['state']);
@@ -1294,6 +1359,19 @@ export function useChatSession(sessionId: string): ChatSessionState {
         const pid = action.processId || action.shellSessionId || '';
         if (!pid) break;
         const activityAt = Date.now();
+        if (action.shellSessionId) {
+          updateStreamingBlocks((blocks) => updateShellSessionBlock(
+            blocks,
+            action.shellSessionId,
+            (current) => applyShellOutputPayload(current, {
+              shell_session_id: action.shellSessionId,
+              stream: action.stream,
+              data: action.data,
+            }, activityAt),
+          ));
+          currentTextBlockIdRef.current = null;
+          break;
+        }
         updateStreamingBlocks((blocks) => {
           const idx = findShellBlockIndex(blocks, action.processId, action.shellSessionId);
           if (idx >= 0) {

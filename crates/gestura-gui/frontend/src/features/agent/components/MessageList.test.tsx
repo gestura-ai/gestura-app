@@ -247,6 +247,48 @@ describe('MessageList', () => {
     expect(onRevealShellSession).toHaveBeenCalledWith('shell-session-1');
   });
 
+  it('also hides shell tool cards when chat is rendering a shell-session block', () => {
+    renderMessageList([{
+      id: 'message-2-session',
+      role: 'assistant',
+      rawMarkdown: '',
+      isStreaming: false,
+      timestamp: Date.now(),
+      blocks: [
+        {
+          kind: 'tool',
+          id: 'tool-shell-session',
+          name: 'shell',
+          args: JSON.stringify({ command: 'cargo test' }),
+          status: 'success',
+          result: 'Finished tests',
+          durationMs: 42,
+          collapsed: true,
+        },
+        {
+          kind: 'shell-session',
+          id: 'shell-session-2',
+          shellSessionId: 'shell-session-2',
+          cwd: '/workspace',
+          state: 'Busy',
+          interactive: true,
+          userManaged: false,
+          activeProcessId: 'proc-2',
+          activeCommand: 'cargo test',
+          lastExitCode: null,
+          durationMs: 42,
+          lastActivityAt: Date.now(),
+          lines: [{ stream: 'Stdout', data: 'running tests...\n' }],
+          collapsed: true,
+          availableForReuse: false,
+        },
+      ],
+    }]);
+
+    expect(screen.queryByText('Running shell command')).not.toBeInTheDocument();
+    expect(screen.getByText('cargo test')).toBeInTheDocument();
+  });
+
   it('explains when a stalled inline shell looks like it is waiting for input', () => {
     const nowSpy = vi.spyOn(Date, 'now').mockReturnValue(120_000);
 

@@ -225,7 +225,7 @@ describe('useChatSession', () => {
     expect(screen.getByTestId('runtime-task-snapshot')).toHaveTextContent('verification still required');
   });
 
-  it('materializes the first shell block immediately from shell lifecycle events', async () => {
+  it('materializes a shell session block immediately from session lifecycle events', async () => {
     render(<Harness />);
 
     await waitFor(() => {
@@ -234,14 +234,16 @@ describe('useChatSession', () => {
 
     await act(async () => {
       streamDispatch?.({
-        type: 'shell-lifecycle',
-        processId: 'proc-1',
+        type: 'shell-session-lifecycle',
+        shellSessionId: 'shell-session-1',
         payload: {
-          process_id: 'proc-1',
           shell_session_id: 'shell-session-1',
-          state: 'Started',
-          command: 'cargo test',
+          state: 'Busy',
+          active_process_id: 'proc-1',
+          active_command: 'cargo test',
           cwd: '/workspace',
+          interactive: true,
+          user_managed: false,
         },
       });
     });
@@ -250,11 +252,11 @@ describe('useChatSession', () => {
     expect(blocks).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
-          kind: 'shell',
-          processId: 'proc-1',
+          kind: 'shell-session',
           shellSessionId: 'shell-session-1',
-          state: 'Started',
-          command: 'cargo test',
+          state: 'Busy',
+          activeProcessId: 'proc-1',
+          activeCommand: 'cargo test',
           cwd: '/workspace',
         }),
       ]),
@@ -279,12 +281,11 @@ describe('useChatSession', () => {
     });
 
     let blocks = JSON.parse(screen.getByTestId('streaming-blocks').textContent ?? '[]') as Array<Record<string, unknown>>;
-    let shellBlock = blocks.find((block) => block.kind === 'shell');
+    let shellBlock = blocks.find((block) => block.kind === 'shell-session');
 
     expect(shellBlock).toEqual(expect.objectContaining({
-      processId: 'proc-out-first',
       shellSessionId: 'shell-session-out-first',
-      state: 'Running',
+      state: 'Idle',
     }));
     expect(shellBlock?.lines).toEqual(expect.arrayContaining([
       expect.objectContaining({ data: 'compiling...\n' }),
@@ -305,17 +306,77 @@ describe('useChatSession', () => {
     });
 
     blocks = JSON.parse(screen.getByTestId('streaming-blocks').textContent ?? '[]');
-    shellBlock = blocks.find((block) => block.kind === 'shell');
+    shellBlock = blocks.find((block) => block.kind === 'shell-session');
     const lines = Array.isArray(shellBlock?.lines) ? shellBlock.lines as Array<Record<string, unknown>> : [];
 
     expect(shellBlock).toEqual(expect.objectContaining({
-      processId: 'proc-out-first',
       shellSessionId: 'shell-session-out-first',
-      command: 'cargo check',
+      state: 'Busy',
+      activeProcessId: 'proc-out-first',
+      activeCommand: 'cargo check',
       cwd: '/workspace',
     }));
     expect(String(lines[0]?.data ?? '')).toContain('cargo check');
     expect(String(lines[1]?.data ?? '')).toContain('compiling...');
+    expect(blocks.find((block) => block.kind === 'shell')).toBeUndefined();
+  });
+
+  it('keeps a session-backed shell transcript reusable after a failed command', async () => {
+    render(<Harness />);
+
+    await waitFor(() => {
+      expect(streamDispatch).not.toBeNull();
+    });
+
+    await act(async () => {
+      streamDispatch?.({
+        type: 'shell-lifecycle',
+        processId: 'proc-failed-1',
+        payload: {
+          process_id: 'proc-failed-1',
+          shell_session_id: 'shell-session-failed-1',
+          state: 'Started',
+          command: 'cargo test --workspace',
+          cwd: '/workspace',
+        },
+      });
+      streamDispatch?.({
+        type: 'shell-output',
+        processId: 'proc-failed-1',
+        shellSessionId: 'shell-session-failed-1',
+        stream: 'Stderr',
+        data: 'error: test failed\n',
+      });
+      streamDispatch?.({
+        type: 'shell-lifecycle',
+        processId: 'proc-failed-1',
+        payload: {
+          process_id: 'proc-failed-1',
+          shell_session_id: 'shell-session-failed-1',
+          state: 'Failed',
+          command: 'cargo test --workspace',
+          cwd: '/workspace',
+          exit_code: 1,
+          duration_ms: 55,
+        },
+      });
+    });
+
+    const blocks = JSON.parse(screen.getByTestId('streaming-blocks').textContent ?? '[]') as Array<Record<string, unknown>>;
+    const shellBlock = blocks.find((block) => block.kind === 'shell-session');
+    const lines = Array.isArray(shellBlock?.lines) ? shellBlock.lines as Array<Record<string, unknown>> : [];
+
+    expect(shellBlock).toEqual(expect.objectContaining({
+      shellSessionId: 'shell-session-failed-1',
+      state: 'Idle',
+      activeProcessId: null,
+      activeCommand: null,
+      lastExitCode: 1,
+      availableForReuse: true,
+    }));
+    expect(lines.some((line) => String(line.data ?? '').includes('cargo test --workspace'))).toBe(true);
+    expect(lines.some((line) => String(line.data ?? '').includes('error: test failed'))).toBe(true);
+    expect(blocks.find((block) => block.kind === 'shell')).toBeUndefined();
   });
 
   it('marks stop as in progress on the first click and ignores repeated clicks', async () => {
@@ -643,13 +704,14 @@ describe('useChatSession', () => {
       streamDispatch?.({
         type: 'shell-output',
         processId: 'proc-shell-1',
+        shellSessionId: 'shell-session-1',
         stream: 'Stdout',
         data: 'running tests...\n',
       });
     });
 
     const blocks = JSON.parse(screen.getByTestId('streaming-blocks').textContent ?? '[]') as Array<Record<string, unknown>>;
-    const shellBlock = blocks.find((block) => block.kind === 'shell');
+    const shellBlock = blocks.find((block) => block.kind === 'shell-session');
     const lines = Array.isArray(shellBlock?.lines) ? shellBlock.lines as Array<Record<string, unknown>> : [];
 
     expect(String(lines[0]?.data ?? '')).toContain('cargo test --workspace');

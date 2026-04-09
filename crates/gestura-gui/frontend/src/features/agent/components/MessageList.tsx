@@ -390,7 +390,7 @@ const MessageView: React.FC<{
   const copyText = useCallback(() => {
     navigator.clipboard.writeText(message.rawMarkdown).catch(console.error);
   }, [message.rawMarkdown]);
-  const hasShellBlock = message.blocks.some((block) => block.kind === 'shell');
+  const hasShellBlock = message.blocks.some((block) => block.kind === 'shell' || block.kind === 'shell-session');
   const firstNarrationIndex = message.blocks.findIndex((block) => block.kind === 'narration');
 
   return (
