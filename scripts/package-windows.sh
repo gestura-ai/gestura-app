@@ -246,6 +246,24 @@ build_gui() {
   (cd "$GUI_DIR" && cargo tauri build --features "$FEATURES" --target "$TARGET_TRIPLE")
 }
 
+# sync_signed_cli restores the signed CLI sidecar produced during the Tauri
+# bundle process back to the standalone CLI output path used for zipping and
+# CI signature verification.
+sync_signed_cli() {
+  if ! windows_signing_enabled; then
+    return 0
+  fi
+
+  local signed_sidecar="${GUI_DIR}/binaries/${APP_NAME}-${TARGET_TRIPLE}.exe"
+  local cli_dst="target/${TARGET_TRIPLE}/release/${APP_NAME}.exe"
+
+  [ -f "$signed_sidecar" ] || die "Signed CLI sidecar not found at ${signed_sidecar}"
+  [ -f "$cli_dst" ] || die "Standalone CLI binary not found at ${cli_dst}"
+
+  cp "$signed_sidecar" "$cli_dst"
+  log_info "Synchronized signed CLI back to ${cli_dst}"
+}
+
 # collect_artifacts copies the MSI output and standalone CLI archive into the dist
 # dir with canonical names.
 collect_artifacts() {
@@ -321,6 +339,7 @@ main() {
   stage_ffmpeg
   patch_tauri_windows_signing
   build_gui
+  sync_signed_cli
   collect_artifacts
 }
 
