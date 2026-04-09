@@ -2740,7 +2740,7 @@ dependencies = [
 
 [[package]]
 name = "gestura-cli"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "arboard",
  "assert_cmd",
@@ -2777,7 +2777,7 @@ dependencies = [
 
 [[package]]
 name = "gestura-core"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "ashpd",
  "async-trait",
@@ -2848,7 +2848,7 @@ dependencies = [
 
 [[package]]
 name = "gestura-core-a2a"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "chrono",
  "gestura-core-foundation",
@@ -2863,7 +2863,7 @@ dependencies = [
 
 [[package]]
 name = "gestura-core-agents"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "async-trait",
  "chrono",
@@ -2876,7 +2876,7 @@ dependencies = [
 
 [[package]]
 name = "gestura-core-analytics"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "chrono",
  "gestura-core-foundation",
@@ -2889,7 +2889,7 @@ dependencies = [
 
 [[package]]
 name = "gestura-core-audio"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "async-trait",
  "chrono",
@@ -2911,7 +2911,7 @@ dependencies = [
 
 [[package]]
 name = "gestura-core-config"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "dirs",
  "gestura-core-foundation",
@@ -2930,7 +2930,7 @@ dependencies = [
 
 [[package]]
 name = "gestura-core-context"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "gestura-core-foundation",
  "regex",
@@ -2941,7 +2941,7 @@ dependencies = [
 
 [[package]]
 name = "gestura-core-explorer"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "serde",
  "serde_json",
@@ -2952,7 +2952,7 @@ dependencies = [
 
 [[package]]
 name = "gestura-core-foundation"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "async-trait",
  "chrono",
@@ -2972,7 +2972,7 @@ dependencies = [
 
 [[package]]
 name = "gestura-core-hooks"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "async-trait",
  "gestura-core-config",
@@ -2982,7 +2982,7 @@ dependencies = [
 
 [[package]]
 name = "gestura-core-ipc"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "serde",
  "serde_json",
@@ -2993,7 +2993,7 @@ dependencies = [
 
 [[package]]
 name = "gestura-core-knowledge"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "dirs",
  "serde",
@@ -3005,7 +3005,7 @@ dependencies = [
 
 [[package]]
 name = "gestura-core-llm"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "async-trait",
  "chrono",
@@ -3020,7 +3020,7 @@ dependencies = [
 
 [[package]]
 name = "gestura-core-mcp"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "async-trait",
  "chrono",
@@ -3038,7 +3038,7 @@ dependencies = [
 
 [[package]]
 name = "gestura-core-memory-bank"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "chrono",
  "serde",
@@ -3051,7 +3051,7 @@ dependencies = [
 
 [[package]]
 name = "gestura-core-nats"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "async-nats",
  "bytes",
@@ -3065,7 +3065,7 @@ dependencies = [
 
 [[package]]
 name = "gestura-core-pipeline"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "chrono",
  "gestura-core-foundation",
@@ -3075,7 +3075,7 @@ dependencies = [
 
 [[package]]
 name = "gestura-core-plugins"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "chrono",
  "gestura-core-foundation",
@@ -3088,7 +3088,7 @@ dependencies = [
 
 [[package]]
 name = "gestura-core-retry"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "gestura-core-foundation",
  "rand 0.8.5",
@@ -3099,7 +3099,7 @@ dependencies = [
 
 [[package]]
 name = "gestura-core-scripting"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "chrono",
  "gestura-core-foundation",
@@ -3113,7 +3113,7 @@ dependencies = [
 
 [[package]]
 name = "gestura-core-security"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "async-trait",
  "chrono",
@@ -3132,7 +3132,7 @@ dependencies = [
 
 [[package]]
 name = "gestura-core-sessions"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "chrono",
  "dirs",
@@ -3149,7 +3149,7 @@ dependencies = [
 
 [[package]]
 name = "gestura-core-streaming"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "futures-util",
  "gestura-core-foundation",
@@ -3165,7 +3165,7 @@ dependencies = [
 
 [[package]]
 name = "gestura-core-tasks"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "chrono",
  "dirs",
@@ -3179,7 +3179,7 @@ dependencies = [
 
 [[package]]
 name = "gestura-core-tools"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -3206,7 +3206,7 @@ dependencies = [
 
 [[package]]
 name = "gestura-gui"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "ashpd",
  "async-nats",
