@@ -1294,7 +1294,7 @@ impl AgentPipeline {
                     crate::streaming::NarrationStage::Execution
                 },
                 format!(
-                    "I’m running a direct command{focus_suffix}{task_suffix} to get an execution signal instead of guessing from the code alone.",
+                    "I’m running a direct command{focus_suffix}{task_suffix} and waiting on its result before I choose the next move, instead of guessing from the code alone.",
                 ),
             ),
             "web" | "web_search" => (
@@ -1611,44 +1611,44 @@ impl AgentPipeline {
         let command_hint = Self::truncate_public_narration_hint(command, 96);
         if Self::is_non_mutating_shell_probe_command(command) {
             return format!(
-                "I’m checking the command surface{task_suffix} with `{command_hint}` before I treat this step as real execution."
+                "I’m checking the command surface{task_suffix} with `{command_hint}` and waiting for that result before I treat this step as real execution."
             );
         }
 
         if Self::is_scaffold_or_init_shell_command_text(command) {
             return format!(
-                "I’m running the scaffold command{task_suffix} with `{command_hint}` so I can confirm the project skeleton actually materializes."
+                "I’m running the scaffold command{task_suffix} with `{command_hint}` and waiting for the result so I can confirm the project skeleton actually materializes."
             );
         }
 
         if Self::is_test_command(command) {
             return format!(
-                "I’m running a test command{task_suffix} with `{command_hint}` so the next decision is grounded in observed verification."
+                "I’m running a test command{task_suffix} with `{command_hint}` and waiting for observed verification before I choose the next move."
             );
         }
 
         if Self::is_build_or_check_command(command) {
             return format!(
-                "I’m running a build/check command{task_suffix} with `{command_hint}` to see whether this branch holds up under real execution."
+                "I’m running a build/check command{task_suffix} with `{command_hint}` and waiting to see whether this branch holds up under real execution."
             );
         }
 
         format!(
-            "I’m using a direct command{task_suffix} with `{command_hint}` to get an execution signal instead of guessing from the code alone."
+            "I’m using a direct command{task_suffix} with `{command_hint}` and waiting for its result before I choose the next move instead of guessing from the code alone."
         )
     }
 
     fn public_shell_batch_start_next_step_hint(command: &str) -> &'static str {
         if Self::is_non_mutating_shell_probe_command(command) {
-            "This result should tell me the real invocation path before I count the step as implementation progress."
+            "Once this command finishes, I’ll use the result to confirm the real invocation path before I count the step as implementation progress."
         } else if Self::is_scaffold_or_init_shell_command_text(command) {
-            "The command result should show whether the scaffold actually created the expected starting point or whether setup still needs another step."
+            "Once this command finishes, I’ll check whether the scaffold created the expected starting point or whether setup still needs another step."
         } else if Self::is_test_command(command) {
-            "The test result should tell me whether the current branch is verified or whether I need another targeted edit."
+            "Once this test command finishes, I’ll use the result to decide whether the current branch is verified or still needs another targeted edit."
         } else if Self::is_build_or_check_command(command) {
-            "The build result should tell me whether this branch is holding together under real execution or still needs another edit."
+            "Once this build/check command finishes, I’ll use the result to decide whether this branch is holding together under real execution or still needs another edit."
         } else {
-            "The command result should tell me whether this branch is working, failing under real execution, or still needs another edit."
+            "Once this command finishes, I’ll use the result to decide whether this branch is working, failing under real execution, or still needs another edit."
         }
     }
 
@@ -15573,8 +15573,20 @@ mod tests {
         );
 
         assert!(probe.contains("checking the command surface"));
+        assert!(probe.contains("waiting"));
         assert!(build.contains("running a build/check command"));
+        assert!(build.contains("waiting"));
         assert!(test.contains("running a test command"));
+        assert!(test.contains("waiting"));
+    }
+
+    #[test]
+    fn shell_batch_start_next_step_hint_waits_for_command_completion() {
+        let generic = AgentPipeline::public_shell_batch_start_next_step_hint("cargo fmt --check");
+        let test = AgentPipeline::public_shell_batch_start_next_step_hint("cargo test --quiet");
+
+        assert!(generic.starts_with("Once this command finishes"));
+        assert!(test.starts_with("Once this test command finishes"));
     }
 
     #[test]
@@ -15963,6 +15975,19 @@ mod tests {
         .expect("web_search narration should be available");
 
         assert!(message.contains("about \"smart lighting market 2025 consumer drivers\""));
+    }
+
+    #[test]
+    fn shell_tool_narration_stays_anchored_to_the_running_command() {
+        let (_, message, _) = AgentPipeline::tool_narration(
+            "shell",
+            Some(r#"{"command":"cargo test --quiet"}"#),
+            None,
+        )
+        .expect("shell narration should be available");
+
+        assert!(message.contains("waiting on its result before I choose the next move"));
+        assert!(message.contains("cargo test --quiet"));
     }
 
     #[test]
