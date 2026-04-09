@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-Current development on the `dev` branch is tracking the `0.8.0` release line as the baseline for upcoming changes.
+## [0.8.1] - 2026-04-08
 
 ### Changed
 
@@ -23,7 +23,6 @@ Current development on the `dev` branch is tracking the `0.8.0` release line as 
 - Shell tool executions now preserve session routing metadata across normal runs, confirmed follow-up execution, and reflection retries so PTY-backed sessions keep their `shell_session_id` and remain linkable in Shell Manager.
 - Inline chat shell output now shows the executed command, strips leaked control-sequence artifacts more reliably, and surfaces the Shell Manager link as soon as the shell session starts instead of after the stream finishes.
 - First shell requests now register shell stream listeners in parallel, preserve `shell_session_id` on output-first events, and keep the chat timeline synchronized with live shell activity instead of showing the session only after the process is already underway.
-
 
 ### Added
 

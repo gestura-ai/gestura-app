@@ -591,8 +591,7 @@ mod tests {
         let status = tools.status();
         // Should succeed since we're in a git repo
         assert!(status.is_ok());
-        let status = status.unwrap();
-        assert!(!status.branch.is_empty());
+        // Branch may be empty in detached HEAD state (e.g. CI shallow clones)
     }
 
     #[test]
