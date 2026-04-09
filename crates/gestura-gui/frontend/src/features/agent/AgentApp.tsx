@@ -98,7 +98,7 @@ const AgentApp: React.FC<AgentAppProps> = ({ sessionId }) => {
   const { viewMode, toggleViewMode } = useViewMode();
   const panelState = usePanelState();
   const toastState = useToast();
-  const shellSessions = useShellSessions(sessionId, { restoreHistory: panelState.shellManager.visible });
+  const shellSessions = useShellSessions(sessionId, { restoreHistory: true });
   const [uiSettings, setUiSettings] = useState<UiSettings>({ theme_mode: 'system', accent: 'blue' });
   const [explorerOpen, setExplorerOpen] = useState(true);
   const [chatOpen, setChatOpen] = useState(true);
@@ -453,6 +453,7 @@ const AgentApp: React.FC<AgentAppProps> = ({ sessionId }) => {
                 quickAccessHost={quickAccessHost}
                 panelState={panelState}
                 toastState={toastState}
+                shellSessions={shellSessions}
               />
             </div>
           </div>

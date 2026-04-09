@@ -371,6 +371,10 @@ export interface ChatSessionState {
   refreshToolSettings: () => Promise<void>;
 }
 
+export interface ChatSessionOptions {
+  shellSessions?: ShellSessionRecord[];
+}
+
 // ─── Helper — build a contextual iteration marker label ───────────────────────
 
 interface LastToolContext {
@@ -715,6 +719,195 @@ function isStreamingPlaceholderMessage(message: AgentMessage | null | undefined)
   return message.blocks.length === 0;
 }
 
+function isActiveShellSession(shell: ShellSessionRecord): boolean {
+  return shell.state === 'Starting' || shell.state === 'Busy' || shell.state === 'Interrupting';
+}
+
+function isReusableIdleShellSession(shell: ShellSessionRecord): boolean {
+  return shell.state === 'Idle' && shell.availableForReuse && !shell.userManaged;
+}
+
+function cloneShellSessionBlock(
+  shell: ShellSessionRecord,
+  options: { id?: string; collapsed?: boolean } = {},
+): ShellSessionRecord {
+  return {
+    ...shell,
+    id: options.id ?? shell.id,
+    collapsed: options.collapsed ?? shell.collapsed,
+    lines: shell.lines.map((line) => ({ ...line })),
+  };
+}
+
+function createPendingReusableShellSessionBlock(shell: ShellSessionRecord, activityAt: number): ShellSessionRecord {
+  return cloneShellSessionBlock({
+    ...shell,
+    state: 'Starting',
+    activeProcessId: null,
+    activeCommand: null,
+    lastActivityAt: activityAt,
+    availableForReuse: false,
+  });
+}
+
+function findSingleReusableShellSession(shellSessions: ShellSessionRecord[]): ShellSessionRecord | null {
+  const reusable = shellSessions
+    .filter(isReusableIdleShellSession)
+    .sort((left, right) => {
+      const leftActivity = left.lastActivityAt ?? left.startedAt ?? 0;
+      const rightActivity = right.lastActivityAt ?? right.startedAt ?? 0;
+      return rightActivity - leftActivity;
+    });
+
+  return reusable.length === 1 ? reusable[0] : null;
+}
+
+function shellLinesEqual(left: ShellSessionRecord['lines'], right: ShellSessionRecord['lines']): boolean {
+  return left.length === right.length
+    && left.every((line, index) => line.stream === right[index]?.stream && line.data === right[index]?.data);
+}
+
+function shellSessionBlocksEqual(left: ShellSessionRecord, right: ShellSessionRecord): boolean {
+  return left.shellSessionId === right.shellSessionId
+    && left.cwd === right.cwd
+    && left.state === right.state
+    && left.interactive === right.interactive
+    && left.userManaged === right.userManaged
+    && (left.activeProcessId ?? null) === (right.activeProcessId ?? null)
+    && (left.activeCommand ?? null) === (right.activeCommand ?? null)
+    && (left.lastExitCode ?? null) === (right.lastExitCode ?? null)
+    && (left.durationMs ?? null) === (right.durationMs ?? null)
+    && (left.startedAt ?? null) === (right.startedAt ?? null)
+    && (left.lastActivityAt ?? null) === (right.lastActivityAt ?? null)
+    && left.collapsed === right.collapsed
+    && left.availableForReuse === right.availableForReuse
+    && shellLinesEqual(left.lines, right.lines);
+}
+
+function isRecoverableShellSession(
+  shell: ShellSessionRecord,
+  message: AgentMessage,
+  hasShellToolBlock: boolean,
+): boolean {
+  if (shell.userManaged || !isActiveShellSession(shell)) {
+    return false;
+  }
+
+  if (hasShellToolBlock) {
+    return true;
+  }
+
+  const activityAt = shell.lastActivityAt ?? shell.startedAt ?? null;
+  return activityAt != null && activityAt >= message.timestamp - 15_000;
+}
+
+function reconcileStreamingMessageShellSessions(
+  message: AgentMessage | null,
+  shellSessions: ShellSessionRecord[],
+  isProcessing: boolean,
+): AgentMessage | null {
+  if (!message || !isProcessing || shellSessions.length === 0) {
+    return message;
+  }
+
+  const hasShellToolBlock = message.blocks.some((block) => block.kind === 'tool' && block.name === 'shell');
+  const existingSessionIds = new Set(
+    message.blocks
+      .filter((block): block is ShellSessionRecord => block.kind === 'shell-session')
+      .map((block) => block.shellSessionId),
+  );
+
+  const matchingShellSessionIds = new Set<string>();
+  const matchingProcessIds = new Set<string>();
+  message.blocks.forEach((block) => {
+    if (block.kind === 'shell-session') {
+      matchingShellSessionIds.add(block.shellSessionId);
+      if (block.activeProcessId) matchingProcessIds.add(block.activeProcessId);
+      return;
+    }
+
+    if (block.kind === 'shell') {
+      if (block.shellSessionId) matchingShellSessionIds.add(block.shellSessionId);
+      if (block.processId) matchingProcessIds.add(block.processId);
+    }
+  });
+
+  const candidates = shellSessions.filter((shell) => {
+    if (matchingShellSessionIds.has(shell.shellSessionId)) {
+      return true;
+    }
+    if (shell.activeProcessId && matchingProcessIds.has(shell.activeProcessId)) {
+      return true;
+    }
+    return isRecoverableShellSession(shell, message, hasShellToolBlock);
+  });
+
+  if (candidates.length === 0) {
+    return message;
+  }
+
+  const candidatesBySessionId = new Map(candidates.map((shell) => [shell.shellSessionId, shell]));
+  const candidatesByProcessId = new Map(
+    candidates
+      .filter((shell) => shell.activeProcessId)
+      .map((shell) => [shell.activeProcessId as string, shell]),
+  );
+
+  let changed = false;
+  const insertedShellIds = new Set<string>();
+  const nextBlocks: MsgBlock[] = [];
+
+  message.blocks.forEach((block) => {
+    if (block.kind === 'shell-session') {
+      const replacement = candidatesBySessionId.get(block.shellSessionId);
+      if (!replacement) {
+        nextBlocks.push(block);
+        return;
+      }
+
+      insertedShellIds.add(replacement.shellSessionId);
+      const nextBlock = cloneShellSessionBlock(replacement, { id: block.id, collapsed: block.collapsed });
+      if (!shellSessionBlocksEqual(block, nextBlock)) {
+        changed = true;
+        nextBlocks.push(nextBlock);
+        return;
+      }
+
+      nextBlocks.push(block);
+      return;
+    }
+
+    if (block.kind === 'shell') {
+      const replacement = (block.shellSessionId && candidatesBySessionId.get(block.shellSessionId))
+        || candidatesByProcessId.get(block.processId);
+      if (!replacement) {
+        nextBlocks.push(block);
+        return;
+      }
+
+      changed = true;
+      if (!insertedShellIds.has(replacement.shellSessionId)) {
+        insertedShellIds.add(replacement.shellSessionId);
+        nextBlocks.push(cloneShellSessionBlock(replacement, { id: block.id, collapsed: block.collapsed }));
+      }
+      return;
+    }
+
+    nextBlocks.push(block);
+  });
+
+  candidates.forEach((shell) => {
+    if (insertedShellIds.has(shell.shellSessionId) || existingSessionIds.has(shell.shellSessionId)) {
+      return;
+    }
+    insertedShellIds.add(shell.shellSessionId);
+    nextBlocks.push(cloneShellSessionBlock(shell));
+    changed = true;
+  });
+
+  return changed ? { ...message, blocks: nextBlocks } : message;
+}
+
 async function waitForNextPaint(): Promise<void> {
   if (typeof window !== 'undefined' && typeof window.requestAnimationFrame === 'function') {
     await new Promise<void>((resolve) => {
@@ -728,7 +921,8 @@ async function waitForNextPaint(): Promise<void> {
 
 // ─── Hook ─────────────────────────────────────────────────────────────────────
 
-export function useChatSession(sessionId: string): ChatSessionState {
+export function useChatSession(sessionId: string, options: ChatSessionOptions = {}): ChatSessionState {
+  const { shellSessions = [] } = options;
   const [messages, setMessages] = useState<AgentMessage[]>([]);
   const [streamingMessage, setStreamingMessage] = useState<AgentMessage | null>(null);
   const [isProcessing, setIsProcessing] = useState(false);
@@ -756,6 +950,7 @@ export function useChatSession(sessionId: string): ChatSessionState {
   const messageQueueRef = useRef<QueuedMessage[]>([]);
   const messagesRef = useRef<AgentMessage[]>([]);
   const streamingMessageRef = useRef<AgentMessage | null>(null);
+  const shellSessionsRef = useRef<ShellSessionRecord[]>(shellSessions);
   const isProcessingRef = useRef(false);
   const statusRef = useRef<StatusState>({ text: 'Ready', kind: 'ready' });
   const retryStatusRestoreRef = useRef<StatusState | null>(null);
@@ -775,6 +970,10 @@ export function useChatSession(sessionId: string): ChatSessionState {
   useEffect(() => {
     streamingMessageRef.current = streamingMessage;
   }, [streamingMessage]);
+
+  useEffect(() => {
+    shellSessionsRef.current = shellSessions;
+  }, [shellSessions]);
 
   useEffect(() => {
     statusRef.current = status;
@@ -987,6 +1186,22 @@ export function useChatSession(sessionId: string): ChatSessionState {
     });
   }, []);
 
+  const bindReusableShellSessionToStreamingMessage = useCallback(() => {
+    const reusableShell = findSingleReusableShellSession(shellSessionsRef.current);
+    if (!reusableShell) {
+      return;
+    }
+
+    const activityAt = Date.now();
+    updateStreamingBlocks((blocks) => {
+      if (blocks.some((block) => block.kind === 'shell' || block.kind === 'shell-session')) {
+        return blocks;
+      }
+
+      return [...blocks, createPendingReusableShellSessionBlock(reusableShell, activityAt)];
+    });
+  }, [updateStreamingBlocks]);
+
   // ── Stream event dispatcher ─────────────────────────────────────────────────
   const handleStreamEvent = useCallback((action: StreamEventAction) => {
     if (
@@ -1190,6 +1405,9 @@ export function useChatSession(sessionId: string): ChatSessionState {
         lastIterationMarkerSignatureRef.current = null;
         const block: ToolBlock = { kind: 'tool', id, name: action.toolName, args: '', status: 'running', collapsed: true };
         updateStreamingBlocks((blocks) => [...blocks, block]);
+        if (action.toolName === 'shell') {
+          bindReusableShellSessionToStreamingMessage();
+        }
         break;
       }
 
@@ -1359,12 +1577,13 @@ export function useChatSession(sessionId: string): ChatSessionState {
         const pid = action.processId || action.shellSessionId || '';
         if (!pid) break;
         const activityAt = Date.now();
-        if (action.shellSessionId) {
+        const shellSessionId = action.shellSessionId;
+        if (shellSessionId) {
           updateStreamingBlocks((blocks) => updateShellSessionBlock(
             blocks,
-            action.shellSessionId,
+            shellSessionId,
             (current) => applyShellOutputPayload(current, {
-              shell_session_id: action.shellSessionId,
+              shell_session_id: shellSessionId,
               stream: action.stream,
               data: action.data,
             }, activityAt),
@@ -1546,6 +1765,7 @@ export function useChatSession(sessionId: string): ChatSessionState {
   }, [
     ensureStreamingMsg,
     updateStreamingBlocks,
+    bindReusableShellSessionToStreamingMessage,
     finalizeStream,
     restorePausedMessageToStreaming,
     resetStreamingCursor,
@@ -1558,6 +1778,14 @@ export function useChatSession(sessionId: string): ChatSessionState {
   ]);
 
   useStreamEvents(sessionId, handleStreamEvent);
+
+  useEffect(() => {
+    if (shellSessions.length === 0) {
+      return;
+    }
+
+    setStreamingMessage((prev) => reconcileStreamingMessageShellSessions(prev, shellSessions, isProcessingRef.current));
+  }, [isProcessing, shellSessions, streamingMessage?.id]);
 
   // ── Load session history on mount ───────────────────────────────────────────
   useEffect(() => {

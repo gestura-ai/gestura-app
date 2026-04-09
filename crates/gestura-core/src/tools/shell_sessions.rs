@@ -2150,6 +2150,106 @@ mod imp {
 
         #[cfg(not(target_os = "windows"))]
         #[tokio::test]
+        async fn reused_session_emits_busy_before_started_for_follow_up_command() {
+            run_pty_test("pty-reuse-order-pool", async move {
+                let (tx, rx) = mpsc::channel(128);
+                let collector = spawn_chunk_collector(rx);
+
+                let first_command = simple_output_command("first");
+                execute_in_session(
+                    "pty-reuse-order-pool",
+                    std::env::current_dir()
+                        .ok()
+                        .and_then(|p| p.to_str().map(ToOwned::to_owned))
+                        .as_deref(),
+                    first_command.as_str(),
+                    None,
+                    Some(10),
+                    tx.clone(),
+                )
+                .await
+                .expect("first command result");
+
+                let second_command = simple_output_command("second");
+                execute_in_session(
+                    "pty-reuse-order-pool",
+                    std::env::current_dir()
+                        .ok()
+                        .and_then(|p| p.to_str().map(ToOwned::to_owned))
+                        .as_deref(),
+                    second_command.as_str(),
+                    None,
+                    Some(10),
+                    tx.clone(),
+                )
+                .await
+                .expect("second command result");
+
+                shutdown_session("pty-reuse-order-pool")
+                    .await
+                    .expect("shutdown PTY reuse-order session pool");
+
+                drop(tx);
+                let chunks = tokio::time::timeout(Duration::from_secs(5), collector)
+                    .await
+                    .expect("timed out collecting reuse-order shell chunks")
+                    .expect("reuse-order collector should join");
+
+                let reused_session_id = chunks
+                    .iter()
+                    .find_map(|chunk| match chunk {
+                        StreamChunk::ShellLifecycle {
+                            shell_session_id: Some(shell_session_id),
+                            state: ShellProcessState::Started,
+                            ..
+                        } => Some(shell_session_id.clone()),
+                        _ => None,
+                    })
+                    .expect("expected started shell lifecycle event for reused session");
+
+                let busy_indices = chunks
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(index, chunk)| match chunk {
+                        StreamChunk::ShellSessionLifecycle {
+                            shell_session_id,
+                            state: ShellSessionState::Busy,
+                            interactive: false,
+                            user_managed: false,
+                            ..
+                        } if shell_session_id == &reused_session_id => Some(index),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>();
+
+                let started_indices = chunks
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(index, chunk)| match chunk {
+                        StreamChunk::ShellLifecycle {
+                            shell_session_id: Some(shell_session_id),
+                            state: ShellProcessState::Started,
+                            ..
+                        } if shell_session_id == &reused_session_id => Some(index),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>();
+
+                assert!(
+                    busy_indices.len() >= 2,
+                    "expected two busy shell session lifecycle events for reused session, got {chunks:?}"
+                );
+                assert!(
+                    started_indices.len() >= 2,
+                    "expected two started shell lifecycle events for reused session, got {chunks:?}"
+                );
+                assert!(busy_indices[1] < started_indices[1]);
+            })
+            .await;
+        }
+
+        #[cfg(not(target_os = "windows"))]
+        #[tokio::test]
         async fn execute_in_session_emits_session_lifecycle_to_caller_stream() {
             run_pty_test("pty-session-lifecycle-stream", async move {
                 let (tx, rx) = mpsc::channel(128);

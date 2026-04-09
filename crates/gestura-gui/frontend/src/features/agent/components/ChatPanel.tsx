@@ -11,6 +11,7 @@ import '../ChatPanel.css';
 import { useChatSession } from '../hooks/useChatSession';
 import type { PanelName, PanelState } from '../hooks/usePanelState';
 import type { ToastState } from '../hooks/useToast';
+import type { ShellSessionRecord } from '../types';
 import { TASK_LINK_SCHEME } from '../utils/taskLinks';
 import { MessageList } from './MessageList';
 import { MessageInput, QuickAccessBar } from './MessageInput';
@@ -40,6 +41,8 @@ export interface ChatPanelProps {
   panelState: PanelState;
   /** App-scoped toast state. */
   toastState: ToastState;
+  /** Durable shell session state shared with Shell Manager. */
+  shellSessions?: ShellSessionRecord[];
 }
 
 export const ChatPanel: React.FC<ChatPanelProps> = ({
@@ -51,6 +54,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
   quickAccessHost,
   panelState,
   toastState,
+  shellSessions = [],
 }) => {
   const [cliInstalled, setCliInstalled] = useState(false);
   const [highlightedTaskId, setHighlightedTaskId] = useState<string | null>(null);
@@ -61,7 +65,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
     sendMessage, cancelStream, resumeStream, canResume, isResuming, resolveConfirmation,
     toggleVoice, enhanceText,
     refreshTasks, refreshKnowledge, refreshToolSettings,
-  } = useChatSession(sessionId);
+  } = useChatSession(sessionId, { shellSessions });
 
   const {
     isOpen,

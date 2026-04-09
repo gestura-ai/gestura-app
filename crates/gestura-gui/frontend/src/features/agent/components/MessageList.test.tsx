@@ -38,7 +38,7 @@ function renderMessageList(
   userScrolledUp = false,
   streamingMessage: AgentMessage | null = null,
 ) {
-  render(
+  const renderResult = render(
     <MessageList
       messages={messages}
       streamingMessage={streamingMessage}
@@ -49,7 +49,7 @@ function renderMessageList(
     />,
   );
 
-  return { onRevealShellSession };
+  return { ...renderResult, onRevealShellSession };
 }
 
 describe('MessageList', () => {
@@ -287,6 +287,109 @@ describe('MessageList', () => {
 
     expect(screen.queryByText('Running shell command')).not.toBeInTheDocument();
     expect(screen.getByText('cargo test')).toBeInTheDocument();
+  });
+
+  it('shows Complete for a successfully finished inline shell session', () => {
+    renderMessageList([{
+      id: 'message-complete-shell',
+      role: 'assistant',
+      rawMarkdown: '',
+      isStreaming: false,
+      timestamp: Date.now(),
+      blocks: [
+        {
+          kind: 'shell-session',
+          id: 'shell-session-complete',
+          shellSessionId: 'shell-session-complete',
+          cwd: '/workspace',
+          state: 'Idle',
+          interactive: true,
+          userManaged: false,
+          activeProcessId: null,
+          activeCommand: null,
+          lastExitCode: 0,
+          durationMs: 4200,
+          lastActivityAt: Date.now(),
+          lines: [{ stream: 'Stdout', data: '$ cargo test\nAll tests passed\n' }],
+          collapsed: true,
+          availableForReuse: true,
+        },
+      ],
+    }]);
+
+    expect(screen.getByText('Complete')).toBeInTheDocument();
+    expect(screen.queryByText('Idle')).not.toBeInTheDocument();
+  });
+
+  it('automatically collapses an inline shell session when it completes successfully', () => {
+    const timestamp = Date.now();
+    const baseMessage: AgentMessage = {
+      id: 'message-auto-collapse-shell',
+      role: 'assistant',
+      rawMarkdown: '',
+      isStreaming: false,
+      timestamp,
+      blocks: [
+        {
+          kind: 'shell-session',
+          id: 'shell-session-auto-collapse',
+          shellSessionId: 'shell-session-auto-collapse',
+          cwd: '/workspace',
+          state: 'Busy',
+          interactive: true,
+          userManaged: false,
+          activeProcessId: 'proc-auto-collapse',
+          activeCommand: 'cargo test',
+          lastExitCode: null,
+          durationMs: null,
+          lastActivityAt: timestamp,
+          lines: [{ stream: 'Stdout', data: '$ cargo test\nrunning...\n' }],
+          collapsed: true,
+          availableForReuse: false,
+        },
+      ],
+    };
+
+    const { rerender } = renderMessageList([baseMessage]);
+
+    fireEvent.click(screen.getByRole('button', { name: /cargo test/i }));
+    expect(screen.getByText('/workspace')).toBeInTheDocument();
+
+    rerender(
+      <MessageList
+        messages={[{
+          ...baseMessage,
+          blocks: [
+            {
+              kind: 'shell-session',
+              id: 'shell-session-auto-collapse',
+              shellSessionId: 'shell-session-auto-collapse',
+              cwd: '/workspace',
+              state: 'Idle',
+              interactive: true,
+              userManaged: false,
+              activeProcessId: null,
+              activeCommand: null,
+              lastExitCode: 0,
+              durationMs: 1200,
+              lastActivityAt: timestamp + 1000,
+              lines: [{ stream: 'Stdout', data: '$ cargo test\nAll tests passed\n' }],
+              collapsed: false,
+              availableForReuse: true,
+            },
+          ],
+        }]}
+        streamingMessage={null}
+        tasks={[]}
+        userScrolledUp={false}
+        onScrollChange={vi.fn()}
+        onRevealShellSession={vi.fn()}
+      />,
+    );
+
+    expect(screen.queryByText('/workspace')).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /Interactive shell session/i })).toHaveAttribute('aria-expanded', 'false');
+    expect(screen.getByText('Complete')).toBeInTheDocument();
   });
 
   it('explains when a stalled inline shell looks like it is waiting for input', () => {

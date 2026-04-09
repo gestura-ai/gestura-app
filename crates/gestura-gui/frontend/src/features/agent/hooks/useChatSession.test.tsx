@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { useChatSession } from './useChatSession';
 import type { StreamEventDispatch } from './useStreamEvents';
+import type { ShellSessionRecord } from '../types';
 
 let streamDispatch: StreamEventDispatch | null = null;
 
@@ -88,8 +89,8 @@ function blocksToText(
     .join('|');
 }
 
-function Harness() {
-  const state = useChatSession('session-123');
+function Harness({ shellSessions = [] }: { shellSessions?: ShellSessionRecord[] }) {
+  const state = useChatSession('session-123', { shellSessions });
   return (
     <div>
       <div data-testid="status">{state.status.text}</div>
@@ -559,6 +560,174 @@ describe('useChatSession', () => {
     expect(screen.getByTestId('is-processing')).toHaveTextContent('true');
     expect(screen.getByTestId('streaming-present')).toHaveTextContent('true');
     expect(screen.getByTestId('streaming-blocks')).toHaveTextContent('[]');
+  });
+
+  it('recovers an inline shell-session block from shared shell session state during an active request', async () => {
+    sendMessageStreamingMock.mockResolvedValue(undefined);
+
+    const { rerender } = render(<Harness shellSessions={[]} />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('status')).toHaveTextContent('Ready');
+    });
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Send' }));
+    });
+
+    expect(screen.getByTestId('is-processing')).toHaveTextContent('true');
+    expect(screen.getByTestId('streaming-blocks')).toHaveTextContent('[]');
+
+    rerender(
+      <Harness shellSessions={[
+        {
+          kind: 'shell-session',
+          id: 'shell-session-recovered',
+          shellSessionId: 'shell-session-recovered',
+          cwd: '/workspace',
+          state: 'Busy',
+          interactive: true,
+          userManaged: false,
+          activeProcessId: 'proc-recovered',
+          activeCommand: 'cargo test --workspace',
+          lastExitCode: null,
+          durationMs: null,
+          startedAt: Date.now(),
+          lastActivityAt: Date.now(),
+          lines: [{ stream: 'Stdout', data: '$ cargo test --workspace\n' }],
+          collapsed: false,
+          availableForReuse: false,
+        },
+      ]}
+      />,
+    );
+
+    await waitFor(() => {
+      const blocks = JSON.parse(screen.getByTestId('streaming-blocks').textContent ?? '[]') as Array<Record<string, unknown>>;
+      const shellBlock = blocks.find((block) => block.kind === 'shell-session');
+      expect(shellBlock).toEqual(expect.objectContaining({
+        shellSessionId: 'shell-session-recovered',
+        state: 'Busy',
+        activeProcessId: 'proc-recovered',
+        activeCommand: 'cargo test --workspace',
+      }));
+    });
+  });
+
+  it('upgrades a provisional shell block into a shell-session block when shared session state arrives', async () => {
+    sendMessageStreamingMock.mockResolvedValue(undefined);
+    const { rerender } = render(<Harness shellSessions={[]} />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('status')).toHaveTextContent('Ready');
+    });
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Send' }));
+    });
+
+    await waitFor(() => {
+      expect(streamDispatch).not.toBeNull();
+    });
+
+    await act(async () => {
+      streamDispatch?.({
+        type: 'shell-output',
+        processId: 'proc-upgrade',
+        shellSessionId: null,
+        stream: 'Stdout',
+        data: 'running...\n',
+      });
+    });
+
+    let blocks = JSON.parse(screen.getByTestId('streaming-blocks').textContent ?? '[]') as Array<Record<string, unknown>>;
+    expect(blocks.find((block) => block.kind === 'shell')).toBeTruthy();
+
+    rerender(
+      <Harness shellSessions={[
+        {
+          kind: 'shell-session',
+          id: 'shell-session-upgrade',
+          shellSessionId: 'shell-session-upgrade',
+          cwd: '/workspace',
+          state: 'Busy',
+          interactive: true,
+          userManaged: false,
+          activeProcessId: 'proc-upgrade',
+          activeCommand: 'cargo check',
+          lastExitCode: null,
+          durationMs: null,
+          startedAt: Date.now(),
+          lastActivityAt: Date.now(),
+          lines: [{ stream: 'Stdout', data: '$ cargo check\n' }],
+          collapsed: true,
+          availableForReuse: false,
+        },
+      ]}
+      />,
+    );
+
+    await waitFor(() => {
+      blocks = JSON.parse(screen.getByTestId('streaming-blocks').textContent ?? '[]') as Array<Record<string, unknown>>;
+      expect(blocks.find((block) => block.kind === 'shell')).toBeUndefined();
+      expect(blocks.find((block) => block.kind === 'shell-session')).toEqual(expect.objectContaining({
+        shellSessionId: 'shell-session-upgrade',
+        activeProcessId: 'proc-upgrade',
+      }));
+    });
+  });
+
+  it('prebinds a reusable shell session on shell tool start for follow-up requests', async () => {
+    sendMessageStreamingMock.mockResolvedValue(undefined);
+
+    render(
+      <Harness shellSessions={[
+        {
+          kind: 'shell-session',
+          id: 'shell-session-reuse',
+          shellSessionId: 'shell-session-reuse',
+          cwd: '/workspace',
+          state: 'Idle',
+          interactive: true,
+          userManaged: false,
+          activeProcessId: null,
+          activeCommand: null,
+          lastExitCode: 0,
+          durationMs: 31,
+          startedAt: Date.now() - 2_000,
+          lastActivityAt: Date.now() - 1_000,
+          lines: [{ stream: 'Stdout', data: '$ cargo test --workspace\n' }],
+          collapsed: false,
+          availableForReuse: true,
+        },
+      ]}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByTestId('status')).toHaveTextContent('Ready');
+    });
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Send' }));
+    });
+
+    await waitFor(() => {
+      expect(streamDispatch).not.toBeNull();
+    });
+
+    await act(async () => {
+      streamDispatch?.({ type: 'tool-start', toolName: 'shell', toolCallId: 'tool-shell-reuse' });
+    });
+
+    await waitFor(() => {
+      const blocks = JSON.parse(screen.getByTestId('streaming-blocks').textContent ?? '[]') as Array<Record<string, unknown>>;
+      expect(blocks.find((block) => block.kind === 'shell-session')).toEqual(expect.objectContaining({
+        shellSessionId: 'shell-session-reuse',
+        state: 'Starting',
+        activeProcessId: null,
+      }));
+    });
   });
 
   it('restores the active status after a retry succeeds and streaming resumes', async () => {

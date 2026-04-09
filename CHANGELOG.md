@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Inline chat shell cards now report successfully finished session-backed commands as `Complete` and automatically collapse after the command finishes, reducing transcript noise while keeping failed runs expanded for inspection.
+
+### Fixed
+
+- Follow-up shell requests now pre-bind reusable PTY sessions to the active streaming assistant message, so inline chat surfaces the shell immediately instead of waiting for later lifecycle/output updates.
+- Inline chat now re-reconciles shared shell-session state when a new streaming message is created, preventing delayed shell card hydration when a reusable session becomes active before the message finishes materializing.
+
+### Added
+
+- Regression coverage for follow-up reusable shell requests in chat and for backend PTY reuse event ordering, verifying reused sessions emit `Busy` before `Started` on subsequent commands.
+
 ## [0.8.2] - 2026-04-09
 
 ### Changed
