@@ -15,10 +15,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Follow-up shell requests now pre-bind reusable PTY sessions to the active streaming assistant message, so inline chat surfaces the shell immediately instead of waiting for later lifecycle/output updates.
 - Inline chat now re-reconciles shared shell-session state when a new streaming message is created, preventing delayed shell card hydration when a reusable session becomes active before the message finishes materializing.
+- Reused inline shell sessions now expand again when a follow-up command starts, and chat preserves fresher local in-flight shell state instead of regressing back to a stale reusable `Idle` snapshot during follow-up shell requests.
 
 ### Added
 
 - Regression coverage for follow-up reusable shell requests in chat and for backend PTY reuse event ordering, verifying reused sessions emit `Busy` before `Started` on subsequent commands.
+- Additional frontend regression coverage for reusable shell follow-up flows, including completion→reuse re-expansion and protection against stale `Idle` shared state overwriting locally started `Starting`/`Busy` shell activity.
 
 ## [0.8.2] - 2026-04-09
 

@@ -392,6 +392,112 @@ describe('MessageList', () => {
     expect(screen.getByText('Complete')).toBeInTheDocument();
   });
 
+  it('re-expands an auto-collapsed inline shell session when the reusable session starts another command', () => {
+    const timestamp = Date.now();
+    const baseMessage: AgentMessage = {
+      id: 'message-shell-reexpand',
+      role: 'assistant',
+      rawMarkdown: '',
+      isStreaming: false,
+      timestamp,
+      blocks: [
+        {
+          kind: 'shell-session',
+          id: 'shell-session-reexpand',
+          shellSessionId: 'shell-session-reexpand',
+          cwd: '/workspace',
+          state: 'Busy',
+          interactive: true,
+          userManaged: false,
+          activeProcessId: 'proc-reexpand-1',
+          activeCommand: 'cargo test',
+          lastExitCode: null,
+          durationMs: null,
+          lastActivityAt: timestamp,
+          lines: [{ stream: 'Stdout', data: '$ cargo test\nrunning...\n' }],
+          collapsed: true,
+          availableForReuse: false,
+        },
+      ],
+    };
+
+    const { rerender } = renderMessageList([baseMessage]);
+
+    fireEvent.click(screen.getByRole('button', { name: /cargo test/i }));
+    expect(screen.getByText('/workspace')).toBeInTheDocument();
+
+    rerender(
+      <MessageList
+        messages={[{
+          ...baseMessage,
+          blocks: [
+            {
+              kind: 'shell-session',
+              id: 'shell-session-reexpand',
+              shellSessionId: 'shell-session-reexpand',
+              cwd: '/workspace',
+              state: 'Idle',
+              interactive: true,
+              userManaged: false,
+              activeProcessId: null,
+              activeCommand: null,
+              lastExitCode: 0,
+              durationMs: 1200,
+              lastActivityAt: timestamp + 1000,
+              lines: [{ stream: 'Stdout', data: '$ cargo test\nAll tests passed\n' }],
+              collapsed: false,
+              availableForReuse: true,
+            },
+          ],
+        }]}
+        streamingMessage={null}
+        tasks={[]}
+        userScrolledUp={false}
+        onScrollChange={vi.fn()}
+        onRevealShellSession={vi.fn()}
+      />,
+    );
+
+    expect(screen.queryByText('/workspace')).not.toBeInTheDocument();
+    expect(screen.getByText('Complete')).toBeInTheDocument();
+
+    rerender(
+      <MessageList
+        messages={[{
+          ...baseMessage,
+          blocks: [
+            {
+              kind: 'shell-session',
+              id: 'shell-session-reexpand',
+              shellSessionId: 'shell-session-reexpand',
+              cwd: '/workspace',
+              state: 'Busy',
+              interactive: true,
+              userManaged: false,
+              activeProcessId: 'proc-reexpand-2',
+              activeCommand: 'cargo fmt --check',
+              lastExitCode: 0,
+              durationMs: null,
+              lastActivityAt: timestamp + 2000,
+              lines: [{ stream: 'Stdout', data: '$ cargo fmt --check\nchecking...\n' }],
+              collapsed: false,
+              availableForReuse: false,
+            },
+          ],
+        }]}
+        streamingMessage={null}
+        tasks={[]}
+        userScrolledUp={false}
+        onScrollChange={vi.fn()}
+        onRevealShellSession={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByRole('button', { name: /cargo fmt --check/i })).toHaveAttribute('aria-expanded', 'true');
+    expect(screen.getByText('/workspace')).toBeInTheDocument();
+    expect(screen.getByText('Running…')).toBeInTheDocument();
+  });
+
   it('explains when a stalled inline shell looks like it is waiting for input', () => {
     const nowSpy = vi.spyOn(Date, 'now').mockReturnValue(120_000);
 

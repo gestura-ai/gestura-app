@@ -784,6 +784,25 @@ function shellSessionBlocksEqual(left: ShellSessionRecord, right: ShellSessionRe
     && shellLinesEqual(left.lines, right.lines);
 }
 
+function shouldPreserveFresherLocalShellSession(
+  current: ShellSessionRecord,
+  replacement: ShellSessionRecord,
+): boolean {
+  const currentActivity = current.lastActivityAt ?? current.startedAt ?? 0;
+  const replacementActivity = replacement.lastActivityAt ?? replacement.startedAt ?? 0;
+  const currentRepresentsInFlightOrLocalClaim = current.state !== 'Idle'
+    || Boolean(current.activeProcessId)
+    || Boolean(current.activeCommand)
+    || !current.availableForReuse;
+
+  return currentRepresentsInFlightOrLocalClaim
+    && replacement.state === 'Idle'
+    && !replacement.activeProcessId
+    && !replacement.activeCommand
+    && replacement.availableForReuse
+    && replacementActivity <= currentActivity;
+}
+
 function isRecoverableShellSession(
   shell: ShellSessionRecord,
   message: AgentMessage,
@@ -861,6 +880,12 @@ function reconcileStreamingMessageShellSessions(
     if (block.kind === 'shell-session') {
       const replacement = candidatesBySessionId.get(block.shellSessionId);
       if (!replacement) {
+        nextBlocks.push(block);
+        return;
+      }
+
+      if (shouldPreserveFresherLocalShellSession(block, replacement)) {
+        insertedShellIds.add(block.shellSessionId);
         nextBlocks.push(block);
         return;
       }

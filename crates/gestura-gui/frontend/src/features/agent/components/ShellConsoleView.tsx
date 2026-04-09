@@ -35,6 +35,17 @@ function didRenderableShellCompleteSuccessfully(block: RenderableShell): boolean
   return block.state === 'Completed' && (block.exitCode ?? null) === 0;
 }
 
+function isRenderableShellActivelyRunning(block: RenderableShell): boolean {
+  if (isShellSessionRecord(block)) {
+    return block.state === 'Starting'
+      || block.state === 'Busy'
+      || block.state === 'Interrupting'
+      || block.state === 'Stopping';
+  }
+
+  return block.state === 'Started' || block.state === 'Running' || block.state === 'Resumed';
+}
+
 function isTerminalState(block: RenderableShell): boolean {
   if (isShellSessionRecord(block)) {
     return block.state === 'Stopped' || block.state === 'Failed';
@@ -156,6 +167,7 @@ export const ShellConsoleView: React.FC<ShellConsoleViewProps> = ({
 
   useEffect(() => {
     const isSuccessfullyCompleted = didRenderableShellCompleteSuccessfully(block);
+    const isActivelyRunning = isRenderableShellActivelyRunning(block);
     if (
       variant === 'inline'
       && allowCollapse
@@ -163,6 +175,15 @@ export const ShellConsoleView: React.FC<ShellConsoleViewProps> = ({
       && !wasSuccessfullyCompletedRef.current
     ) {
       setCollapsed(true);
+    }
+
+    if (
+      variant === 'inline'
+      && allowCollapse
+      && isActivelyRunning
+      && wasSuccessfullyCompletedRef.current
+    ) {
+      setCollapsed(false);
     }
 
     wasSuccessfullyCompletedRef.current = isSuccessfullyCompleted;
