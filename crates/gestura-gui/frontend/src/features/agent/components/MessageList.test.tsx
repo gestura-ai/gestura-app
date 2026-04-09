@@ -392,6 +392,148 @@ describe('MessageList', () => {
     expect(screen.getByText('Complete')).toBeInTheDocument();
   });
 
+  it('automatically collapses an inline shell session when a reusable command ends with a non-zero exit', () => {
+    const timestamp = Date.now();
+    const baseMessage: AgentMessage = {
+      id: 'message-auto-collapse-shell-failure',
+      role: 'assistant',
+      rawMarkdown: '',
+      isStreaming: false,
+      timestamp,
+      blocks: [
+        {
+          kind: 'shell-session',
+          id: 'shell-session-auto-collapse-failure',
+          shellSessionId: 'shell-session-auto-collapse-failure',
+          cwd: '/workspace',
+          state: 'Busy',
+          interactive: true,
+          userManaged: false,
+          activeProcessId: 'proc-auto-collapse-failure',
+          activeCommand: 'cargo test',
+          lastExitCode: null,
+          durationMs: null,
+          lastActivityAt: timestamp,
+          lines: [{ stream: 'Stdout', data: '$ cargo test\nrunning...\n' }],
+          collapsed: true,
+          availableForReuse: false,
+        },
+      ],
+    };
+
+    const { rerender } = renderMessageList([baseMessage]);
+
+    fireEvent.click(screen.getByRole('button', { name: /cargo test/i }));
+    expect(screen.getByText('/workspace')).toBeInTheDocument();
+
+    rerender(
+      <MessageList
+        messages={[{
+          ...baseMessage,
+          blocks: [
+            {
+              kind: 'shell-session',
+              id: 'shell-session-auto-collapse-failure',
+              shellSessionId: 'shell-session-auto-collapse-failure',
+              cwd: '/workspace',
+              state: 'Idle',
+              interactive: true,
+              userManaged: false,
+              activeProcessId: null,
+              activeCommand: null,
+              lastExitCode: 1,
+              durationMs: 1200,
+              lastActivityAt: timestamp + 1000,
+              lines: [{ stream: 'Stderr', data: '$ cargo test\nerror: tests failed\n' }],
+              collapsed: false,
+              availableForReuse: true,
+            },
+          ],
+        }]}
+        streamingMessage={null}
+        tasks={[]}
+        userScrolledUp={false}
+        onScrollChange={vi.fn()}
+        onRevealShellSession={vi.fn()}
+      />,
+    );
+
+    expect(screen.queryByText('/workspace')).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /Interactive shell session/i })).toHaveAttribute('aria-expanded', 'false');
+    expect(screen.getByText('Exit 1')).toBeInTheDocument();
+  });
+
+  it('automatically collapses an inline shell session when the session stops', () => {
+    const timestamp = Date.now();
+    const baseMessage: AgentMessage = {
+      id: 'message-auto-collapse-shell-stopped',
+      role: 'assistant',
+      rawMarkdown: '',
+      isStreaming: false,
+      timestamp,
+      blocks: [
+        {
+          kind: 'shell-session',
+          id: 'shell-session-auto-collapse-stopped',
+          shellSessionId: 'shell-session-auto-collapse-stopped',
+          cwd: '/workspace',
+          state: 'Busy',
+          interactive: true,
+          userManaged: false,
+          activeProcessId: 'proc-auto-collapse-stopped',
+          activeCommand: 'npm run dev',
+          lastExitCode: null,
+          durationMs: null,
+          lastActivityAt: timestamp,
+          lines: [{ stream: 'Stdout', data: '$ npm run dev\nstarting...\n' }],
+          collapsed: true,
+          availableForReuse: false,
+        },
+      ],
+    };
+
+    const { rerender } = renderMessageList([baseMessage]);
+
+    fireEvent.click(screen.getByRole('button', { name: /npm run dev/i }));
+    expect(screen.getByText('/workspace')).toBeInTheDocument();
+
+    rerender(
+      <MessageList
+        messages={[{
+          ...baseMessage,
+          blocks: [
+            {
+              kind: 'shell-session',
+              id: 'shell-session-auto-collapse-stopped',
+              shellSessionId: 'shell-session-auto-collapse-stopped',
+              cwd: '/workspace',
+              state: 'Stopped',
+              interactive: true,
+              userManaged: false,
+              activeProcessId: null,
+              activeCommand: null,
+              lastExitCode: 130,
+              durationMs: 1200,
+              lastActivityAt: timestamp + 1000,
+              lines: [{ stream: 'Stdout', data: '$ npm run dev\nterminated\n' }],
+              collapsed: false,
+              availableForReuse: false,
+            },
+          ],
+        }]}
+        streamingMessage={null}
+        tasks={[]}
+        userScrolledUp={false}
+        onScrollChange={vi.fn()}
+        onRevealShellSession={vi.fn()}
+      />,
+    );
+
+    expect(screen.queryByText('/workspace')).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /Interactive shell session/i })).toHaveAttribute('aria-expanded', 'false');
+    expect(screen.getByText('Stopped')).toBeInTheDocument();
+  });
+
   it('re-expands an auto-collapsed inline shell session when the reusable session starts another command', () => {
     const timestamp = Date.now();
     const baseMessage: AgentMessage = {

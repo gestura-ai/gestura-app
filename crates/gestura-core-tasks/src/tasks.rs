@@ -796,6 +796,27 @@ impl TaskList {
         descendants
     }
 
+    fn ancestor_ids(&self, task_id: &str) -> Vec<String> {
+        let mut ancestors = Vec::new();
+        let mut seen = HashSet::new();
+        let mut current_parent = self
+            .find_task(task_id)
+            .and_then(|task| task.parent_id.clone());
+
+        while let Some(parent_id) = current_parent {
+            if !seen.insert(parent_id.clone()) {
+                break;
+            }
+
+            current_parent = self
+                .find_task(&parent_id)
+                .and_then(|task| task.parent_id.clone());
+            ancestors.push(parent_id);
+        }
+
+        ancestors
+    }
+
     /// Return `true` when the task is blocked by any dependency that is not terminal.
     pub fn is_task_blocked(&self, task_id: &str) -> Result<bool, TaskError> {
         let task = self
@@ -1151,7 +1172,56 @@ impl TaskManager {
             .find_task_mut(task_id)
             .ok_or_else(|| TaskError::NotFound(task_id.to_string()))?;
         task.set_status(status);
+        Self::clear_current_task_if_terminal(&mut task_list, task_id, status);
+        Self::reconcile_ancestor_statuses(&mut task_list, task_id)?;
         self.update_and_save(task_list)?;
+        Ok(())
+    }
+
+    fn clear_current_task_if_terminal(task_list: &mut TaskList, task_id: &str, status: TaskStatus) {
+        if matches!(status, TaskStatus::Completed | TaskStatus::Cancelled)
+            && task_list.current_task_id.as_deref() == Some(task_id)
+        {
+            task_list.current_task_id = None;
+        }
+    }
+
+    fn reconcile_ancestor_statuses(
+        task_list: &mut TaskList,
+        task_id: &str,
+    ) -> Result<(), TaskError> {
+        for ancestor_id in task_list.ancestor_ids(task_id) {
+            let Some(current_status) = task_list.find_task(&ancestor_id).map(|task| task.status)
+            else {
+                continue;
+            };
+
+            if current_status == TaskStatus::Cancelled {
+                continue;
+            }
+
+            let next_status = if task_list
+                .validate_status_transition(&ancestor_id, TaskStatus::Completed)
+                .is_ok()
+            {
+                TaskStatus::Completed
+            } else if task_list.is_task_blocked(&ancestor_id)? {
+                TaskStatus::Blocked
+            } else {
+                TaskStatus::InProgress
+            };
+
+            if next_status == current_status {
+                continue;
+            }
+
+            let ancestor = task_list
+                .find_task_mut(&ancestor_id)
+                .ok_or_else(|| TaskError::NotFound(ancestor_id.clone()))?;
+            ancestor.set_status(next_status);
+            Self::clear_current_task_if_terminal(task_list, &ancestor_id, next_status);
+        }
+
         Ok(())
     }
 
@@ -2373,5 +2443,103 @@ mod tests {
             Some(42)
         );
         assert_eq!(task.status, TaskStatus::Completed);
+    }
+
+    #[test]
+    fn completing_last_child_auto_completes_parent_and_clears_current_task() {
+        let temp_dir = TempDir::new().unwrap();
+        let manager = TaskManager::new(temp_dir.path());
+        let session_id = "session-parent-auto-complete";
+
+        let root = manager
+            .create_task(session_id, "Root", "Root", None)
+            .unwrap();
+        let child = manager
+            .create_task(session_id, "Child", "Child", Some(root.id.clone()))
+            .unwrap();
+
+        manager
+            .set_current_task_id(session_id, Some(root.id.clone()))
+            .unwrap();
+        manager
+            .update_task_status(session_id, &child.id, TaskStatus::Completed)
+            .unwrap();
+
+        let stored_root = manager.get_task(session_id, &root.id).unwrap().unwrap();
+        assert_eq!(stored_root.status, TaskStatus::Completed);
+        assert_eq!(manager.get_current_task_id(session_id).unwrap(), None);
+    }
+
+    #[test]
+    fn completing_nested_leaf_auto_completes_all_ancestors() {
+        let temp_dir = TempDir::new().unwrap();
+        let manager = TaskManager::new(temp_dir.path());
+        let session_id = "session-nested-parent-auto-complete";
+
+        let root = manager
+            .create_task(session_id, "Root", "Root", None)
+            .unwrap();
+        let child = manager
+            .create_task(session_id, "Child", "Child", Some(root.id.clone()))
+            .unwrap();
+        let grandchild = manager
+            .create_task(
+                session_id,
+                "Grandchild",
+                "Grandchild",
+                Some(child.id.clone()),
+            )
+            .unwrap();
+
+        manager
+            .update_task_status(session_id, &grandchild.id, TaskStatus::Completed)
+            .unwrap();
+
+        assert_eq!(
+            manager
+                .get_task(session_id, &child.id)
+                .unwrap()
+                .unwrap()
+                .status,
+            TaskStatus::Completed
+        );
+        assert_eq!(
+            manager
+                .get_task(session_id, &root.id)
+                .unwrap()
+                .unwrap()
+                .status,
+            TaskStatus::Completed
+        );
+    }
+
+    #[test]
+    fn reopening_descendant_reopens_completed_ancestors() {
+        let temp_dir = TempDir::new().unwrap();
+        let manager = TaskManager::new(temp_dir.path());
+        let session_id = "session-reopen-ancestor";
+
+        let root = manager
+            .create_task(session_id, "Root", "Root", None)
+            .unwrap();
+        let child = manager
+            .create_task(session_id, "Child", "Child", Some(root.id.clone()))
+            .unwrap();
+
+        manager
+            .update_task_status(session_id, &child.id, TaskStatus::Completed)
+            .unwrap();
+        manager
+            .update_task_status(session_id, &child.id, TaskStatus::InProgress)
+            .unwrap();
+
+        assert_eq!(
+            manager
+                .get_task(session_id, &root.id)
+                .unwrap()
+                .unwrap()
+                .status,
+            TaskStatus::InProgress
+        );
     }
 }

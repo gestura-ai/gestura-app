@@ -4099,22 +4099,30 @@ impl AgentPipeline {
             }
         }
 
+        let root_task = manager.get_task(session_id, root_task_id).ok().flatten();
+        let root_already_completed = root_task
+            .as_ref()
+            .is_some_and(|task| task.status == crate::TaskStatus::Completed);
+
         let mut missing_requirements = Self::runtime_missing_requirements(
             requires_build_and_test,
             requires_mutating_file_tool_success,
             evidence,
         );
+        if root_already_completed && !open_descendant_summary.has_open() {
+            missing_requirements.clear();
+        }
+
         let completion_candidate =
             !open_descendant_summary.has_open() && missing_requirements.is_empty();
         let root_completion_error = if completion_candidate {
-            match manager.get_task(session_id, root_task_id) {
-                Ok(Some(task)) if task.status == crate::TaskStatus::Completed => None,
-                Ok(Some(_)) => manager
+            match root_task {
+                Some(task) if task.status == crate::TaskStatus::Completed => None,
+                Some(_) => manager
                     .update_task_status(session_id, root_task_id, crate::TaskStatus::Completed)
                     .err()
                     .map(|error| format!("root task completion is still blocked: {error}")),
-                Ok(None) => Some("root task is no longer present in the task list".to_string()),
-                Err(error) => Some(format!("root task state could not be refreshed: {error}")),
+                None => Some("root task is no longer present in the task list".to_string()),
             }
         } else {
             None
@@ -13547,6 +13555,69 @@ mod tests {
             .expect("child should exist");
         assert_eq!(updated_child.status, crate::TaskStatus::Completed);
         assert_eq!(updated_root.status, crate::TaskStatus::Completed);
+        assert_eq!(
+            manager
+                .get_current_task_id(&session_id)
+                .expect("current task lookup should succeed"),
+            None
+        );
+    }
+
+    #[test]
+    fn runtime_reconciliation_preserves_completed_root_after_children_finish() {
+        let manager = crate::get_global_task_manager();
+        let session_id = format!(
+            "agent-loop-preserve-completed-root-{}",
+            uuid::Uuid::new_v4()
+        );
+
+        let root = manager
+            .create_task(&session_id, "Root", "Root", None)
+            .expect("root task");
+        let child = manager
+            .create_task(&session_id, "Child", "Child", Some(root.id.clone()))
+            .expect("child task");
+
+        manager
+            .update_task_status(&session_id, &root.id, crate::TaskStatus::InProgress)
+            .expect("mark root in progress");
+        manager
+            .set_current_task_id(&session_id, Some(root.id.clone()))
+            .expect("set current task");
+        manager
+            .update_task_status(&session_id, &child.id, crate::TaskStatus::Completed)
+            .expect("complete child");
+
+        assert_eq!(
+            manager
+                .get_task(&session_id, &root.id)
+                .expect("root lookup should succeed")
+                .expect("root should exist")
+                .status,
+            crate::TaskStatus::Completed
+        );
+
+        let runtime_state = AgentPipeline::reconcile_tracked_execution_progress_from_tool_activity(
+            true,
+            true,
+            Some(&session_id),
+            Some(&root.id),
+            &[],
+        )
+        .expect("runtime state should be available");
+
+        assert!(runtime_state.completion_ready);
+        assert!(runtime_state.snapshot.current_task.is_none());
+        assert!(runtime_state.snapshot.open_tasks.is_empty());
+        assert!(runtime_state.snapshot.missing_requirements.is_empty());
+        assert_eq!(
+            manager
+                .get_task(&session_id, &root.id)
+                .expect("root lookup should succeed")
+                .expect("root should exist")
+                .status,
+            crate::TaskStatus::Completed
+        );
         assert_eq!(
             manager
                 .get_current_task_id(&session_id)
