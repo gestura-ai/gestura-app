@@ -11,6 +11,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Inline chat shell cards now report successfully finished session-backed commands as `Complete` and automatically collapse after the command finishes, reducing transcript noise while keeping failed runs expanded for inspection.
 - Agent task runtime reconciliation now keeps completion and closeout decisions anchored to explicit build/test/mutation evidence instead of weak summary text or partially satisfied execution state.
+- `gestura-core`'s pipeline runtime has been decomposed into focused sidecar modules so agent-loop narration, tracked-task bookkeeping, continuation handling, and shared async iteration/finalization helpers no longer live in a single oversized file.
+- `tool_dispatch` now keeps execution behavior separated from its large regression suite, making the runtime path easier to review and maintain without changing behavior.
 
 ### Fixed
 
@@ -26,6 +28,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Regression coverage for follow-up reusable shell requests in chat and for backend PTY reuse event ordering, verifying reused sessions emit `Busy` before `Started` on subsequent commands.
 - Additional frontend regression coverage for reusable shell follow-up flows, including completion→reuse re-expansion and protection against stale `Idle` shared state overwriting locally started `Starting`/`Busy` shell activity.
 - Regression coverage for sticky completed roots, missing-evidence success closeout, under-scoped verification execution state, and runtime completion narration guards in `gestura-core` / `gestura-core-tasks`.
+- Dedicated sidecar test modules for `agent_loop` and `tool_dispatch`, preserving broad pipeline regression coverage while keeping the production runtime modules smaller and more navigable.
 
 ## [0.8.2] - 2026-04-09
 

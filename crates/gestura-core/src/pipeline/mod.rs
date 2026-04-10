@@ -11,6 +11,13 @@
 //! - Token estimation and truncation
 //! - Fallback to secondary providers
 //! - Workspace sandboxing for tool execution
+//!
+//! Internal organization notes:
+//! - `agent_loop` owns the runtime control flow and delegates shared
+//!   iteration/finalization helpers, tracked-task bookkeeping, narration /
+//!   status emission, and continuation/closeout logic to sidecar modules.
+//! - `tool_dispatch` owns tool execution; its test suite lives in a dedicated
+//!   sidecar module so the runtime file stays focused on behavior.
 
 mod agent_loop;
 mod compaction;
