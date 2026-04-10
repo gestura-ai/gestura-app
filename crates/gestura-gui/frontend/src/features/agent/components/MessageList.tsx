@@ -1,7 +1,7 @@
 /**
  * MessageList — renders all agent/user messages including streaming blocks.
  */
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { convertFileSrc } from '@tauri-apps/api/core';
 
 import { parseMarkdown } from '../utils/markdown';
@@ -473,30 +473,57 @@ export const MessageList: React.FC<MessageListProps> = ({
   onResume,
 }) => {
   const containerRef = useRef<HTMLDivElement>(null);
+  const autoFollowRef = useRef(!userScrolledUp);
+  const lastScrollTopRef = useRef(0);
+
+  const setAutoFollow = useCallback((shouldFollow: boolean) => {
+    autoFollowRef.current = shouldFollow;
+    onScrollChange(!shouldFollow);
+  }, [onScrollChange]);
+
+  useEffect(() => {
+    autoFollowRef.current = !userScrolledUp;
+  }, [userScrolledUp]);
 
   // Auto-scroll unless user has scrolled up
-  useEffect(() => {
+  useLayoutEffect(() => {
     const element = containerRef.current;
-    if (!element || userScrolledUp) return;
+    if (!element) return;
+    if (!autoFollowRef.current) {
+      lastScrollTopRef.current = element.scrollTop;
+      return;
+    }
+
     element.scrollTop = bottomScrollTop(element);
+    lastScrollTopRef.current = element.scrollTop;
   });
 
   const handleScroll = useCallback(() => {
     const el = containerRef.current;
     if (!el) return;
+
     const dist = el.scrollHeight - el.scrollTop - el.clientHeight;
-    const scrolled = dist > SCROLL_THRESHOLD;
-    onScrollChange(scrolled);
-  }, [onScrollChange]);
+    const scrollingUp = el.scrollTop < lastScrollTopRef.current;
+    const shouldFollow = scrollingUp ? false : dist <= SCROLL_THRESHOLD;
+
+    lastScrollTopRef.current = el.scrollTop;
+    setAutoFollow(shouldFollow);
+  }, [setAutoFollow]);
 
   const handleWheel = useCallback((event: React.WheelEvent<HTMLDivElement>) => {
-    if (event.deltaY < 0) onScrollChange(true);
+    if (event.deltaY < 0) {
+      autoFollowRef.current = false;
+      onScrollChange(true);
+    }
   }, [onScrollChange]);
 
   const scrollToBottom = useCallback(() => {
-    onScrollChange(false);
-    if (containerRef.current) containerRef.current.scrollTop = bottomScrollTop(containerRef.current);
-  }, [onScrollChange]);
+    setAutoFollow(true);
+    if (containerRef.current) {
+      containerRef.current.scrollTop = bottomScrollTop(containerRef.current);
+      lastScrollTopRef.current = containerRef.current.scrollTop;
+    }
+  }, [setAutoFollow]);
 
   const allMessages = streamingMessage ? [...messages, streamingMessage] : messages;
 

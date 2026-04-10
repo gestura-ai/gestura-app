@@ -243,6 +243,12 @@ pub struct TaskVerificationProfile {
 pub enum TaskExecutionEvidenceKind {
     /// Some successful tool work occurred for the task.
     ToolActivity,
+    /// Diagnostic progress was made without yet proving completion.
+    Diagnostic,
+    /// Observed evidence contradicted the expected outcome.
+    Contradiction,
+    /// Observed evidence surfaced a blocker or unavailable dependency.
+    Blocker,
     /// A source mutation completed successfully.
     Mutation,
     /// A build or compile verification command succeeded.
@@ -285,6 +291,15 @@ pub struct TaskExecutionState {
     /// Whether successful source mutation evidence has been observed.
     #[serde(default)]
     pub saw_mutation: bool,
+    /// Whether diagnostic progress has been observed for the task.
+    #[serde(default)]
+    pub saw_diagnostic_progress: bool,
+    /// Whether contradiction evidence has been observed for the task.
+    #[serde(default)]
+    pub saw_contradiction: bool,
+    /// Whether blocker evidence has been observed for the task.
+    #[serde(default)]
+    pub saw_blocker: bool,
     /// Whether successful build/check evidence has been observed.
     #[serde(default)]
     pub build_succeeded: bool,
@@ -319,6 +334,12 @@ impl TaskExecutionEvidence {
             success: true,
             recorded_at: Utc::now(),
         }
+    }
+
+    /// Override whether the evidence represents a successful outcome.
+    pub fn with_success(mut self, success: bool) -> Self {
+        self.success = success;
+        self
     }
 }
 
@@ -365,17 +386,37 @@ impl TaskExecutionState {
 
         match evidence.kind {
             TaskExecutionEvidenceKind::ToolActivity => self.saw_tool_activity = true,
+            TaskExecutionEvidenceKind::Diagnostic => {
+                self.saw_tool_activity = true;
+                self.saw_diagnostic_progress = true;
+            }
+            TaskExecutionEvidenceKind::Contradiction => {
+                self.saw_tool_activity = true;
+                self.saw_diagnostic_progress = true;
+                self.saw_contradiction = true;
+            }
+            TaskExecutionEvidenceKind::Blocker => {
+                self.saw_tool_activity = true;
+                self.saw_diagnostic_progress = true;
+                self.saw_blocker = true;
+            }
             TaskExecutionEvidenceKind::Mutation => {
                 self.saw_tool_activity = true;
-                self.saw_mutation = true;
+                if evidence.success {
+                    self.saw_mutation = true;
+                }
             }
             TaskExecutionEvidenceKind::Build => {
                 self.saw_tool_activity = true;
-                self.build_succeeded = true;
+                if evidence.success {
+                    self.build_succeeded = true;
+                }
             }
             TaskExecutionEvidenceKind::Test => {
                 self.saw_tool_activity = true;
-                self.test_succeeded = true;
+                if evidence.success {
+                    self.test_succeeded = true;
+                }
             }
             TaskExecutionEvidenceKind::Artifact => self.saw_tool_activity = true,
         }
@@ -1514,6 +1555,10 @@ impl TaskManager {
         session_id: &str,
         task_id: &str,
     ) -> Result<TrackedTaskFinalization, TaskError> {
+        let current_status = self
+            .get_task(session_id, task_id)?
+            .ok_or_else(|| TaskError::NotFound(task_id.to_string()))?
+            .status;
         let descendants = self.list_descendants(session_id, task_id)?;
         let open_subtask_ids = descendants
             .into_iter()
@@ -1528,7 +1573,12 @@ impl TaskManager {
             }
             Ok(TrackedTaskFinalization::Completed)
         } else {
-            self.update_task_status(session_id, task_id, TaskStatus::InProgress)?;
+            if !matches!(
+                current_status,
+                TaskStatus::Completed | TaskStatus::Cancelled
+            ) {
+                self.update_task_status(session_id, task_id, TaskStatus::InProgress)?;
+            }
             Ok(TrackedTaskFinalization::StillInProgress { open_subtask_ids })
         }
     }
@@ -2269,6 +2319,81 @@ mod tests {
     }
 
     #[test]
+    fn failed_build_evidence_counts_as_progress_without_counting_as_success() {
+        let mut state = TaskExecutionState::default();
+        state.merge_profile(TaskVerificationProfile {
+            execution_kind: TaskExecutionKind::Verification,
+            requires_build: true,
+            ..TaskVerificationProfile::default()
+        });
+
+        state.record_evidence(
+            TaskExecutionEvidence::new(
+                TaskExecutionEvidenceKind::Build,
+                "cargo check failed with compiler errors",
+                Some("shell".to_string()),
+                Some("cargo check".to_string()),
+            )
+            .with_success(false),
+        );
+
+        assert!(state.saw_tool_activity);
+        assert!(!state.build_succeeded);
+        assert!(!state.satisfies_profile());
+        assert_eq!(state.evidence.len(), 1);
+        assert!(!state.evidence[0].success);
+    }
+
+    #[test]
+    fn failed_mutation_evidence_does_not_mark_mutation_requirement_complete() {
+        let mut state = TaskExecutionState::default();
+        state.merge_profile(TaskVerificationProfile {
+            execution_kind: TaskExecutionKind::Implementation,
+            requires_mutation: true,
+            ..TaskVerificationProfile::default()
+        });
+
+        state.record_evidence(
+            TaskExecutionEvidence::new(
+                TaskExecutionEvidenceKind::Mutation,
+                "Attempted to edit src/main.rs but the patch failed",
+                Some("code".to_string()),
+                None,
+            )
+            .with_success(false),
+        );
+
+        assert!(state.saw_tool_activity);
+        assert!(!state.saw_mutation);
+        assert!(!state.satisfies_profile());
+        assert!(!state.evidence[0].success);
+    }
+
+    #[test]
+    fn contradiction_and_blocker_evidence_are_tracked_as_diagnostic_progress() {
+        let mut state = TaskExecutionState::default();
+
+        state.record_evidence(TaskExecutionEvidence::new(
+            TaskExecutionEvidenceKind::Contradiction,
+            "Observed result contradicted the expected outcome",
+            Some("shell".to_string()),
+            Some("curl -I http://localhost:3000/missing".to_string()),
+        ));
+        state.record_evidence(TaskExecutionEvidence::new(
+            TaskExecutionEvidenceKind::Blocker,
+            "Verification is blocked on a missing dependency",
+            Some("shell".to_string()),
+            Some("npm test".to_string()),
+        ));
+
+        assert!(state.saw_tool_activity);
+        assert!(state.saw_diagnostic_progress);
+        assert!(state.saw_contradiction);
+        assert!(state.saw_blocker);
+        assert_eq!(state.evidence.len(), 2);
+    }
+
+    #[test]
     fn external_verification_profile_requires_post_mutation_external_evidence() {
         let mut state = TaskExecutionState::default();
         state.merge_profile(TaskVerificationProfile {
@@ -2400,6 +2525,61 @@ mod tests {
         assert_eq!(
             manager
                 .get_task("session-123", &root.id)
+                .unwrap()
+                .unwrap()
+                .status,
+            TaskStatus::Completed
+        );
+    }
+
+    #[test]
+    fn finalize_tracked_task_does_not_reopen_completed_root_with_open_descendants() {
+        let temp_dir = TempDir::new().unwrap();
+        let manager = TaskManager::new(temp_dir.path());
+        let session_id = "session-finalize-sticky-complete";
+
+        let root = manager
+            .create_task(session_id, "Root", "Tracked root", None)
+            .unwrap();
+        let child = manager
+            .create_task(
+                session_id,
+                "Child",
+                "Outstanding child",
+                Some(root.id.clone()),
+            )
+            .unwrap();
+
+        manager
+            .update_task_status(session_id, &root.id, TaskStatus::Completed)
+            .unwrap_err();
+        manager
+            .update_task_status(session_id, &child.id, TaskStatus::Completed)
+            .unwrap();
+        manager
+            .update_task_status(session_id, &root.id, TaskStatus::Completed)
+            .unwrap();
+
+        let mut task_list = manager.load_task_list(session_id).unwrap();
+        task_list
+            .find_task_mut(&child.id)
+            .expect("stored child task")
+            .set_status(TaskStatus::NotStarted);
+        manager.replace_task_list(task_list).unwrap();
+
+        let outcome = manager
+            .finalize_tracked_task_after_agent_run(session_id, &root.id)
+            .unwrap();
+
+        assert_eq!(
+            outcome,
+            TrackedTaskFinalization::StillInProgress {
+                open_subtask_ids: vec![child.id.clone()],
+            }
+        );
+        assert_eq!(
+            manager
+                .get_task(session_id, &root.id)
                 .unwrap()
                 .unwrap()
                 .status,

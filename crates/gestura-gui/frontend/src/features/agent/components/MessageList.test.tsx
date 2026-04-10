@@ -107,6 +107,78 @@ describe('MessageList', () => {
     expect(screen.queryByRole('button', { name: /new messages/i })).not.toBeInTheDocument();
   });
 
+  it('stops auto-following immediately when the user wheels upward during streaming', () => {
+    const baseMessage: AgentMessage = {
+      id: 'message-base',
+      role: 'assistant',
+      rawMarkdown: 'Stable reply',
+      isStreaming: false,
+      timestamp: Date.now(),
+      blocks: [{ kind: 'text', id: 'text-base', content: 'Stable reply' }],
+    };
+
+    const firstStreamingMessage: AgentMessage = {
+      id: 'stream-1',
+      role: 'assistant',
+      rawMarkdown: 'Streaming chunk 1',
+      isStreaming: true,
+      timestamp: Date.now(),
+      blocks: [{ kind: 'text', id: 'stream-text-1', content: 'Streaming chunk 1' }],
+    };
+
+    const nextStreamingMessage: AgentMessage = {
+      ...firstStreamingMessage,
+      rawMarkdown: 'Streaming chunk 2',
+      blocks: [{ kind: 'text', id: 'stream-text-2', content: 'Streaming chunk 2' }],
+    };
+
+    const onScrollChange = vi.fn();
+    const { container, rerender } = render(
+      <MessageList
+        messages={[baseMessage]}
+        streamingMessage={firstStreamingMessage}
+        tasks={[]}
+        userScrolledUp={false}
+        onScrollChange={onScrollChange}
+        onRevealShellSession={vi.fn()}
+      />,
+    );
+
+    const messagesContainer = container.querySelector('.messages-container') as HTMLDivElement;
+    Object.defineProperty(messagesContainer, 'scrollHeight', { configurable: true, value: 600 });
+    Object.defineProperty(messagesContainer, 'clientHeight', { configurable: true, value: 200 });
+
+    rerender(
+      <MessageList
+        messages={[baseMessage]}
+        streamingMessage={firstStreamingMessage}
+        tasks={[]}
+        userScrolledUp={false}
+        onScrollChange={onScrollChange}
+        onRevealShellSession={vi.fn()}
+      />,
+    );
+
+    expect(messagesContainer.scrollTop).toBe(400);
+
+    messagesContainer.scrollTop = 320;
+    fireEvent.wheel(messagesContainer, { deltaY: -48 });
+
+    rerender(
+      <MessageList
+        messages={[baseMessage]}
+        streamingMessage={nextStreamingMessage}
+        tasks={[]}
+        userScrolledUp={false}
+        onScrollChange={onScrollChange}
+        onRevealShellSession={vi.fn()}
+      />,
+    );
+
+    expect(onScrollChange).toHaveBeenCalledWith(true);
+    expect(messagesContainer.scrollTop).toBe(320);
+  });
+
   it('renders compact tool summaries with structured parameters and responses', () => {
     renderMessageList([{
       id: 'message-1',

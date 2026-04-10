@@ -14,6 +14,7 @@ default = []
 [dependencies]
 gestura-core-foundation = { path = "../gestura-core-foundation" }
 gestura-core-llm = { path = "../gestura-core-llm" }
+gestura-core-retry = { path = "../gestura-core-retry" }
 gestura-core-tools = { path = "../gestura-core-tools" }
 futures-util.workspace = true
 reqwest.workspace = true

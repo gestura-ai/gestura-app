@@ -3154,6 +3154,7 @@ dependencies = [
  "futures-util",
  "gestura-core-foundation",
  "gestura-core-llm",
+ "gestura-core-retry",
  "gestura-core-tools",
  "reqwest",
  "serde",

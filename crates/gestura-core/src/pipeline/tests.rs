@@ -213,12 +213,28 @@ fn core_can_auto_initialize_a_tracked_root_task() {
             .input
             .contains("Validate the result and summarize follow-up [notstarted]")
     );
+    assert_eq!(
+        super::requirement_detection_input(&request),
+        "Carefully plan and implement the change, then build and test it"
+    );
 }
 
 #[test]
 fn compare_requests_can_be_auto_tracked_generically() {
     assert!(AgentPipeline::should_auto_track_request(
         "Please compare these two logs, identify the main differences, and recommend next steps.",
+        None,
+    ));
+}
+
+#[test]
+fn simple_build_and_test_requests_are_not_auto_tracked() {
+    assert!(!AgentPipeline::should_auto_track_request(
+        "Please build and test the project.",
+        None,
+    ));
+    assert!(!AgentPipeline::should_auto_track_request(
+        "Run cargo check and cargo test, then report the results.",
         None,
     ));
 }

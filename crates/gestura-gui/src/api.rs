@@ -3726,6 +3726,116 @@ fn capture_session_activity_event(
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TerminalAssistantSummaryKind {
+    Failed,
+    Paused,
+    Cancelled,
+    UnexpectedEnd,
+}
+
+fn persist_terminal_assistant_message(
+    session_id: Option<&str>,
+    content: &str,
+    thinking: Option<&str>,
+    append_to_last: bool,
+) {
+    let Some(session_id) = session_id else {
+        return;
+    };
+
+    let has_content = !content.trim().is_empty();
+    let has_thinking = thinking.is_some_and(|value| !value.trim().is_empty());
+    if !has_content && !has_thinking {
+        return;
+    }
+
+    let thinking = thinking.map(str::to_string);
+    if append_to_last
+        && crate::window_manager::append_to_last_assistant_message(
+            session_id,
+            content,
+            thinking.clone(),
+        )
+    {
+        return;
+    }
+
+    crate::window_manager::add_assistant_message(session_id, content, thinking);
+}
+
+fn update_latest_progress_summary(slot: &mut Option<String>, summary: Option<&str>, message: &str) {
+    let next = summary
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+        .or_else(|| {
+            let message = message.trim();
+            (!message.is_empty()).then(|| message.to_string())
+        });
+
+    if next.is_some() {
+        *slot = next;
+    }
+}
+
+fn build_terminal_assistant_summary(
+    kind: TerminalAssistantSummaryKind,
+    latest_progress_summary: Option<&str>,
+    detail: Option<&str>,
+) -> String {
+    let mut parts = Vec::new();
+    match kind {
+        TerminalAssistantSummaryKind::Failed => {
+            parts.push("The run stopped before completion.".to_string());
+        }
+        TerminalAssistantSummaryKind::Paused => {
+            parts.push(
+                "The run paused before completion and can be resumed from the saved state."
+                    .to_string(),
+            );
+        }
+        TerminalAssistantSummaryKind::Cancelled => {
+            parts.push("The run was cancelled before completion.".to_string());
+        }
+        TerminalAssistantSummaryKind::UnexpectedEnd => {
+            parts.push("The stream ended before a terminal completion event arrived.".to_string());
+        }
+    }
+
+    if let Some(progress) = latest_progress_summary
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        parts.push(format!("Latest confirmed progress: {progress}"));
+    }
+
+    if let Some(detail) = detail.map(str::trim).filter(|value| !value.is_empty()) {
+        parts.push(format!("Detail: {detail}"));
+    }
+
+    parts.join(" ")
+}
+
+fn remember_terminal_assistant_summary(
+    session_id: Option<&str>,
+    kind: TerminalAssistantSummaryKind,
+    latest_progress_summary: Option<&str>,
+    detail: Option<&str>,
+    thinking: Option<&str>,
+) {
+    let Some(session_id) = session_id else {
+        return;
+    };
+
+    let summary = build_terminal_assistant_summary(kind, latest_progress_summary, detail);
+    crate::window_manager::remember_assistant_summary(
+        session_id,
+        &summary,
+        thinking.map(str::to_string),
+    );
+}
+
 /// Process a agent message with streaming response
 ///
 /// Emits `agent-stream-chunk` events with partial content and `agent-stream-done` when complete.
@@ -4242,16 +4352,28 @@ pub async fn process_agent_message_streaming(
         crate::window_manager::add_user_message(sid, &message, message_source);
     }
 
+    let mut latest_progress_summary: Option<String> = None;
+
     let auto_planned_task = if let Some(sid) = resolved_session_id.as_deref() {
         if should_auto_plan_agent_request(&message, task_id.as_deref()) {
             let root_task_name = derive_agent_request_task_name(&message);
             let narration = generate_pre_auto_plan_narration(sid, &message, &root_task_name).await;
+            update_latest_progress_summary(
+                &mut latest_progress_summary,
+                narration.summary.as_deref(),
+                &narration.message,
+            );
             emit_bootstrap_narration(&emit, narration);
             tokio::task::yield_now().await;
 
             match auto_plan_agent_request(&app, sid, &message).await {
                 Ok(plan) => {
                     let narration = generate_post_auto_plan_narration(sid, &message, &plan).await;
+                    update_latest_progress_summary(
+                        &mut latest_progress_summary,
+                        narration.summary.as_deref(),
+                        &narration.message,
+                    );
                     emit_bootstrap_narration(&emit, narration);
                     tokio::task::yield_now().await;
                     Some(plan)
@@ -4533,6 +4655,11 @@ pub async fn process_agent_message_streaming(
                 emit("agent-stream-status", payload);
             }
             StreamChunk::Narration { narration, stage } => {
+                update_latest_progress_summary(
+                    &mut latest_progress_summary,
+                    narration.summary.as_deref(),
+                    &narration.message,
+                );
                 let payload = serde_json::json!({
                     "title": narration.title,
                     "message": narration.message,
@@ -4867,19 +4994,12 @@ pub async fn process_agent_message_streaming(
                     }
                 }
 
-                    // Persist assistant message to session state
-                    if let Some(ref sid) = resolved_session_id
-                        && (!assistant_text.trim().is_empty()
-                            || assistant_thinking
-                                .as_ref()
-                                .is_some_and(|t| !t.trim().is_empty()))
-                    {
-                        crate::window_manager::add_assistant_message(
-                            sid,
-                            &assistant_text,
-                            assistant_thinking.clone(),
-                        );
-                    }
+                persist_terminal_assistant_message(
+                    resolved_session_id.as_deref(),
+                    &assistant_text,
+                    assistant_thinking.as_deref(),
+                    false,
+                );
 
                 // Reconcile the tracked task tree before closing the run.
                 if let (Some(sid), Some(task_id)) = (&resolved_session_id, &tracked_task_id) {
@@ -4916,23 +5036,12 @@ pub async fn process_agent_message_streaming(
                 let is_paused = matches!(chunk, StreamChunk::Paused);
 
                 // Persist any partial assistant output so context isn't lost.
-                if let Some(ref sid) = resolved_session_id
-                    && (!assistant_text.trim().is_empty()
-                        || assistant_thinking
-                            .as_ref()
-                            .is_some_and(|t| !t.trim().is_empty()))
-                    && !crate::window_manager::append_to_last_assistant_message(
-                        sid,
-                        &assistant_text,
-                        assistant_thinking.clone(),
-                    )
-                {
-                    crate::window_manager::add_assistant_message(
-                        sid,
-                        &assistant_text,
-                        assistant_thinking.clone(),
-                    );
-                }
+                persist_terminal_assistant_message(
+                    resolved_session_id.as_deref(),
+                    &assistant_text,
+                    assistant_thinking.as_deref(),
+                    true,
+                );
 
                 // Build and persist the paused execution state so the session
                 // can be resumed later.
@@ -4969,27 +5078,41 @@ pub async fn process_agent_message_streaming(
 
                 // Emit the appropriate frontend event.
                 if is_paused {
+                    remember_terminal_assistant_summary(
+                        resolved_session_id.as_deref(),
+                        TerminalAssistantSummaryKind::Paused,
+                        latest_progress_summary.as_deref(),
+                        None,
+                        assistant_thinking.as_deref(),
+                    );
                     emit("agent-stream-paused", serde_json::json!(null));
                 } else {
+                    remember_terminal_assistant_summary(
+                        resolved_session_id.as_deref(),
+                        TerminalAssistantSummaryKind::Cancelled,
+                        latest_progress_summary.as_deref(),
+                        None,
+                        assistant_thinking.as_deref(),
+                    );
                     emit("agent-stream-cancelled", serde_json::json!(null));
                 }
                 break;
             }
             StreamChunk::Error(err) => {
                 saw_terminal = true;
-                    // Persist any partial assistant output so context isn't lost.
-                    if let Some(ref sid) = resolved_session_id
-                        && (!assistant_text.trim().is_empty()
-                            || assistant_thinking
-                                .as_ref()
-                                .is_some_and(|t| !t.trim().is_empty()))
-                    {
-                        crate::window_manager::add_assistant_message(
-                            sid,
-                            &assistant_text,
-                            assistant_thinking.clone(),
-                        );
-                    }
+                persist_terminal_assistant_message(
+                    resolved_session_id.as_deref(),
+                    &assistant_text,
+                    assistant_thinking.as_deref(),
+                    false,
+                );
+                remember_terminal_assistant_summary(
+                    resolved_session_id.as_deref(),
+                    TerminalAssistantSummaryKind::Failed,
+                    latest_progress_summary.as_deref(),
+                    Some(&err),
+                    assistant_thinking.as_deref(),
+                );
 
                 // Mark agent task as cancelled (error case)
                 if let (Some(sid), Some(task_id)) = (&resolved_session_id, &tracked_task_id) {
@@ -5010,22 +5133,12 @@ pub async fn process_agent_message_streaming(
                 if let Some(ref sid) = resolved_session_id {
                     cancel_token.pause();
 
-                    if (!assistant_text.trim().is_empty()
-                        || assistant_thinking
-                            .as_ref()
-                            .is_some_and(|t| !t.trim().is_empty()))
-                        && !crate::window_manager::append_to_last_assistant_message(
-                            sid,
-                            &assistant_text,
-                            assistant_thinking.clone(),
-                        )
-                    {
-                        crate::window_manager::add_assistant_message(
-                            sid,
-                            &assistant_text,
-                            assistant_thinking.clone(),
-                        );
-                    }
+                    persist_terminal_assistant_message(
+                        Some(sid),
+                        &assistant_text,
+                        assistant_thinking.as_deref(),
+                        true,
+                    );
 
                     let paused_state = gestura_core::PausedExecutionState {
                         original_input: input_snapshot.clone(),
@@ -5043,6 +5156,17 @@ pub async fn process_agent_message_streaming(
                         paused_at: chrono::Utc::now(),
                     };
                     crate::window_manager::set_session_paused_execution(sid, Some(paused_state));
+
+                    remember_terminal_assistant_summary(
+                        Some(sid),
+                        TerminalAssistantSummaryKind::Paused,
+                        latest_progress_summary.as_deref(),
+                        Some(&format!(
+                            "No stream events arrived for {:?}.",
+                            idle_timeout
+                        )),
+                        assistant_thinking.as_deref(),
+                    );
 
                     emit(
                         "agent-stream-status",
@@ -5072,6 +5196,13 @@ pub async fn process_agent_message_streaming(
 
     // If the channel closed without any terminal event, surface that as an error.
     if !saw_terminal {
+        remember_terminal_assistant_summary(
+            resolved_session_id.as_deref(),
+            TerminalAssistantSummaryKind::UnexpectedEnd,
+            latest_progress_summary.as_deref(),
+            Some("Streaming ended unexpectedly (no terminal event received)"),
+            assistant_thinking.as_deref(),
+        );
         emit(
             "agent-stream-error",
             serde_json::json!("Streaming ended unexpectedly (no terminal event received)"),
@@ -5264,6 +5395,7 @@ pub async fn resume_agent_streaming(
     // Forward chunks — mirrors the loop in process_agent_message_streaming.
     let mut assistant_text = String::new();
     let mut assistant_thinking: Option<String> = None;
+    let mut latest_progress_summary: Option<String> = None;
     let mut completed_tool_calls: Vec<gestura_core::ToolCallRecord> = Vec::new();
     let mut current_tool_call: Option<(String, String, String)> = None;
     let mut saw_terminal = false;
@@ -5362,21 +5494,12 @@ pub async fn resume_agent_streaming(
                     }
                     StreamChunk::Done(_) => {
                         saw_terminal = true;
-                        if let Some(ref sid) = resolved_session_id
-                            && (!assistant_text.trim().is_empty()
-                                || assistant_thinking.as_ref().is_some_and(|t| !t.trim().is_empty()))
-                            && !crate::window_manager::append_to_last_assistant_message(
-                                sid,
-                                &assistant_text,
-                                assistant_thinking.clone(),
-                            )
-                        {
-                            crate::window_manager::add_assistant_message(
-                                sid,
-                                &assistant_text,
-                                assistant_thinking.clone(),
-                            );
-                        }
+                        persist_terminal_assistant_message(
+                            resolved_session_id.as_deref(),
+                            &assistant_text,
+                            assistant_thinking.as_deref(),
+                            true,
+                        );
 
                         if let (Some(sid), Some(task_id)) = (&resolved_session_id, &tracked_task_id) {
                             match crate::task_integration::finalize_tracked_task_after_agent_run(
@@ -5410,20 +5533,19 @@ pub async fn resume_agent_streaming(
                     StreamChunk::Cancelled => {
                         saw_terminal = true;
                         if let Some(ref sid) = resolved_session_id {
-                            if (!assistant_text.trim().is_empty()
-                                || assistant_thinking.as_ref().is_some_and(|t| !t.trim().is_empty()))
-                                && !crate::window_manager::append_to_last_assistant_message(
-                                    sid,
-                                    &assistant_text,
-                                    assistant_thinking.clone(),
-                                )
-                            {
-                                crate::window_manager::add_assistant_message(
-                                    sid,
-                                    &assistant_text,
-                                    assistant_thinking.clone(),
-                                );
-                            }
+                            persist_terminal_assistant_message(
+                                Some(sid),
+                                &assistant_text,
+                                assistant_thinking.as_deref(),
+                                true,
+                            );
+                            remember_terminal_assistant_summary(
+                                Some(sid),
+                                TerminalAssistantSummaryKind::Cancelled,
+                                latest_progress_summary.as_deref(),
+                                None,
+                                assistant_thinking.as_deref(),
+                            );
                             if let Some(task_id) = tracked_task_id.as_deref() {
                                 let _ = crate::task_integration::mark_task_cancelled(&app, sid, task_id);
                             }
@@ -5434,20 +5556,12 @@ pub async fn resume_agent_streaming(
                     StreamChunk::Paused => {
                         saw_terminal = true;
                         if let Some(ref sid) = resolved_session_id {
-                            if (!assistant_text.trim().is_empty()
-                                || assistant_thinking.as_ref().is_some_and(|t| !t.trim().is_empty()))
-                                && !crate::window_manager::append_to_last_assistant_message(
-                                    sid,
-                                    &assistant_text,
-                                    assistant_thinking.clone(),
-                                )
-                            {
-                                crate::window_manager::add_assistant_message(
-                                    sid,
-                                    &assistant_text,
-                                    assistant_thinking.clone(),
-                                );
-                            }
+                            persist_terminal_assistant_message(
+                                Some(sid),
+                                &assistant_text,
+                                assistant_thinking.as_deref(),
+                                true,
+                            );
 
                             let paused_state = gestura_core::PausedExecutionState {
                                 original_input: input_snapshot.clone(),
@@ -5465,6 +5579,13 @@ pub async fn resume_agent_streaming(
                                 paused_at: chrono::Utc::now(),
                             };
                             crate::window_manager::set_session_paused_execution(sid, Some(paused_state));
+                            remember_terminal_assistant_summary(
+                                Some(sid),
+                                TerminalAssistantSummaryKind::Paused,
+                                latest_progress_summary.as_deref(),
+                                None,
+                                assistant_thinking.as_deref(),
+                            );
                         }
 
                         emit("agent-stream-paused", serde_json::json!(null));
@@ -5472,21 +5593,19 @@ pub async fn resume_agent_streaming(
                     }
                     StreamChunk::Error(err) => {
                         saw_terminal = true;
-                        if let Some(ref sid) = resolved_session_id
-                            && (!assistant_text.trim().is_empty()
-                                || assistant_thinking.as_ref().is_some_and(|t| !t.trim().is_empty()))
-                            && !crate::window_manager::append_to_last_assistant_message(
-                                sid,
-                                &assistant_text,
-                                assistant_thinking.clone(),
-                            )
-                        {
-                            crate::window_manager::add_assistant_message(
-                                sid,
-                                &assistant_text,
-                                assistant_thinking.clone(),
-                            );
-                        }
+                        persist_terminal_assistant_message(
+                            resolved_session_id.as_deref(),
+                            &assistant_text,
+                            assistant_thinking.as_deref(),
+                            true,
+                        );
+                        remember_terminal_assistant_summary(
+                            resolved_session_id.as_deref(),
+                            TerminalAssistantSummaryKind::Failed,
+                            latest_progress_summary.as_deref(),
+                            Some(&err),
+                            assistant_thinking.as_deref(),
+                        );
 
                         if let (Some(sid), Some(task_id)) = (&resolved_session_id, &tracked_task_id) {
                             let _ = crate::task_integration::mark_task_cancelled(&app, sid, task_id);
@@ -5500,6 +5619,11 @@ pub async fn resume_agent_streaming(
                         emit("agent-stream-status", serde_json::json!({ "text": message, "kind": "busy" }));
                     }
                     StreamChunk::Narration { narration, stage } => {
+                        update_latest_progress_summary(
+                            &mut latest_progress_summary,
+                            narration.summary.as_deref(),
+                            &narration.message,
+                        );
                         emit(
                             "agent-stream-narration",
                             serde_json::json!({
@@ -5576,20 +5700,12 @@ pub async fn resume_agent_streaming(
                 if let Some(ref sid) = resolved_session_id {
                     cancel_token.pause();
 
-                    if (!assistant_text.trim().is_empty()
-                        || assistant_thinking.as_ref().is_some_and(|t| !t.trim().is_empty()))
-                        && !crate::window_manager::append_to_last_assistant_message(
-                            sid,
-                            &assistant_text,
-                            assistant_thinking.clone(),
-                        )
-                    {
-                        crate::window_manager::add_assistant_message(
-                            sid,
-                            &assistant_text,
-                            assistant_thinking.clone(),
-                        );
-                    }
+                    persist_terminal_assistant_message(
+                        Some(sid),
+                        &assistant_text,
+                        assistant_thinking.as_deref(),
+                        true,
+                    );
 
                     let paused_state = gestura_core::PausedExecutionState {
                         original_input: input_snapshot.clone(),
@@ -5607,6 +5723,17 @@ pub async fn resume_agent_streaming(
                         paused_at: chrono::Utc::now(),
                     };
                     crate::window_manager::set_session_paused_execution(sid, Some(paused_state));
+
+                    remember_terminal_assistant_summary(
+                        Some(sid),
+                        TerminalAssistantSummaryKind::Paused,
+                        latest_progress_summary.as_deref(),
+                        Some(&format!(
+                            "No resumed stream events arrived for {:?}.",
+                            idle_timeout
+                        )),
+                        assistant_thinking.as_deref(),
+                    );
 
                     emit(
                         "agent-stream-status",
@@ -5638,6 +5765,13 @@ pub async fn resume_agent_streaming(
         if let (Some(sid), Some(task_id)) = (&resolved_session_id, &tracked_task_id) {
             let _ = crate::task_integration::mark_task_cancelled(&app, sid, task_id);
         }
+        remember_terminal_assistant_summary(
+            resolved_session_id.as_deref(),
+            TerminalAssistantSummaryKind::UnexpectedEnd,
+            latest_progress_summary.as_deref(),
+            Some("Resumed streaming ended unexpectedly (no terminal event received)"),
+            assistant_thinking.as_deref(),
+        );
         emit(
             "agent-stream-error",
             serde_json::json!("Resumed streaming ended unexpectedly (no terminal event received)"),

@@ -92,15 +92,22 @@ struct PublicNarrationContextFrame {
     completion_ready: bool,
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 struct ObservedRuntimeEvidence {
     saw_successful_tool_work: bool,
+    saw_diagnostic_progress: bool,
+    saw_contradiction: bool,
+    saw_blocker: bool,
     saw_mutation: bool,
     successful_source_mutation: bool,
     mutation_requirement_satisfied: bool,
     saw_generic_verification_progress: bool,
+    build_attempted: bool,
     build_completed: bool,
+    test_attempted: bool,
     test_completed: bool,
+    latest_contradiction_summary: Option<String>,
+    latest_blocker_summary: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -237,6 +244,17 @@ impl AgentPipeline {
 
     fn observed_runtime_evidence(tool_calls: &[ToolCallRecord]) -> ObservedRuntimeEvidence {
         let saw_successful_tool_work = Self::has_any_successful_non_task_tool_call(tool_calls);
+        let saw_diagnostic_progress = tool_calls
+            .iter()
+            .any(Self::tool_call_counts_as_diagnostic_progress);
+        let latest_non_task_tool_call = tool_calls
+            .iter()
+            .rev()
+            .find(|tool_call| !Self::is_task_tool_name(&tool_call.name));
+        let latest_contradiction_summary =
+            latest_non_task_tool_call.and_then(Self::tool_call_contradiction_summary);
+        let latest_blocker_summary =
+            latest_non_task_tool_call.and_then(Self::tool_call_blocker_summary);
         let successful_source_mutation = tool_calls.iter().any(|tool_call| {
             Self::is_successful_mutating_file_tool_call(tool_call)
                 || Self::is_successful_mutating_code_tool_call(tool_call)
@@ -256,15 +274,23 @@ impl AgentPipeline {
         let saw_generic_verification_progress = tool_calls
             .iter()
             .any(Self::is_successful_generic_verification_tool_call);
-        let (build_completed, test_completed) = Self::build_and_test_completion_status(tool_calls);
+        let (build_attempted, build_completed, test_attempted, test_completed) =
+            Self::build_and_test_completion_status(tool_calls);
         ObservedRuntimeEvidence {
             saw_successful_tool_work,
+            saw_diagnostic_progress,
+            saw_contradiction: latest_contradiction_summary.is_some(),
+            saw_blocker: latest_blocker_summary.is_some(),
             saw_mutation,
             successful_source_mutation,
             mutation_requirement_satisfied,
             saw_generic_verification_progress,
+            build_attempted,
             build_completed,
+            test_attempted,
             test_completed,
+            latest_contradiction_summary,
+            latest_blocker_summary,
         }
     }
 
@@ -452,6 +478,11 @@ impl AgentPipeline {
         if requires_build_and_test && !evidence.test_completed {
             missing.push("test command not yet observed".to_string());
         }
+        if let Some(summary) = evidence.latest_blocker_summary {
+            missing.push(format!("unresolved blocker: {summary}"));
+        } else if let Some(summary) = evidence.latest_contradiction_summary {
+            missing.push(format!("unresolved contradiction: {summary}"));
+        }
         missing
     }
 
@@ -516,6 +547,24 @@ impl AgentPipeline {
         if let Some(mutation_signature) = Self::successful_mutation_stagnation_signature(tool_call)
         {
             return format!("{}:success:{mutation_signature}", tool_call.name);
+        }
+
+        if let Some(summary) = Self::tool_call_blocker_summary(tool_call) {
+            let normalized = Self::normalize_stagnation_text(&summary);
+            return if normalized.is_empty() {
+                format!("{}:blocked", tool_call.name)
+            } else {
+                format!("{}:blocked:{normalized}", tool_call.name)
+            };
+        }
+
+        if let Some(summary) = Self::tool_call_contradiction_summary(tool_call) {
+            let normalized = Self::normalize_stagnation_text(&summary);
+            return if normalized.is_empty() {
+                format!("{}:contradiction", tool_call.name)
+            } else {
+                format!("{}:contradiction:{normalized}", tool_call.name)
+            };
         }
 
         let (kind, text) = match &tool_call.result {
@@ -612,13 +661,20 @@ impl AgentPipeline {
         runtime_state: Option<&TrackedTaskRuntimeState>,
     ) -> ToolIterationStagnationFingerprint {
         let evidence = Self::observed_runtime_evidence(iteration_tool_calls);
+        let mut fingerprint_evidence = evidence.clone();
+        if fingerprint_evidence.latest_blocker_summary.is_some()
+            || fingerprint_evidence.latest_contradiction_summary.is_some()
+        {
+            fingerprint_evidence.build_attempted = false;
+            fingerprint_evidence.test_attempted = false;
+        }
         let missing_requirements = runtime_state
             .map(|state| state.snapshot.missing_requirements.clone())
             .unwrap_or_else(|| {
                 Self::runtime_missing_requirements(
                     requires_build_and_test,
                     requires_mutating_file_tool_success,
-                    evidence,
+                    evidence.clone(),
                 )
             });
 
@@ -644,7 +700,7 @@ impl AgentPipeline {
                 .iter()
                 .map(Self::tool_result_fingerprint)
                 .collect(),
-            evidence,
+            evidence: fingerprint_evidence,
             missing_requirements,
             current_task,
             ready_tasks,
@@ -693,6 +749,12 @@ impl AgentPipeline {
                 "missing requirements unchanged: {}",
                 fingerprint.missing_requirements.join(", ")
             ));
+        }
+
+        if let Some(summary) = fingerprint.evidence.latest_blocker_summary.as_ref() {
+            parts.push(format!("repeated blocker: {summary}"));
+        } else if let Some(summary) = fingerprint.evidence.latest_contradiction_summary.as_ref() {
+            parts.push(format!("repeated contradiction: {summary}"));
         }
 
         parts.join(" | ")
@@ -1409,7 +1471,7 @@ impl AgentPipeline {
                 return PublicNarrationChangeKind::Blocker;
             }
 
-            if snapshot.open_tasks.is_empty() && snapshot.missing_requirements.is_empty() {
+            if Self::runtime_snapshot_completion_ready(snapshot) {
                 return PublicNarrationChangeKind::Completion;
             }
 
@@ -1423,6 +1485,12 @@ impl AgentPipeline {
         }
 
         if let Some(tool_call) = recent_tool_calls.last() {
+            if Self::tool_call_blocker_summary(tool_call).is_some() {
+                return PublicNarrationChangeKind::Blocker;
+            }
+            if Self::tool_call_contradiction_summary(tool_call).is_some() {
+                return PublicNarrationChangeKind::Contradiction;
+            }
             match tool_call.result {
                 ToolResult::Error(_) | ToolResult::Skipped(_) => {
                     return PublicNarrationChangeKind::Contradiction;
@@ -1538,6 +1606,10 @@ impl AgentPipeline {
             && snapshot.blocked_tasks.is_empty()
             && snapshot.open_tasks.is_empty()
             && snapshot.missing_requirements.is_empty()
+    }
+
+    fn runtime_state_allows_success_closeout(state: &TrackedTaskRuntimeState) -> bool {
+        state.snapshot.missing_requirements.is_empty()
     }
 
     fn runtime_snapshot_has_incomplete_tracked_work(
@@ -3518,56 +3590,282 @@ impl AgentPipeline {
             || normalized_command.contains(&format!(" | {marker}"))
     }
 
+    fn shell_command_masks_failure(command: &str) -> bool {
+        let normalized = Self::normalize_shell_command(command);
+        normalized.contains("|| true")
+            || normalized.contains("|| :")
+            || normalized.contains("|| exit 0")
+    }
+
+    fn concise_outcome_excerpt(text: &str) -> String {
+        let condensed = text
+            .lines()
+            .map(str::trim)
+            .find(|line| !line.is_empty())
+            .unwrap_or(text)
+            .trim();
+        let mut excerpt = condensed.chars().take(120).collect::<String>();
+        if condensed.chars().count() > 120 {
+            excerpt.push('…');
+        }
+        excerpt
+    }
+
+    fn output_signals_blocker(output: &str) -> bool {
+        let lower = output.to_ascii_lowercase();
+        [
+            "permission denied",
+            "access denied",
+            "rate limit",
+            "timed out",
+            "timeout",
+            "not configured",
+            "command not found",
+            "no such file or directory",
+            "unable to resolve host",
+            "could not resolve host",
+            "connection refused",
+            "network is unreachable",
+            "authentication required",
+            "missing script",
+            "not a tauri project",
+        ]
+        .iter()
+        .any(|marker| lower.contains(marker))
+    }
+
+    fn is_http_probe_command(command: &str) -> bool {
+        let normalized = Self::normalize_shell_command(command);
+        ["curl", "wget", "http", "httpie"]
+            .iter()
+            .any(|marker| Self::shell_command_invokes_marker(&normalized, marker))
+    }
+
+    fn output_contains_http_failure_status(output: &str) -> bool {
+        let lower = output.to_ascii_lowercase();
+        [
+            " 400 ",
+            " 401 ",
+            " 402 ",
+            " 403 ",
+            " 404 ",
+            " 409 ",
+            " 410 ",
+            " 422 ",
+            " 429 ",
+            " 500 ",
+            " 502 ",
+            " 503 ",
+            " 504 ",
+            "404 not found",
+            "500 internal server error",
+            "502 bad gateway",
+            "503 service unavailable",
+            "504 gateway timeout",
+        ]
+        .iter()
+        .any(|marker| lower.contains(marker))
+    }
+
+    fn output_contains_failure_markers(output: &str) -> bool {
+        let lower = output.to_ascii_lowercase();
+        [
+            " failed",
+            "failure",
+            "failures:",
+            "error:",
+            " errors",
+            "not ok",
+            "panic",
+            "missing script",
+            "not found",
+            "cannot navigate to invalid url",
+            "expected ",
+            "mismatch",
+        ]
+        .iter()
+        .any(|marker| lower.contains(marker))
+    }
+
+    fn shell_success_output_negative_summary(
+        command: &str,
+        output: &str,
+    ) -> Option<(bool, String)> {
+        let excerpt = Self::concise_outcome_excerpt(output);
+        if Self::is_http_probe_command(command) && Self::output_contains_http_failure_status(output)
+        {
+            return Some((
+                false,
+                format!("probe observed an HTTP failure response: {excerpt}"),
+            ));
+        }
+
+        let verification_like = Self::is_build_or_check_command(command)
+            || Self::is_test_command(command)
+            || Self::is_http_probe_command(command);
+        if !verification_like {
+            return None;
+        }
+
+        if Self::shell_command_masks_failure(command) {
+            return Some((
+                false,
+                "composite verification command masked failures, so it does not count as trusted completion evidence"
+                    .to_string(),
+            ));
+        }
+
+        if Self::output_signals_blocker(output) {
+            return Some((
+                true,
+                format!(
+                    "successful command surfaced a blocker instead of completion evidence: {excerpt}"
+                ),
+            ));
+        }
+
+        if Self::output_contains_failure_markers(output) {
+            return Some((
+                false,
+                format!("successful shell output still reported a failing outcome: {excerpt}"),
+            ));
+        }
+
+        None
+    }
+
+    fn tool_call_blocker_summary(tool_call: &ToolCallRecord) -> Option<String> {
+        match &tool_call.result {
+            ToolResult::Skipped(output) => Some(format!(
+                "{} was blocked: {}",
+                tool_call.name,
+                Self::concise_outcome_excerpt(output)
+            )),
+            ToolResult::Error(output) if Self::output_signals_blocker(output) => Some(format!(
+                "{} was blocked: {}",
+                tool_call.name,
+                Self::concise_outcome_excerpt(output)
+            )),
+            ToolResult::Success(output) if tool_call.name == "shell" => {
+                let command =
+                    Self::extract_shell_command_from_record_arguments(&tool_call.arguments)?;
+                Self::shell_success_output_negative_summary(&command, output)
+                    .and_then(|(is_blocker, summary)| is_blocker.then_some(summary))
+            }
+            _ => None,
+        }
+    }
+
+    fn tool_call_contradiction_summary(tool_call: &ToolCallRecord) -> Option<String> {
+        match &tool_call.result {
+            ToolResult::Error(output) if !Self::output_signals_blocker(output) => Some(format!(
+                "{} contradicted the current path: {}",
+                tool_call.name,
+                Self::concise_outcome_excerpt(output)
+            )),
+            ToolResult::Success(output) if tool_call.name == "shell" => {
+                let command =
+                    Self::extract_shell_command_from_record_arguments(&tool_call.arguments)?;
+                Self::shell_success_output_negative_summary(&command, output)
+                    .and_then(|(is_blocker, summary)| (!is_blocker).then_some(summary))
+            }
+            _ => None,
+        }
+    }
+
+    fn tool_call_effective_success(tool_call: &ToolCallRecord) -> bool {
+        match &tool_call.result {
+            ToolResult::Success(output) if tool_call.name == "shell" => {
+                Self::extract_shell_command_from_record_arguments(&tool_call.arguments)
+                    .and_then(|command| {
+                        Self::shell_success_output_negative_summary(&command, output)
+                    })
+                    .is_none()
+            }
+            ToolResult::Success(_) => true,
+            ToolResult::Error(_) | ToolResult::Skipped(_) => false,
+        }
+    }
+
+    fn tool_call_counts_as_diagnostic_progress(tool_call: &ToolCallRecord) -> bool {
+        if Self::tool_call_effective_success(tool_call) {
+            return !Self::is_task_tool_name(&tool_call.name);
+        }
+
+        Self::tool_call_contradiction_summary(tool_call).is_some()
+            || Self::tool_call_blocker_summary(tool_call).is_some()
+    }
+
     fn required_build_verification_label(tool_calls: &[ToolCallRecord]) -> &'static str {
         let _ = tool_calls;
         "a successful build/check command appropriate for the changed part of the project"
     }
 
-    fn build_and_test_completion_status(tool_calls: &[ToolCallRecord]) -> (bool, bool) {
+    fn build_and_test_completion_status(tool_calls: &[ToolCallRecord]) -> (bool, bool, bool, bool) {
         let frontend_verification_required = Self::frontend_verification_required(tool_calls);
+        let mut build_attempted = false;
         let mut build_completed = false;
+        let mut frontend_build_attempted = false;
         let mut frontend_build_completed = false;
         let mut integrated_frontend_build_completed = false;
+        let mut test_attempted = false;
         let mut test_completed = false;
+        let mut frontend_test_attempted = false;
         let mut frontend_test_completed = false;
+        let mut general_test_attempted = false;
         let mut general_test_completed = false;
 
-        for command in tool_calls
-            .iter()
-            .filter(|tool_call| {
-                tool_call.name == "shell" && matches!(tool_call.result, ToolResult::Success(_))
-            })
-            .filter_map(Self::extract_shell_command)
-        {
+        for tool_call in tool_calls.iter() {
+            if tool_call.name != "shell" {
+                continue;
+            }
+            let Some(command) =
+                Self::extract_shell_command_from_record_arguments(&tool_call.arguments)
+            else {
+                continue;
+            };
             if Self::is_non_mutating_shell_probe_command(&command) {
                 continue;
             }
 
+            let success = Self::tool_call_effective_success(tool_call);
+
             if Self::is_build_or_check_command(&command) {
-                if !frontend_verification_required {
+                build_attempted = true;
+                if success && !frontend_verification_required {
                     build_completed = true;
                 }
 
                 if Self::is_frontend_capable_build_command(&command) {
-                    frontend_build_completed = true;
-                    if frontend_verification_required {
+                    frontend_build_attempted = true;
+                    if success {
+                        frontend_build_completed = true;
+                    }
+                    if success && frontend_verification_required {
                         build_completed = true;
                     }
-                    if Self::is_integrated_frontend_build_command(&command) {
+                    if success && Self::is_integrated_frontend_build_command(&command) {
                         integrated_frontend_build_completed = true;
                     }
                 }
             }
 
             if Self::is_test_command(&command) {
-                general_test_completed = true;
-                if !frontend_verification_required {
+                test_attempted = true;
+                general_test_attempted = true;
+                if success {
+                    general_test_completed = true;
+                }
+                if success && !frontend_verification_required {
                     test_completed = true;
                 }
 
                 if Self::is_frontend_capable_test_command(&command) {
-                    frontend_test_completed = true;
-                    if frontend_verification_required {
+                    frontend_test_attempted = true;
+                    if success {
+                        frontend_test_completed = true;
+                    }
+                    if success && frontend_verification_required {
                         test_completed = true;
                     }
                 }
@@ -3575,23 +3873,31 @@ impl AgentPipeline {
         }
 
         if frontend_verification_required {
+            build_attempted = frontend_build_attempted;
             build_completed = frontend_build_completed;
+            test_attempted = frontend_test_attempted
+                || (integrated_frontend_build_completed && general_test_attempted);
             test_completed = frontend_test_completed
                 || (integrated_frontend_build_completed && general_test_completed);
         }
 
-        (build_completed, test_completed)
+        (
+            build_attempted,
+            build_completed,
+            test_attempted,
+            test_completed,
+        )
     }
 
     fn has_any_successful_non_task_tool_call(tool_calls: &[ToolCallRecord]) -> bool {
         tool_calls.iter().any(|tool_call| {
-            tool_call.name != "task" && matches!(tool_call.result, ToolResult::Success(_))
+            !Self::is_task_tool_name(&tool_call.name)
+                && Self::tool_call_effective_success(tool_call)
         })
     }
 
     fn is_successful_generic_verification_tool_call(tool_call: &ToolCallRecord) -> bool {
-        if Self::is_task_tool_name(&tool_call.name)
-            || !matches!(tool_call.result, ToolResult::Success(_))
+        if Self::is_task_tool_name(&tool_call.name) || !Self::tool_call_effective_success(tool_call)
         {
             return false;
         }
@@ -3681,7 +3987,7 @@ impl AgentPipeline {
     }
 
     fn is_successful_mutating_shell_tool_call(tool_call: &ToolCallRecord) -> bool {
-        if tool_call.name != "shell" || !matches!(tool_call.result, ToolResult::Success(_)) {
+        if tool_call.name != "shell" || !Self::tool_call_effective_success(tool_call) {
             return false;
         }
 
@@ -3732,6 +4038,16 @@ impl AgentPipeline {
     ) -> bool {
         let manager = crate::get_global_task_manager();
         match manager.get_task(session_id, task_id) {
+            Ok(Some(task))
+                if task.status != target_status
+                    && task.is_terminal()
+                    && !matches!(
+                        target_status,
+                        crate::TaskStatus::Completed | crate::TaskStatus::Cancelled
+                    ) =>
+            {
+                true
+            }
             Ok(Some(task)) if task.status != target_status => manager
                 .update_task_status(session_id, task_id, target_status)
                 .is_ok(),
@@ -3844,7 +4160,7 @@ impl AgentPipeline {
             target_ids.push(implementation_task.id.clone());
         }
 
-        if (evidence.build_completed || evidence.test_completed)
+        if (evidence.build_attempted || evidence.test_attempted)
             && let Some(verification_task) = open_leaf_tasks.iter().find(|task| {
                 !target_ids.iter().any(|target_id| target_id == &task.id)
                     && Self::task_execution_profile(task, requires_build_and_test).execution_kind
@@ -3868,6 +4184,12 @@ impl AgentPipeline {
                 .as_ref()
                 .is_some_and(|current_task_id| current_task_id == &task.id);
             let runtime_note = match profile.execution_kind {
+                _ if evidence.saw_blocker => {
+                    Some("runtime observed a blocker that still needs resolution".to_string())
+                }
+                _ if evidence.saw_contradiction => {
+                    Some("runtime observed a contradiction that still needs resolution".to_string())
+                }
                 TaskExecutionKind::Planning if evidence.saw_successful_tool_work => {
                     Some("runtime observed planning or inspection progress".to_string())
                 }
@@ -3875,7 +4197,7 @@ impl AgentPipeline {
                     Some("runtime observed concrete implementation work".to_string())
                 }
                 TaskExecutionKind::Verification
-                    if evidence.build_completed || evidence.test_completed =>
+                    if evidence.build_attempted || evidence.test_attempted =>
                 {
                     Some("runtime observed verification progress".to_string())
                 }
@@ -3890,6 +4212,31 @@ impl AgentPipeline {
                     state.merge_profile(profile.clone());
                     if let Some(note) = runtime_note.clone() {
                         state.last_runtime_note = Some(note);
+                    }
+
+                    if evidence.saw_diagnostic_progress {
+                        state.record_evidence(TaskExecutionEvidence::new(
+                            TaskExecutionEvidenceKind::Diagnostic,
+                            "Runtime observed diagnostic progress",
+                            None,
+                            None,
+                        ));
+                    }
+                    if let Some(summary) = evidence.latest_contradiction_summary.as_ref() {
+                        state.record_evidence(TaskExecutionEvidence::new(
+                            TaskExecutionEvidenceKind::Contradiction,
+                            summary,
+                            None,
+                            None,
+                        ));
+                    }
+                    if let Some(summary) = evidence.latest_blocker_summary.as_ref() {
+                        state.record_evidence(TaskExecutionEvidence::new(
+                            TaskExecutionEvidenceKind::Blocker,
+                            summary,
+                            None,
+                            None,
+                        ));
                     }
 
                     match profile.execution_kind {
@@ -3922,21 +4269,29 @@ impl AgentPipeline {
                                     None,
                                 ));
                             }
-                            if evidence.build_completed {
+                            if evidence.build_attempted {
                                 state.record_evidence(TaskExecutionEvidence::new(
                                     TaskExecutionEvidenceKind::Build,
-                                    "Runtime observed successful build/check command",
+                                    if evidence.build_completed {
+                                        "Runtime observed successful build/check command"
+                                    } else {
+                                        "Runtime observed attempted build/check command that did not succeed"
+                                    },
                                     Some("shell".to_string()),
                                     None,
-                                ));
+                                ).with_success(evidence.build_completed));
                             }
-                            if evidence.test_completed {
+                            if evidence.test_attempted {
                                 state.record_evidence(TaskExecutionEvidence::new(
                                     TaskExecutionEvidenceKind::Test,
-                                    "Runtime observed successful test command",
+                                    if evidence.test_completed {
+                                        "Runtime observed successful test command"
+                                    } else {
+                                        "Runtime observed attempted test command that did not succeed"
+                                    },
                                     Some("shell".to_string()),
                                     None,
-                                ));
+                                ).with_success(evidence.test_completed));
                             }
                             if !profile.requires_build
                                 && !profile.requires_test
@@ -3974,17 +4329,27 @@ impl AgentPipeline {
                 || updated_state.test_succeeded
                 || evidence.build_completed
                 || evidence.test_completed;
+            let blocker_observed = evidence.saw_blocker;
+            let contradiction_observed = evidence.saw_contradiction;
+            let unresolved_negative_evidence = blocker_observed || contradiction_observed;
 
             let target_status = match profile.execution_kind {
                 TaskExecutionKind::Planning if updated_state.saw_tool_activity => {
-                    if stronger_phase_handoff_observed && updated_state.satisfies_profile() {
+                    if blocker_observed {
+                        Some(crate::TaskStatus::Blocked)
+                    } else if stronger_phase_handoff_observed
+                        && updated_state.satisfies_profile()
+                        && !unresolved_negative_evidence
+                    {
                         Some(crate::TaskStatus::Completed)
                     } else {
                         Some(crate::TaskStatus::InProgress)
                     }
                 }
                 TaskExecutionKind::Implementation if updated_state.saw_mutation => {
-                    if (is_current_target && updated_state.satisfies_profile())
+                    if blocker_observed {
+                        Some(crate::TaskStatus::Blocked)
+                    } else if (is_current_target && updated_state.satisfies_profile())
                         || evidence.build_completed
                         || evidence.test_completed
                         || !verification_leaf_exists
@@ -3997,21 +4362,30 @@ impl AgentPipeline {
                 TaskExecutionKind::Verification
                     if updated_state.build_succeeded || updated_state.test_succeeded =>
                 {
-                    if updated_state.satisfies_profile() {
+                    if blocker_observed {
+                        Some(crate::TaskStatus::Blocked)
+                    } else if updated_state.satisfies_profile() && !unresolved_negative_evidence {
                         Some(crate::TaskStatus::Completed)
                     } else {
                         Some(crate::TaskStatus::InProgress)
                     }
                 }
                 TaskExecutionKind::Verification if updated_state.saw_tool_activity => {
-                    if updated_state.satisfies_profile() {
+                    if blocker_observed {
+                        Some(crate::TaskStatus::Blocked)
+                    } else if updated_state.satisfies_profile() && !unresolved_negative_evidence {
                         Some(crate::TaskStatus::Completed)
                     } else {
                         Some(crate::TaskStatus::InProgress)
                     }
                 }
                 TaskExecutionKind::General if updated_state.saw_tool_activity => {
-                    if stronger_phase_handoff_observed && updated_state.satisfies_profile() {
+                    if blocker_observed {
+                        Some(crate::TaskStatus::Blocked)
+                    } else if stronger_phase_handoff_observed
+                        && updated_state.satisfies_profile()
+                        && !unresolved_negative_evidence
+                    {
                         Some(crate::TaskStatus::Completed)
                     } else {
                         Some(crate::TaskStatus::InProgress)
@@ -4173,11 +4547,13 @@ impl AgentPipeline {
         if completion_ready {
             let _ = manager.set_current_task_id(session_id, None);
         } else {
-            let _ = Self::apply_tracked_phase_status(
-                session_id,
-                root_task_id,
-                crate::TaskStatus::InProgress,
-            );
+            if !root_already_completed {
+                let _ = Self::apply_tracked_phase_status(
+                    session_id,
+                    root_task_id,
+                    crate::TaskStatus::InProgress,
+                );
+            }
             let _ = manager.set_current_task_id(
                 session_id,
                 current_task.as_ref().map(|task| task.id.clone()),
@@ -4280,7 +4656,8 @@ impl AgentPipeline {
             return false;
         }
 
-        let (build_completed, test_completed) = Self::build_and_test_completion_status(tool_calls);
+        let (_, build_completed, _, test_completed) =
+            Self::build_and_test_completion_status(tool_calls);
         !(build_completed && test_completed)
     }
 
@@ -5284,7 +5661,8 @@ impl AgentPipeline {
         let manager = crate::get_global_task_manager();
         match manager.get_task(session_id, task_id) {
             Ok(Some(task)) => {
-                if task.status != crate::TaskStatus::InProgress
+                if !task.is_terminal()
+                    && task.status != crate::TaskStatus::InProgress
                     && let Err(error) = manager.update_task_status(
                         session_id,
                         task_id,
@@ -5451,7 +5829,16 @@ impl AgentPipeline {
             return Some(crate::TaskStatus::Cancelled);
         }
 
-        if let Ok(Some(execution_state)) = manager.get_execution_state(session_id, &task.id) {
+        let inferred_profile = Self::task_execution_profile(task, false);
+
+        if let Ok(Some(mut execution_state)) = manager.get_execution_state(session_id, &task.id) {
+            let mut required_profile = execution_state.verification_profile.clone();
+            required_profile.requires_mutation |= inferred_profile.requires_mutation;
+            required_profile.requires_build |= inferred_profile.requires_build;
+            required_profile.requires_test |= inferred_profile.requires_test;
+            required_profile.requires_external_evidence |=
+                inferred_profile.requires_external_evidence;
+            execution_state.merge_profile(required_profile);
             match task.status {
                 crate::TaskStatus::InProgress | crate::TaskStatus::NotStarted
                     if execution_state.satisfies_profile() =>
@@ -5465,8 +5852,6 @@ impl AgentPipeline {
             }
         }
 
-        let inferred_profile = Self::task_execution_profile(task, false);
-
         match task.status {
             crate::TaskStatus::InProgress => match inferred_profile.execution_kind {
                 TaskExecutionKind::Planning | TaskExecutionKind::General => {
@@ -5475,7 +5860,7 @@ impl AgentPipeline {
                 TaskExecutionKind::Implementation | TaskExecutionKind::Verification => None,
             },
             crate::TaskStatus::NotStarted => {
-                let (build_completed, test_completed) =
+                let (_, build_completed, _, test_completed) =
                     Self::build_and_test_completion_status(tool_calls);
                 let matches_build_task = Self::task_mentions_build_verification(task);
                 let matches_test_task = Self::task_mentions_test_verification(task);
@@ -5489,13 +5874,9 @@ impl AgentPipeline {
                 {
                     Some(crate::TaskStatus::Completed)
                 } else {
-                    match inferred_profile.execution_kind {
-                        TaskExecutionKind::Planning | TaskExecutionKind::General => {
-                            Self::final_response_mentions_task(task, final_response)
-                                .then_some(crate::TaskStatus::Completed)
-                        }
-                        TaskExecutionKind::Implementation | TaskExecutionKind::Verification => None,
-                    }
+                    let _ = final_response;
+                    let _ = inferred_profile;
+                    None
                 }
             }
             crate::TaskStatus::Blocked
@@ -5680,14 +6061,18 @@ impl AgentPipeline {
         requires_mutating_file_tool_success: bool,
         tool_calls: &[ToolCallRecord],
     ) -> bool {
-        let last_non_task_succeeded = tool_calls
+        let last_non_task_supports_completion = tool_calls
             .iter()
             .rev()
-            .find(|tool_call| tool_call.name != "task")
-            .map(|tool_call| matches!(tool_call.result, ToolResult::Success(_)))
+            .find(|tool_call| !Self::is_task_tool_name(&tool_call.name))
+            .map(|tool_call| {
+                Self::tool_call_effective_success(tool_call)
+                    && Self::tool_call_contradiction_summary(tool_call).is_none()
+                    && Self::tool_call_blocker_summary(tool_call).is_none()
+            })
             .unwrap_or(!requires_mutating_file_tool_success);
 
-        if !last_non_task_succeeded {
+        if !last_non_task_supports_completion {
             return false;
         }
 
@@ -5793,6 +6178,15 @@ impl AgentPipeline {
 
     fn keep_tracked_task_open(session_id: &str, task_id: &str) {
         let manager = crate::get_global_task_manager();
+        let task_is_terminal = manager
+            .get_task(session_id, task_id)
+            .ok()
+            .flatten()
+            .is_some_and(|task| task.is_terminal());
+        if task_is_terminal {
+            return;
+        }
+
         let _ =
             Self::apply_tracked_phase_status(session_id, task_id, crate::TaskStatus::InProgress);
         let _ = manager.set_current_task_id(session_id, Some(task_id.to_string()));
@@ -5825,12 +6219,11 @@ impl AgentPipeline {
             tool_calls,
         );
 
-        if Self::is_missing_requested_build_and_test(requires_build_and_test, tool_calls)
-            || !Self::tool_results_support_successful_completion(
-                requires_mutating_file_tool_success,
-                tool_calls,
-            )
-        {
+        if !Self::tool_calls_support_requested_success_closeout(
+            requires_build_and_test,
+            requires_mutating_file_tool_success,
+            tool_calls,
+        ) {
             if let Some(state) = runtime_state.as_ref() {
                 Self::record_tracked_task_incomplete_memory_event(
                     Some(session_id),
@@ -5860,6 +6253,22 @@ impl AgentPipeline {
         if let Some(state) = runtime_state
             && !state.completion_ready
         {
+            if !Self::runtime_state_allows_success_closeout(&state) {
+                Self::record_tracked_task_incomplete_memory_event(
+                    Some(session_id),
+                    Some(task_id),
+                    &state,
+                );
+                Self::keep_tracked_task_open(session_id, task_id);
+                tracing::info!(
+                    session_id = %session_id,
+                    task_id = %task_id,
+                    missing_requirements = ?state.snapshot.missing_requirements,
+                    "Skipping tracked task descendant closeout because runtime requirements remain unmet"
+                );
+                return;
+            }
+
             if state.open_descendant_summary.has_open() {
                 Self::reconcile_open_descendants_after_success(
                     session_id,
@@ -5970,7 +6379,7 @@ impl AgentPipeline {
         }
         match manager.get_task(session_id, task_id) {
             Ok(Some(task)) => {
-                if !task.is_terminal()
+                if task.status != crate::TaskStatus::Cancelled
                     && let Err(error) = manager.update_task_status(
                         session_id,
                         task_id,
@@ -6050,17 +6459,27 @@ impl AgentPipeline {
         let manager = crate::get_global_task_manager();
         let previous_current_task_id = manager.get_current_task_id(session_id).ok().flatten();
 
-        let mut summary = Self::reconcile_tracked_execution_progress_from_tool_activity(
+        let runtime_state = Self::reconcile_tracked_execution_progress_from_tool_activity(
             requires_build_and_test,
             requires_mutating_file_tool_success,
             Some(session_id),
             Some(task_id),
             tool_calls,
-        )
-        .map(|state| state.open_descendant_summary)
-        .unwrap_or_default();
+        );
+        let mut summary = runtime_state
+            .as_ref()
+            .map(|state| state.open_descendant_summary)
+            .unwrap_or_default();
 
         if summary.has_open()
+            && Self::tool_calls_support_requested_success_closeout(
+                requires_build_and_test,
+                requires_mutating_file_tool_success,
+                tool_calls,
+            )
+            && runtime_state
+                .as_ref()
+                .is_none_or(Self::runtime_state_allows_success_closeout)
             && Self::final_response_signals_successful_completion(
                 requires_build_and_test,
                 requires_mutating_file_tool_success,
@@ -6074,13 +6493,29 @@ impl AgentPipeline {
                 final_response,
                 tool_calls,
             );
-            if let Some(previous_current_task_id) = previous_current_task_id {
-                let _ = manager.set_current_task_id(session_id, Some(previous_current_task_id));
-            }
             summary = Self::tracked_open_descendant_summary(Some(session_id), Some(task_id));
+            if summary.has_open() {
+                if let Some(previous_current_task_id) = previous_current_task_id {
+                    let _ = manager.set_current_task_id(session_id, Some(previous_current_task_id));
+                }
+            } else {
+                let _ = manager.set_current_task_id(session_id, None);
+            }
         }
 
         summary
+    }
+
+    fn tool_calls_support_requested_success_closeout(
+        requires_build_and_test: bool,
+        requires_mutating_file_tool_success: bool,
+        tool_calls: &[ToolCallRecord],
+    ) -> bool {
+        !Self::is_missing_requested_build_and_test(requires_build_and_test, tool_calls)
+            && Self::tool_results_support_successful_completion(
+                requires_mutating_file_tool_success,
+                tool_calls,
+            )
     }
 
     #[allow(dead_code)]
@@ -6594,7 +7029,8 @@ impl AgentPipeline {
             ));
         }
 
-        let (build_completed, test_completed) = Self::build_and_test_completion_status(tool_calls);
+        let (_, build_completed, _, test_completed) =
+            Self::build_and_test_completion_status(tool_calls);
         let build_label = Self::required_build_verification_label(tool_calls);
         let missing = match (build_completed, test_completed) {
             (false, false) => {
@@ -6827,7 +7263,8 @@ impl AgentPipeline {
         requires_build_and_test: bool,
         tool_calls: &[ToolCallRecord],
     ) -> String {
-        let (build_completed, test_completed) = Self::build_and_test_completion_status(tool_calls);
+        let (_, build_completed, _, test_completed) =
+            Self::build_and_test_completion_status(tool_calls);
         let build_label = Self::required_build_verification_label(tool_calls);
 
         if requires_build_and_test {
@@ -7223,6 +7660,9 @@ impl AgentPipeline {
             stagnant_iteration_streak,
             stagnation_summary
         ));
+        prompt.push_str(
+            "If the repeated outcome is a contradiction or blocker, do not spend another turn merely confirming it. Either take a materially different step that could resolve it, or stop and explain the unresolved blocker/diagnosis clearly.\n",
+        );
         if !missing_requirements.is_empty() {
             prompt.push_str(&format!(
                 "Unchanged runtime requirements: {}\n",
@@ -11655,7 +12095,7 @@ mod tests {
 
         assert_eq!(
             AgentPipeline::build_and_test_completion_status(&tool_calls),
-            (true, true)
+            (true, true, true, true)
         );
     }
 
@@ -11695,7 +12135,7 @@ mod tests {
 
         assert_eq!(
             AgentPipeline::build_and_test_completion_status(&tool_calls),
-            (true, true)
+            (true, true, true, true)
         );
     }
 
@@ -11742,7 +12182,7 @@ mod tests {
 
         assert_eq!(
             AgentPipeline::build_and_test_completion_status(&tool_calls),
-            (true, true)
+            (true, true, true, true)
         );
     }
 
@@ -11779,7 +12219,7 @@ mod tests {
                 result: ToolResult::Success("usage printed".to_string()),
                 duration_ms: 1,
             }]),
-            (false, false)
+            (false, false, false, false)
         );
     }
 
@@ -12595,6 +13035,29 @@ mod tests {
             .expect("current task lookup should succeed")
             .expect("current task should be preserved");
         assert_eq!(current_task, child.id);
+    }
+
+    #[test]
+    fn mark_tracked_task_in_progress_does_not_reopen_completed_root() {
+        let manager = crate::get_global_task_manager();
+        let session_id = format!("agent-loop-do-not-reopen-root-{}", uuid::Uuid::new_v4());
+
+        let mut root = crate::Task::new(&session_id, "Root", "Root", None);
+        root.set_status(crate::TaskStatus::Completed);
+
+        let mut task_list = crate::TaskList::new(&session_id);
+        task_list.add_task(root.clone());
+        manager
+            .replace_task_list(task_list)
+            .expect("replace task list");
+
+        AgentPipeline::mark_tracked_task_in_progress(Some(&session_id), Some(&root.id));
+
+        let updated_root = manager
+            .get_task(&session_id, &root.id)
+            .expect("task lookup should succeed")
+            .expect("root should exist");
+        assert_eq!(updated_root.status, crate::TaskStatus::Completed);
     }
 
     #[test]
@@ -13445,6 +13908,27 @@ mod tests {
     }
 
     #[test]
+    fn success_reconciliation_does_not_complete_not_started_planning_task_from_summary_text_alone()
+    {
+        let session_id = format!("agent-loop-success-plan-closeout-{}", uuid::Uuid::new_v4());
+        let planning = crate::Task::new(
+            &session_id,
+            "Plan rollout",
+            "Plan the release rollout and checkpoints",
+            None,
+        );
+
+        let status = AgentPipeline::target_status_for_open_descendant_after_success(
+            &session_id,
+            &planning,
+            "Planned the rollout and everything requested is complete.",
+            &[],
+        );
+
+        assert_eq!(status, None);
+    }
+
+    #[test]
     fn success_reconciliation_keeps_in_progress_verification_open_until_profile_is_satisfied() {
         let manager = crate::get_global_task_manager();
         let session_id = format!("agent-loop-success-profile-{}", uuid::Uuid::new_v4());
@@ -13498,6 +13982,54 @@ mod tests {
                 result: ToolResult::Success("check passed".to_string()),
                 duration_ms: 1,
             }],
+        );
+
+        assert_eq!(status, None);
+    }
+
+    #[test]
+    fn success_reconciliation_does_not_complete_verification_from_under_scoped_execution_state() {
+        let manager = crate::get_global_task_manager();
+        let session_id = format!("agent-loop-success-under-scoped-{}", uuid::Uuid::new_v4());
+        let mut verify = crate::Task::new(
+            &session_id,
+            "Run automated tests",
+            "Execute the automated test suite and confirm it passes",
+            None,
+        );
+        verify.set_status(crate::TaskStatus::InProgress);
+
+        let mut task_list = crate::TaskList::new(&session_id);
+        task_list.add_task(verify.clone());
+        manager
+            .replace_task_list(task_list)
+            .expect("replace task list");
+
+        manager
+            .update_execution_state(&session_id, &verify.id, |state| {
+                state.merge_profile(TaskVerificationProfile {
+                    execution_kind: TaskExecutionKind::Verification,
+                    ..TaskVerificationProfile::default()
+                });
+                state.record_evidence(TaskExecutionEvidence::new(
+                    TaskExecutionEvidenceKind::ToolActivity,
+                    "Reviewed the latest logs without running the test suite",
+                    Some("read_file".to_string()),
+                    None,
+                ));
+            })
+            .expect("execution state update should succeed");
+
+        let stored_verify = manager
+            .get_task(&session_id, &verify.id)
+            .expect("verification lookup should succeed")
+            .expect("verification task should exist");
+
+        let status = AgentPipeline::target_status_for_open_descendant_after_success(
+            &session_id,
+            &stored_verify,
+            "The requested work is complete and fully verified.",
+            &[],
         );
 
         assert_eq!(status, None);
@@ -13953,6 +14485,50 @@ mod tests {
             true,
             &tool_calls,
         ));
+    }
+
+    #[test]
+    fn tool_results_support_successful_completion_rejects_semantically_failed_shell_success() {
+        let tool_calls = vec![ToolCallRecord {
+            id: "1".to_string(),
+            name: "shell".to_string(),
+            arguments: serde_json::json!({
+                "command": "playwright test || true; npm run lint"
+            })
+            .to_string(),
+            result: ToolResult::Success(
+                "8 failed\n12 passed\nnpm run lint completed successfully".to_string(),
+            ),
+            duration_ms: 1,
+        }];
+
+        assert!(!AgentPipeline::tool_results_support_successful_completion(
+            false,
+            &tool_calls,
+        ));
+        assert!(AgentPipeline::tool_call_contradiction_summary(&tool_calls[0]).is_some());
+    }
+
+    #[test]
+    fn successful_http_probe_with_404_is_treated_as_contradiction() {
+        let tool_call = ToolCallRecord {
+            id: "1".to_string(),
+            name: "shell".to_string(),
+            arguments: serde_json::json!({
+                "command": "curl -I http://localhost:3000/missing"
+            })
+            .to_string(),
+            result: ToolResult::Success(
+                "HTTP/1.1 404 Not Found\ncontent-type: text/html".to_string(),
+            ),
+            duration_ms: 1,
+        };
+
+        assert!(!AgentPipeline::tool_call_effective_success(&tool_call));
+        assert!(
+            AgentPipeline::tool_call_contradiction_summary(&tool_call)
+                .is_some_and(|summary| summary.contains("HTTP failure response"))
+        );
     }
 
     #[test]
@@ -14583,7 +15159,7 @@ mod tests {
     }
 
     #[test]
-    fn no_tool_success_response_reconciles_placeholder_descendants_before_continuation() {
+    fn no_tool_success_response_reconciles_placeholder_descendants_into_terminal_closeout() {
         let manager = crate::get_global_task_manager();
         let session_id = format!(
             "agent-loop-no-tool-success-reconcile-{}",
@@ -14628,14 +15204,64 @@ mod tests {
             .get_task(&session_id, &child.id)
             .expect("child lookup should succeed")
             .expect("child should exist");
-        assert_eq!(updated_root.status, crate::TaskStatus::InProgress);
+        assert_eq!(updated_root.status, crate::TaskStatus::Completed);
         assert_eq!(updated_child.status, crate::TaskStatus::Cancelled);
         assert_eq!(
             manager
                 .get_current_task_id(&session_id)
                 .expect("current task lookup should succeed"),
-            Some(root.id.clone())
+            None
         );
+    }
+
+    #[test]
+    fn no_tool_success_response_does_not_close_descendants_when_required_evidence_is_missing() {
+        let manager = crate::get_global_task_manager();
+        let session_id = format!(
+            "agent-loop-no-tool-success-missing-evidence-{}",
+            uuid::Uuid::new_v4()
+        );
+        let mut root = crate::Task::new(&session_id, "Root", "Root", None);
+        root.set_status(crate::TaskStatus::InProgress);
+        let verify = crate::Task::new(
+            &session_id,
+            "Run automated tests",
+            "Execute the automated test suite and confirm it passes",
+            Some(root.id.clone()),
+        );
+
+        let mut task_list = crate::TaskList::new(&session_id);
+        task_list.add_task(root.clone());
+        task_list.add_task(verify.clone());
+        manager
+            .replace_task_list(task_list)
+            .expect("replace task list");
+        manager
+            .set_current_task_id(&session_id, Some(root.id.clone()))
+            .expect("set current task");
+
+        let pipeline = AgentPipeline::new(AppConfig::default());
+        let summary = pipeline.tracked_open_descendant_summary_after_success_reconciliation(
+            true,
+            false,
+            Some(&session_id),
+            Some(&root.id),
+            "Everything is complete. The project built successfully and tests passed.",
+            &[],
+        );
+
+        assert!(summary.has_open());
+
+        let updated_root = manager
+            .get_task(&session_id, &root.id)
+            .expect("root lookup should succeed")
+            .expect("root should exist");
+        let updated_verify = manager
+            .get_task(&session_id, &verify.id)
+            .expect("verification lookup should succeed")
+            .expect("verification task should exist");
+        assert_eq!(updated_root.status, crate::TaskStatus::InProgress);
+        assert!(!updated_verify.is_terminal());
     }
 
     #[test]
@@ -14683,6 +15309,67 @@ mod tests {
             .expect("child should exist");
         assert_eq!(updated_root.status, crate::TaskStatus::InProgress);
         assert_eq!(updated_child.status, crate::TaskStatus::NotStarted);
+    }
+
+    #[test]
+    fn results_review_narration_does_not_report_completion_until_snapshot_is_fully_clear() {
+        let snapshot = crate::streaming::TaskRuntimeSnapshot {
+            root_task_id: "root".to_string(),
+            current_task: None,
+            ready_tasks: vec![crate::streaming::TaskRuntimeTaskView {
+                id: "verify".to_string(),
+                name: "Verify build results".to_string(),
+                status: "not_started".to_string(),
+            }],
+            parallel_ready_tasks: Vec::new(),
+            blocked_tasks: Vec::new(),
+            open_tasks: Vec::new(),
+            completed_tasks: Vec::new(),
+            missing_requirements: Vec::new(),
+            status_message: "Verification still needs to run".to_string(),
+        };
+
+        let change_kind =
+            AgentPipeline::results_review_narration_change_kind(Some(&snapshot), None, &[]);
+
+        assert_ne!(change_kind, PublicNarrationChangeKind::Completion);
+    }
+
+    #[test]
+    fn runtime_reconciliation_does_not_reopen_completed_root_when_open_descendants_exist() {
+        let manager = crate::get_global_task_manager();
+        let session_id = format!("agent-loop-sticky-completed-root-{}", uuid::Uuid::new_v4());
+        let mut root = crate::Task::new(&session_id, "Root", "Root", None);
+        let child = crate::Task::new(
+            &session_id,
+            "Follow-up verification",
+            "Run the remaining verification",
+            Some(root.id.clone()),
+        );
+        root.set_status(crate::TaskStatus::Completed);
+
+        let mut task_list = crate::TaskList::new(&session_id);
+        task_list.add_task(root.clone());
+        task_list.add_task(child.clone());
+        manager
+            .replace_task_list(task_list)
+            .expect("replace task list");
+
+        let runtime_state = AgentPipeline::reconcile_tracked_execution_progress_from_tool_activity(
+            false,
+            false,
+            Some(&session_id),
+            Some(&root.id),
+            &[],
+        )
+        .expect("runtime state should exist");
+
+        let updated_root = manager
+            .get_task(&session_id, &root.id)
+            .expect("task lookup should succeed")
+            .expect("root should exist");
+        assert_eq!(updated_root.status, crate::TaskStatus::Completed);
+        assert!(runtime_state.open_descendant_summary.has_open());
     }
 
     #[test]
@@ -15367,13 +16054,47 @@ mod tests {
         );
 
         assert_eq!(first, second);
-        assert_eq!(
-            first.missing_requirements,
-            vec![
-                "build/check command not yet observed".to_string(),
-                "test command not yet observed".to_string(),
-            ]
+        assert!(
+            first
+                .missing_requirements
+                .iter()
+                .any(|message| message == "build/check command not yet observed")
         );
+        assert!(
+            first
+                .missing_requirements
+                .iter()
+                .any(|message| message == "test command not yet observed")
+        );
+        assert!(
+            first
+                .missing_requirements
+                .iter()
+                .any(|message| message.starts_with("unresolved blocker:")
+                    || message.starts_with("unresolved contradiction:"))
+        );
+    }
+
+    #[test]
+    fn stagnation_summary_mentions_repeated_contradictions() {
+        let fingerprint = AgentPipeline::tool_iteration_stagnation_fingerprint(
+            false,
+            false,
+            &[ToolCallRecord {
+                id: "1".to_string(),
+                name: "shell".to_string(),
+                arguments: serde_json::json!({
+                    "command": "curl -I http://localhost:3000/missing"
+                })
+                .to_string(),
+                result: ToolResult::Success("HTTP/1.1 404 Not Found".to_string()),
+                duration_ms: 1,
+            }],
+            None,
+        );
+
+        let summary = AgentPipeline::summarize_stagnation_fingerprint(&fingerprint);
+        assert!(summary.contains("repeated contradiction"));
     }
 
     #[test]
@@ -16675,5 +17396,132 @@ mod tests {
         assert!(prompt.contains("materially different action"));
         assert!(prompt.contains("run appears stalled"));
         assert!(prompt.contains("test command not yet observed"));
+    }
+
+    #[test]
+    fn build_and_test_completion_status_counts_failed_commands_as_attempts() {
+        let tool_calls = vec![
+            ToolCallRecord {
+                id: "1".to_string(),
+                name: "shell".to_string(),
+                arguments: serde_json::json!({"command": "cargo check"}).to_string(),
+                result: ToolResult::Error("compiler error".to_string()),
+                duration_ms: 1,
+            },
+            ToolCallRecord {
+                id: "2".to_string(),
+                name: "shell".to_string(),
+                arguments: serde_json::json!({"command": "cargo test"}).to_string(),
+                result: ToolResult::Error("test failures".to_string()),
+                duration_ms: 1,
+            },
+        ];
+
+        assert_eq!(
+            AgentPipeline::build_and_test_completion_status(&tool_calls),
+            (true, false, true, false)
+        );
+    }
+
+    #[test]
+    fn build_and_test_completion_status_rejects_masked_successful_test_output() {
+        let tool_calls = vec![ToolCallRecord {
+            id: "1".to_string(),
+            name: "shell".to_string(),
+            arguments: serde_json::json!({
+                "command": "playwright test || true; npm run lint; npm run validate:all"
+            })
+            .to_string(),
+            result: ToolResult::Success(
+                "8 failed\n2 passed\nlint passed\nvalidate passed".to_string(),
+            ),
+            duration_ms: 1,
+        }];
+
+        assert_eq!(
+            AgentPipeline::build_and_test_completion_status(&tool_calls),
+            (false, false, true, false)
+        );
+    }
+
+    #[test]
+    fn failed_verification_attempt_moves_verification_task_in_progress() {
+        let manager = crate::get_global_task_manager();
+        let session_id = format!(
+            "agent-loop-failed-verification-attempt-{}",
+            uuid::Uuid::new_v4()
+        );
+        let mut root = crate::Task::new(&session_id, "Root", "Root", None);
+        root.set_status(crate::TaskStatus::InProgress);
+        let verify = crate::Task::new(
+            &session_id,
+            "Run verification checks",
+            "Build and test the changed code",
+            Some(root.id.clone()),
+        );
+
+        let mut task_list = crate::TaskList::new(&session_id);
+        task_list.add_task(root.clone());
+        task_list.add_task(verify.clone());
+        manager
+            .replace_task_list(task_list)
+            .expect("replace task list");
+        manager
+            .set_current_task_id(&session_id, Some(verify.id.clone()))
+            .expect("set current task");
+
+        let tool_calls = vec![
+            ToolCallRecord {
+                id: "1".to_string(),
+                name: "shell".to_string(),
+                arguments: serde_json::json!({"command": "cargo check"}).to_string(),
+                result: ToolResult::Error("compiler error".to_string()),
+                duration_ms: 1,
+            },
+            ToolCallRecord {
+                id: "2".to_string(),
+                name: "shell".to_string(),
+                arguments: serde_json::json!({"command": "cargo test"}).to_string(),
+                result: ToolResult::Error("test failures".to_string()),
+                duration_ms: 1,
+            },
+        ];
+
+        let runtime_state = AgentPipeline::reconcile_tracked_execution_progress_from_tool_activity(
+            true,
+            false,
+            Some(&session_id),
+            Some(&root.id),
+            &tool_calls,
+        )
+        .expect("runtime state should be available");
+
+        let updated_verify = manager
+            .get_task(&session_id, &verify.id)
+            .expect("verification task lookup should succeed")
+            .expect("verification task should exist");
+        let execution_state = manager
+            .get_execution_state(&session_id, &verify.id)
+            .expect("execution state lookup should succeed")
+            .expect("execution state should exist");
+
+        assert_eq!(updated_verify.status, crate::TaskStatus::InProgress);
+        assert!(execution_state.saw_tool_activity);
+        assert!(!execution_state.build_succeeded);
+        assert!(!execution_state.test_succeeded);
+        assert!(
+            runtime_state
+                .snapshot
+                .missing_requirements
+                .iter()
+                .any(|message| message == "build/check command not yet observed")
+        );
+        assert!(
+            runtime_state
+                .snapshot
+                .missing_requirements
+                .iter()
+                .any(|message| message == "test command not yet observed")
+        );
     }
 }
