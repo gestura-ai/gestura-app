@@ -3202,8 +3202,34 @@ impl AgentPipeline {
                     iteration += 1;
                     continue;
                 }
+                // Resolve runtime state early so completion_ready is available
+                // for downstream guards. When all tracked tasks are terminal,
+                // we must not keep looping for verification the task system
+                // has already signed off on.
+                let runtime_state = Self::resolve_runtime_state(
+                    requires_build_and_test,
+                    requires_mutating_file_tool_success,
+                    session_id.as_deref(),
+                    task_id.as_deref(),
+                    &response.tool_calls,
+                )
+                .await;
+                if let Some(state) = runtime_state.tracked.as_ref() {
+                    Self::emit_task_runtime_snapshot_if_changed(
+                        &tx,
+                        &state.snapshot,
+                        &mut last_runtime_task_snapshot,
+                    );
+                }
+                let open_descendant_summary = runtime_state.open_descendant_summary;
+                let completion_ready = runtime_state
+                    .tracked
+                    .as_ref()
+                    .is_some_and(|state| state.completion_ready);
+
                 if saw_any_tool_calls
                     && requires_build_and_test
+                    && !completion_ready
                     && Self::is_missing_requested_build_and_test(
                         requires_build_and_test,
                         &response.tool_calls,
@@ -3241,26 +3267,7 @@ impl AgentPipeline {
                     iteration += 1;
                     continue;
                 }
-                let runtime_state = Self::resolve_runtime_state(
-                    requires_build_and_test,
-                    requires_mutating_file_tool_success,
-                    session_id.as_deref(),
-                    task_id.as_deref(),
-                    &response.tool_calls,
-                )
-                .await;
-                if let Some(state) = runtime_state.tracked.as_ref() {
-                    Self::emit_task_runtime_snapshot_if_changed(
-                        &tx,
-                        &state.snapshot,
-                        &mut last_runtime_task_snapshot,
-                    );
-                }
-                let open_descendant_summary = runtime_state.open_descendant_summary;
-                let completion_ready = runtime_state
-                    .tracked
-                    .as_ref()
-                    .is_some_and(|state| state.completion_ready);
+
                 if let Some(fingerprint) = Self::no_tool_open_subtask_fingerprint(
                     runtime_state.tracked.as_ref(),
                     open_descendant_summary,
@@ -3806,8 +3813,14 @@ impl AgentPipeline {
                 continue;
             }
 
+            let tool_iter_completion_ready = runtime_state
+                .tracked
+                .as_ref()
+                .is_some_and(|state| state.completion_ready);
+
             if stagnant_tool_iteration_streak >= 2
                 && requires_build_and_test
+                && !tool_iter_completion_ready
                 && Self::is_missing_requested_build_and_test(
                     requires_build_and_test,
                     &combined_tool_calls,
@@ -4249,8 +4262,30 @@ impl AgentPipeline {
                     iteration += 1;
                     continue;
                 }
+                // Resolve runtime state early so completion_ready is available
+                // for downstream guards. When all tracked tasks are terminal,
+                // we must not keep looping for verification the task system
+                // has already signed off on.
+                let runtime_state = Self::resolve_runtime_state(
+                    requires_build_and_test,
+                    requires_mutating_file_tool_success,
+                    session_id.as_deref(),
+                    task_id.as_deref(),
+                    &response.tool_calls,
+                )
+                .await;
+                if let Some(state) = runtime_state.tracked.as_ref() {
+                    _last_runtime_task_snapshot = Some(state.snapshot.clone());
+                }
+                let open_descendant_summary = runtime_state.open_descendant_summary;
+                let completion_ready = runtime_state
+                    .tracked
+                    .as_ref()
+                    .is_some_and(|state| state.completion_ready);
+
                 if saw_any_tool_calls
                     && requires_build_and_test
+                    && !completion_ready
                     && Self::is_missing_requested_build_and_test(
                         requires_build_and_test,
                         &response.tool_calls,
@@ -4276,22 +4311,6 @@ impl AgentPipeline {
                     iteration += 1;
                     continue;
                 }
-                let runtime_state = Self::resolve_runtime_state(
-                    requires_build_and_test,
-                    requires_mutating_file_tool_success,
-                    session_id.as_deref(),
-                    task_id.as_deref(),
-                    &response.tool_calls,
-                )
-                .await;
-                if let Some(state) = runtime_state.tracked.as_ref() {
-                    _last_runtime_task_snapshot = Some(state.snapshot.clone());
-                }
-                let open_descendant_summary = runtime_state.open_descendant_summary;
-                let completion_ready = runtime_state
-                    .tracked
-                    .as_ref()
-                    .is_some_and(|state| state.completion_ready);
                 if let Some(fingerprint) = Self::no_tool_open_subtask_fingerprint(
                     runtime_state.tracked.as_ref(),
                     open_descendant_summary,
@@ -4722,8 +4741,14 @@ impl AgentPipeline {
                 continue;
             }
 
+            let tool_iter_completion_ready = runtime_state
+                .tracked
+                .as_ref()
+                .is_some_and(|state| state.completion_ready);
+
             if stagnant_tool_iteration_streak >= 2
                 && requires_build_and_test
+                && !tool_iter_completion_ready
                 && Self::is_missing_requested_build_and_test(
                     requires_build_and_test,
                     &combined_tool_calls,
