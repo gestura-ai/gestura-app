@@ -983,6 +983,21 @@ describe('MessageList', () => {
     expect(html).toContain('parent bullet<br />continuation detail<ul><li>nested bullet</li></ul>');
   });
 
+  it('renders multiple markdown links in one list item without leaking placeholder tokens', () => {
+    const html = parseMarkdown([
+      '- [VS Code](https://code.visualstudio.com/) + [Tauri](https://marketplace.visualstudio.com/items?itemName=tauri-apps.tauri-vscode) + [rust-analyzer](https://marketplace.visualstudio.com/items?itemName=rust-lang.rust-analyzer)',
+    ].join('\n'));
+
+    expect(html).not.toContain('LINK0');
+    expect(html).not.toContain('LINK1');
+    expect(html).toContain('>VS Code</a>');
+    expect(html).toContain('>Tauri</a>');
+    expect(html).toContain('>rust-analyzer</a>');
+    expect(html).toContain('href="https://code.visualstudio.com/"');
+    expect(html).toContain('href="https://marketplace.visualstudio.com/items?itemName=tauri-apps.tauri-vscode"');
+    expect(html).toContain('href="https://marketplace.visualstudio.com/items?itemName=rust-lang.rust-analyzer"');
+  });
+
   it('preserves markdown in structured task-management narrations assembled from fields', () => {
     renderMessageList([{
       id: 'message-9',

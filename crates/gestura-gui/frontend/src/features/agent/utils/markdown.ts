@@ -14,7 +14,9 @@ export function escapeHtml(t: string): string {
 }
 
 function makeSafeToken(prefix: string, idx: number): string {
-  return `\x00${prefix}_${idx}\x00`;
+  // Avoid underscores because `_italic_` parsing can span across multiple
+  // placeholders and mutate the token before restoration.
+  return `@@${prefix}${idx}@@`;
 }
 
 function escapeHtmlText(t: string): string {
