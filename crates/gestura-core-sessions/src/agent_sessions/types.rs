@@ -86,7 +86,7 @@ impl SessionActivityEvent {
 }
 
 /// Tool call record for session history.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SessionToolCall {
     /// Tool call ID.
     pub id: String,
@@ -1749,6 +1749,12 @@ impl SessionState {
             .remember_assistant_summary(content, thinking.as_deref());
     }
 
+    /// Remember an assistant summary without appending a new conversation message.
+    pub fn remember_assistant_summary(&mut self, content: &str, thinking: Option<String>) {
+        self.working_memory
+            .remember_assistant_summary(content, thinking.as_deref());
+    }
+
     /// Append streamed continuation content to the most recent assistant message.
     ///
     /// Returns `true` when the last conversation entry was an assistant message and
@@ -1791,6 +1797,14 @@ impl SessionState {
 
     /// Add a tool result message.
     pub fn add_tool_message(&mut self, tool_call_id: &str, content: &str) {
+        if self.messages.last().is_some_and(|message| {
+            message.role == "tool"
+                && message.tool_call_id.as_deref() == Some(tool_call_id)
+                && message.content == content
+        }) {
+            return;
+        }
+
         self.messages.push(ConversationMessage {
             role: "tool".to_string(),
             content: content.to_string(),
@@ -1805,6 +1819,9 @@ impl SessionState {
 
     /// Record a tool call.
     pub fn record_tool_call(&mut self, call: SessionToolCall) {
+        if self.tool_calls.iter().any(|existing| existing == &call) {
+            return;
+        }
         self.working_memory.remember_tool_call(&call);
         self.tool_calls.push(call);
     }
@@ -2044,6 +2061,63 @@ mod tests {
                 .iter()
                 .any(|resource| resource.tool_call_id.as_deref() == Some("tool-1"))
         );
+    }
+
+    #[test]
+    fn remembering_assistant_summary_does_not_append_new_message() {
+        let mut state = SessionState::default();
+        state.add_assistant_message("Initial kickoff summary", None);
+
+        state.remember_assistant_summary(
+            "The run stopped before completion. Latest confirmed progress: Running targeted verification. Detail: rate limit reached",
+            None,
+        );
+
+        assert_eq!(state.messages.len(), 1);
+        assert_eq!(
+            state.working_memory.summary.as_deref(),
+            Some(
+                "The run stopped before completion. Latest confirmed progress: Running targeted verification. Detail: rate limit reached"
+            )
+        );
+        assert!(state.working_memory.timeline.iter().any(|entry| {
+            entry.kind == SessionMemoryEntryKind::AssistantSummary
+                && entry.summary.contains("The run stopped before completion")
+        }));
+    }
+
+    #[test]
+    fn exact_duplicate_tool_calls_are_ignored() {
+        let mut state = SessionState::default();
+        let call = SessionToolCall {
+            id: "tool-1".to_string(),
+            name: "shell".to_string(),
+            arguments: "{\"command\":\"pwd\"}".to_string(),
+            result: "second".to_string(),
+            success: true,
+            duration_ms: 18,
+            timestamp: Utc::now(),
+        };
+
+        state.record_tool_call(call.clone());
+        state.record_tool_call(call);
+
+        assert_eq!(state.tool_calls.len(), 1);
+        assert_eq!(state.tool_calls[0].result, "second");
+        assert_eq!(state.tool_calls[0].duration_ms, 18);
+    }
+
+    #[test]
+    fn duplicate_consecutive_tool_messages_are_ignored() {
+        let mut state = SessionState::default();
+
+        state.add_tool_message("tool-1", "ok");
+        state.add_tool_message("tool-1", "ok");
+        state.add_tool_message("tool-1", "updated");
+
+        assert_eq!(state.messages.len(), 2);
+        assert_eq!(state.messages[0].content, "ok");
+        assert_eq!(state.messages[1].content, "updated");
     }
 
     #[test]

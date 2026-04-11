@@ -231,6 +231,10 @@ pub struct TaskVerificationProfile {
     /// cross-check) rather than a local readback alone.
     #[serde(default)]
     pub requires_external_evidence: bool,
+    /// Whether the task requires direct runtime launch evidence instead of only
+    /// build or test results.
+    #[serde(default)]
+    pub requires_launch_evidence: bool,
     /// Whether the runtime considers the task safe to run in parallel with other
     /// ready tasks.
     #[serde(default)]
@@ -243,6 +247,12 @@ pub struct TaskVerificationProfile {
 pub enum TaskExecutionEvidenceKind {
     /// Some successful tool work occurred for the task.
     ToolActivity,
+    /// Diagnostic progress was made without yet proving completion.
+    Diagnostic,
+    /// Observed evidence contradicted the expected outcome.
+    Contradiction,
+    /// Observed evidence surfaced a blocker or unavailable dependency.
+    Blocker,
     /// A source mutation completed successfully.
     Mutation,
     /// A build or compile verification command succeeded.
@@ -285,6 +295,15 @@ pub struct TaskExecutionState {
     /// Whether successful source mutation evidence has been observed.
     #[serde(default)]
     pub saw_mutation: bool,
+    /// Whether diagnostic progress has been observed for the task.
+    #[serde(default)]
+    pub saw_diagnostic_progress: bool,
+    /// Whether contradiction evidence has been observed for the task.
+    #[serde(default)]
+    pub saw_contradiction: bool,
+    /// Whether blocker evidence has been observed for the task.
+    #[serde(default)]
+    pub saw_blocker: bool,
     /// Whether successful build/check evidence has been observed.
     #[serde(default)]
     pub build_succeeded: bool,
@@ -320,19 +339,28 @@ impl TaskExecutionEvidence {
             recorded_at: Utc::now(),
         }
     }
+
+    /// Override whether the evidence represents a successful outcome.
+    pub fn with_success(mut self, success: bool) -> Self {
+        self.success = success;
+        self
+    }
 }
 
 impl TaskExecutionState {
-    fn has_external_verification_evidence_after_latest_mutation(&self) -> bool {
-        let latest_mutation_index = self
-            .evidence
+    fn latest_successful_mutation_index(&self) -> Option<usize> {
+        self.evidence
             .iter()
             .enumerate()
             .filter_map(|(index, evidence)| {
                 (evidence.kind == TaskExecutionEvidenceKind::Mutation && evidence.success)
                     .then_some(index)
             })
-            .next_back();
+            .next_back()
+    }
+
+    fn has_external_verification_evidence_after_latest_mutation(&self) -> bool {
+        let latest_mutation_index = self.latest_successful_mutation_index();
 
         self.evidence.iter().enumerate().any(|(index, evidence)| {
             evidence.kind == TaskExecutionEvidenceKind::ToolActivity
@@ -343,6 +371,48 @@ impl TaskExecutionState {
                     .is_some_and(|tool_name| matches!(tool_name, "web" | "web_search"))
                 && latest_mutation_index.is_none_or(|mutation_index| index > mutation_index)
         })
+    }
+
+    fn has_launch_verification_evidence_after_latest_mutation(&self) -> bool {
+        let latest_mutation_index = self.latest_successful_mutation_index();
+
+        self.evidence.iter().enumerate().any(|(index, evidence)| {
+            evidence.kind == TaskExecutionEvidenceKind::ToolActivity
+                && evidence.success
+                && evidence.tool_name.as_deref().is_some_and(|tool_name| {
+                    matches!(tool_name, "shell" | "browser" | "open-browser")
+                })
+                && evidence
+                    .command
+                    .as_deref()
+                    .is_some_and(Self::launch_evidence_matches)
+                && latest_mutation_index.is_none_or(|mutation_index| index > mutation_index)
+        })
+    }
+
+    fn launch_evidence_matches(command: &str) -> bool {
+        let normalized = command.to_ascii_lowercase();
+        [
+            "cargo tauri dev",
+            "tauri dev",
+            "npm run tauri dev",
+            "pnpm tauri dev",
+            "pnpm run tauri dev",
+            "yarn tauri dev",
+            "yarn run tauri dev",
+            "bun tauri dev",
+            "bun run tauri dev",
+            "cargo run",
+            "npm run dev",
+            "pnpm dev",
+            "pnpm run dev",
+            "yarn dev",
+            "yarn run dev",
+            "bun dev",
+            "bun run dev",
+        ]
+        .iter()
+        .any(|marker| normalized.contains(marker))
     }
 
     /// Merge a runtime-authored verification profile into the current state.
@@ -365,17 +435,37 @@ impl TaskExecutionState {
 
         match evidence.kind {
             TaskExecutionEvidenceKind::ToolActivity => self.saw_tool_activity = true,
+            TaskExecutionEvidenceKind::Diagnostic => {
+                self.saw_tool_activity = true;
+                self.saw_diagnostic_progress = true;
+            }
+            TaskExecutionEvidenceKind::Contradiction => {
+                self.saw_tool_activity = true;
+                self.saw_diagnostic_progress = true;
+                self.saw_contradiction = true;
+            }
+            TaskExecutionEvidenceKind::Blocker => {
+                self.saw_tool_activity = true;
+                self.saw_diagnostic_progress = true;
+                self.saw_blocker = true;
+            }
             TaskExecutionEvidenceKind::Mutation => {
                 self.saw_tool_activity = true;
-                self.saw_mutation = true;
+                if evidence.success {
+                    self.saw_mutation = true;
+                }
             }
             TaskExecutionEvidenceKind::Build => {
                 self.saw_tool_activity = true;
-                self.build_succeeded = true;
+                if evidence.success {
+                    self.build_succeeded = true;
+                }
             }
             TaskExecutionEvidenceKind::Test => {
                 self.saw_tool_activity = true;
-                self.test_succeeded = true;
+                if evidence.success {
+                    self.test_succeeded = true;
+                }
             }
             TaskExecutionEvidenceKind::Artifact => self.saw_tool_activity = true,
         }
@@ -394,13 +484,16 @@ impl TaskExecutionState {
         let requires_progress = !self.verification_profile.requires_mutation
             && !self.verification_profile.requires_build
             && !self.verification_profile.requires_test
-            && !self.verification_profile.requires_external_evidence;
+            && !self.verification_profile.requires_external_evidence
+            && !self.verification_profile.requires_launch_evidence;
 
         (!self.verification_profile.requires_mutation || self.saw_mutation)
             && (!self.verification_profile.requires_build || self.build_succeeded)
             && (!self.verification_profile.requires_test || self.test_succeeded)
             && (!self.verification_profile.requires_external_evidence
                 || self.has_external_verification_evidence_after_latest_mutation())
+            && (!self.verification_profile.requires_launch_evidence
+                || self.has_launch_verification_evidence_after_latest_mutation())
             && (!requires_progress || self.saw_tool_activity)
     }
 }
@@ -484,10 +577,15 @@ pub enum TrackedTaskFinalization {
 /// LLM-produced task specification used to materialize an auto-plan breakdown.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct RequirementBreakdownTaskSpec {
+    /// Concise task title shown in task-tree UIs.
     pub name: String,
+    /// Human-readable implementation details for the task.
     pub description: String,
+    /// Relative importance label captured from the planner.
     pub priority: String,
+    /// Whether other work should wait on this task.
     pub is_blocking: bool,
+    /// Exact parent task name when this spec is nested under another spec.
     #[serde(default)]
     pub parent_name: Option<String>,
 }
@@ -508,8 +606,135 @@ impl RequirementBreakdownTaskSpec {
 /// Result of materializing requirement-breakdown tasks.
 #[derive(Debug, Clone, Default)]
 pub struct MaterializedTaskBreakdown {
+    /// All persisted tasks created from the supplied breakdown specs.
     pub created_tasks: Vec<Task>,
+    /// The subset of `created_tasks` that were attached directly to the root.
     pub root_task_ids: Vec<String>,
+}
+
+/// Shared execution context for a tracked auto-planned request.
+#[derive(Debug, Clone)]
+pub struct AutoTrackedExecutionPlan {
+    /// Tracked root task that owns the request-wide plan.
+    pub root_task: Task,
+    /// Summary labels for the currently open planned subtasks.
+    pub planned_subtasks: Vec<String>,
+    /// Initially focused execution task under the tracked root, if any.
+    pub initial_task_id: Option<String>,
+    /// Human-readable label for the initial task, if any.
+    pub initial_task_name: Option<String>,
+    /// Number of generated descendant tasks created beneath the root.
+    pub generated_task_count: usize,
+}
+
+/// Parse, normalize, and validate a planner response into typed task specs.
+pub fn parse_requirement_breakdown_response(
+    response: &str,
+) -> Result<Vec<RequirementBreakdownTaskSpec>, TaskError> {
+    let trimmed = response.trim();
+    let parsed =
+        serde_json::from_str::<Vec<RequirementBreakdownTaskSpec>>(trimmed).or_else(|_| {
+            let start = trimmed.find('[').ok_or_else(|| {
+                serde_json::Error::io(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "planner response did not contain a JSON array",
+                ))
+            })?;
+            let end = trimmed.rfind(']').ok_or_else(|| {
+                serde_json::Error::io(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "planner response did not contain a closing JSON array bracket",
+                ))
+            })?;
+            serde_json::from_str::<Vec<RequirementBreakdownTaskSpec>>(&trimmed[start..=end])
+        })?;
+
+    normalize_requirement_breakdown_specs(parsed)
+}
+
+fn normalize_requirement_breakdown_specs(
+    specs: Vec<RequirementBreakdownTaskSpec>,
+) -> Result<Vec<RequirementBreakdownTaskSpec>, TaskError> {
+    if specs.is_empty() {
+        return Err(TaskError::InvalidInput(
+            "requirement breakdown did not include any task specs".to_string(),
+        ));
+    }
+
+    let mut normalized = Vec::with_capacity(specs.len());
+    let mut seen_names = HashSet::new();
+
+    for mut spec in specs {
+        spec.name = spec.name.trim().to_string();
+        spec.description = spec.description.trim().to_string();
+        spec.priority = spec.priority.trim().to_ascii_lowercase();
+        spec.parent_name = spec
+            .parent_name
+            .take()
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty());
+
+        if spec.name.is_empty() {
+            return Err(TaskError::InvalidInput(
+                "requirement breakdown included a task with an empty name".to_string(),
+            ));
+        }
+        if spec.description.is_empty() {
+            return Err(TaskError::InvalidInput(format!(
+                "requirement breakdown task '{}' is missing a description",
+                spec.name
+            )));
+        }
+        if !seen_names.insert(spec.name.clone()) {
+            return Err(TaskError::InvalidInput(format!(
+                "requirement breakdown contains duplicate task name '{}'",
+                spec.name
+            )));
+        }
+
+        normalized.push(spec);
+    }
+
+    let valid_names = normalized
+        .iter()
+        .map(|spec| spec.name.as_str())
+        .collect::<HashSet<_>>();
+    for spec in &normalized {
+        if let Some(parent_name) = spec.parent_name.as_deref() {
+            if parent_name == spec.name {
+                return Err(TaskError::InvalidInput(format!(
+                    "requirement breakdown task '{}' cannot parent itself",
+                    spec.name
+                )));
+            }
+            if !valid_names.contains(parent_name) {
+                return Err(TaskError::InvalidInput(format!(
+                    "requirement breakdown task '{}' references unknown parent '{}'",
+                    spec.name, parent_name
+                )));
+            }
+        }
+    }
+
+    Ok(normalized)
+}
+
+fn format_auto_tracked_root_description(original_input: &str) -> String {
+    format!(
+        "Autogenerated tracked execution task for request:\n\n{}",
+        original_input.trim()
+    )
+}
+
+fn format_planned_subtask_label(task: &Task) -> String {
+    format!("{} [{}]", task.name, task.status)
+}
+
+fn canonical_materialized_task_name(name: &str) -> String {
+    name.split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_ascii_lowercase()
 }
 
 impl Task {
@@ -796,6 +1021,27 @@ impl TaskList {
         descendants
     }
 
+    fn ancestor_ids(&self, task_id: &str) -> Vec<String> {
+        let mut ancestors = Vec::new();
+        let mut seen = HashSet::new();
+        let mut current_parent = self
+            .find_task(task_id)
+            .and_then(|task| task.parent_id.clone());
+
+        while let Some(parent_id) = current_parent {
+            if !seen.insert(parent_id.clone()) {
+                break;
+            }
+
+            current_parent = self
+                .find_task(&parent_id)
+                .and_then(|task| task.parent_id.clone());
+            ancestors.push(parent_id);
+        }
+
+        ancestors
+    }
+
     /// Return `true` when the task is blocked by any dependency that is not terminal.
     pub fn is_task_blocked(&self, task_id: &str) -> Result<bool, TaskError> {
         let task = self
@@ -1015,6 +1261,26 @@ pub struct TaskManager {
 }
 
 impl TaskManager {
+    fn find_existing_materialized_task(
+        task_list: &TaskList,
+        parent_id: Option<&str>,
+        task_name: &str,
+    ) -> Option<Task> {
+        let canonical_name = canonical_materialized_task_name(task_name);
+
+        task_list
+            .tasks
+            .iter()
+            .filter(|task| task.parent_id.as_deref() == parent_id)
+            .filter(|task| canonical_materialized_task_name(&task.name) == canonical_name)
+            .min_by(|left, right| {
+                left.is_terminal()
+                    .cmp(&right.is_terminal())
+                    .then_with(|| left.created_at.cmp(&right.created_at))
+            })
+            .cloned()
+    }
+
     /// Create a new task manager with the given base directory
     pub fn new(base_dir: impl Into<PathBuf>) -> Self {
         let base_dir = base_dir.into().join(".gestura").join("tasks");
@@ -1151,7 +1417,56 @@ impl TaskManager {
             .find_task_mut(task_id)
             .ok_or_else(|| TaskError::NotFound(task_id.to_string()))?;
         task.set_status(status);
+        Self::clear_current_task_if_terminal(&mut task_list, task_id, status);
+        Self::reconcile_ancestor_statuses(&mut task_list, task_id)?;
         self.update_and_save(task_list)?;
+        Ok(())
+    }
+
+    fn clear_current_task_if_terminal(task_list: &mut TaskList, task_id: &str, status: TaskStatus) {
+        if matches!(status, TaskStatus::Completed | TaskStatus::Cancelled)
+            && task_list.current_task_id.as_deref() == Some(task_id)
+        {
+            task_list.current_task_id = None;
+        }
+    }
+
+    fn reconcile_ancestor_statuses(
+        task_list: &mut TaskList,
+        task_id: &str,
+    ) -> Result<(), TaskError> {
+        for ancestor_id in task_list.ancestor_ids(task_id) {
+            let Some(current_status) = task_list.find_task(&ancestor_id).map(|task| task.status)
+            else {
+                continue;
+            };
+
+            if current_status == TaskStatus::Cancelled {
+                continue;
+            }
+
+            let next_status = if task_list
+                .validate_status_transition(&ancestor_id, TaskStatus::Completed)
+                .is_ok()
+            {
+                TaskStatus::Completed
+            } else if task_list.is_task_blocked(&ancestor_id)? {
+                TaskStatus::Blocked
+            } else {
+                TaskStatus::InProgress
+            };
+
+            if next_status == current_status {
+                continue;
+            }
+
+            let ancestor = task_list
+                .find_task_mut(&ancestor_id)
+                .ok_or_else(|| TaskError::NotFound(ancestor_id.clone()))?;
+            ancestor.set_status(next_status);
+            Self::clear_current_task_if_terminal(task_list, &ancestor_id, next_status);
+        }
+
         Ok(())
     }
 
@@ -1342,30 +1657,177 @@ impl TaskManager {
         session_id: &str,
         specs: &[RequirementBreakdownTaskSpec],
     ) -> Result<MaterializedTaskBreakdown, TaskError> {
-        let mut created_tasks = Vec::new();
-        let mut root_task_ids = Vec::new();
-        let mut name_to_id = HashMap::new();
+        self.materialize_requirement_breakdown_internal(session_id, None, specs)
+    }
 
-        for spec in specs {
-            let parent_id = spec
-                .parent_name
-                .as_ref()
-                .and_then(|parent_name| name_to_id.get(parent_name).cloned());
+    /// Materialize a requirement breakdown beneath an existing tracked root task.
+    pub fn materialize_requirement_breakdown_under_parent(
+        &self,
+        session_id: &str,
+        parent_task_id: &str,
+        specs: &[RequirementBreakdownTaskSpec],
+    ) -> Result<MaterializedTaskBreakdown, TaskError> {
+        let parent = self
+            .get_task(session_id, parent_task_id)?
+            .ok_or_else(|| TaskError::NotFound(parent_task_id.to_string()))?;
+        if parent.session_id != session_id {
+            return Err(TaskError::InvalidInput(format!(
+                "parent task '{}' does not belong to session '{}'",
+                parent_task_id, session_id
+            )));
+        }
 
-            let task = self.create_agent_task(
-                session_id,
-                spec.name.clone(),
-                spec.render_description(),
+        self.materialize_requirement_breakdown_internal(
+            session_id,
+            Some(parent_task_id.to_string()),
+            specs,
+        )
+    }
+
+    /// Create a tracked root task and materialize a shared execution plan under it.
+    pub fn initialize_auto_tracked_execution_plan(
+        &self,
+        session_id: &str,
+        root_task_name: &str,
+        original_input: &str,
+        specs: &[RequirementBreakdownTaskSpec],
+    ) -> Result<AutoTrackedExecutionPlan, TaskError> {
+        let root_task = self.create_task(
+            session_id,
+            root_task_name,
+            format_auto_tracked_root_description(original_input),
+            None,
+        )?;
+        self.update_task_status(session_id, &root_task.id, TaskStatus::InProgress)?;
+
+        let breakdown =
+            self.materialize_requirement_breakdown_under_parent(session_id, &root_task.id, specs)?;
+
+        let open_descendants = self
+            .list_descendants(session_id, &root_task.id)?
+            .into_iter()
+            .filter(|task| !task.is_terminal())
+            .collect::<Vec<_>>();
+        let initial_task = open_descendants.first().cloned();
+        let current_task_id = initial_task
+            .as_ref()
+            .map(|task| task.id.clone())
+            .unwrap_or_else(|| root_task.id.clone());
+
+        if let Some(task) = initial_task.as_ref() {
+            self.update_task_status(session_id, &task.id, TaskStatus::InProgress)?;
+        }
+        self.set_current_task_id(session_id, Some(current_task_id))?;
+
+        self.record_memory_event(
+            session_id,
+            &root_task.id,
+            TaskMemoryEvent::new(
+                TaskMemoryPhase::Handoff,
+                format!(
+                    "Initialized tracked request with {} planned tracked subtasks",
+                    breakdown.created_tasks.len()
+                ),
+                Some("session".to_string()),
+                Some("handoff".to_string()),
                 None,
-                parent_id.clone(),
-            )?;
+            ),
+        )?;
 
-            if parent_id.is_none() {
-                root_task_ids.push(task.id.clone());
+        Ok(AutoTrackedExecutionPlan {
+            root_task,
+            planned_subtasks: open_descendants
+                .iter()
+                .take(8)
+                .map(format_planned_subtask_label)
+                .collect(),
+            initial_task_id: initial_task.as_ref().map(|task| task.id.clone()),
+            initial_task_name: initial_task.as_ref().map(|task| task.name.clone()),
+            generated_task_count: breakdown.created_tasks.len(),
+        })
+    }
+
+    fn materialize_requirement_breakdown_internal(
+        &self,
+        session_id: &str,
+        parent_task_id: Option<String>,
+        specs: &[RequirementBreakdownTaskSpec],
+    ) -> Result<MaterializedTaskBreakdown, TaskError> {
+        let normalized = normalize_requirement_breakdown_specs(specs.to_vec())?;
+        let mut task_list = self.get_or_load(session_id)?;
+        let mut created_tasks = Vec::with_capacity(normalized.len());
+        let mut root_task_ids = Vec::new();
+        let mut name_to_id: HashMap<String, String> = HashMap::new();
+        let mut pending = normalized;
+        let mut modified = false;
+
+        while !pending.is_empty() {
+            let mut progressed = false;
+            let mut deferred = Vec::new();
+
+            for spec in pending {
+                let resolved_parent_id = match spec.parent_name.as_deref() {
+                    Some(parent_name) => match name_to_id.get(parent_name) {
+                        Some(parent_id) => Some(parent_id.clone()),
+                        None => {
+                            deferred.push(spec);
+                            continue;
+                        }
+                    },
+                    None => parent_task_id.clone(),
+                };
+
+                let task = if let Some(existing_task) = Self::find_existing_materialized_task(
+                    &task_list,
+                    resolved_parent_id.as_deref(),
+                    &spec.name,
+                ) {
+                    existing_task
+                } else {
+                    let task = Task::new_with_source(
+                        session_id,
+                        spec.name.clone(),
+                        spec.render_description(),
+                        resolved_parent_id,
+                        TaskSource::Agent,
+                        None,
+                    );
+                    task_list.add_task(task.clone());
+                    modified = true;
+                    task
+                };
+
+                if spec.parent_name.is_none() {
+                    root_task_ids.push(task.id.clone());
+                }
+
+                name_to_id.insert(spec.name, task.id.clone());
+                created_tasks.push(task);
+                progressed = true;
             }
 
-            name_to_id.insert(spec.name.clone(), task.id.clone());
-            created_tasks.push(task);
+            if !progressed {
+                let unresolved = deferred
+                    .into_iter()
+                    .map(|spec| {
+                        format!(
+                            "{} -> {}",
+                            spec.name,
+                            spec.parent_name.unwrap_or_else(|| "<none>".to_string())
+                        )
+                    })
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                return Err(TaskError::InvalidInput(format!(
+                    "requirement breakdown contains unresolved parent references: {unresolved}"
+                )));
+            }
+
+            pending = deferred;
+        }
+
+        if modified {
+            self.update_and_save(task_list)?;
         }
 
         Ok(MaterializedTaskBreakdown {
@@ -1444,6 +1906,10 @@ impl TaskManager {
         session_id: &str,
         task_id: &str,
     ) -> Result<TrackedTaskFinalization, TaskError> {
+        let current_status = self
+            .get_task(session_id, task_id)?
+            .ok_or_else(|| TaskError::NotFound(task_id.to_string()))?
+            .status;
         let descendants = self.list_descendants(session_id, task_id)?;
         let open_subtask_ids = descendants
             .into_iter()
@@ -1458,7 +1924,12 @@ impl TaskManager {
             }
             Ok(TrackedTaskFinalization::Completed)
         } else {
-            self.update_task_status(session_id, task_id, TaskStatus::InProgress)?;
+            if !matches!(
+                current_status,
+                TaskStatus::Completed | TaskStatus::Cancelled
+            ) {
+                self.update_task_status(session_id, task_id, TaskStatus::InProgress)?;
+            }
             Ok(TrackedTaskFinalization::StillInProgress { open_subtask_ids })
         }
     }
@@ -2199,6 +2670,81 @@ mod tests {
     }
 
     #[test]
+    fn failed_build_evidence_counts_as_progress_without_counting_as_success() {
+        let mut state = TaskExecutionState::default();
+        state.merge_profile(TaskVerificationProfile {
+            execution_kind: TaskExecutionKind::Verification,
+            requires_build: true,
+            ..TaskVerificationProfile::default()
+        });
+
+        state.record_evidence(
+            TaskExecutionEvidence::new(
+                TaskExecutionEvidenceKind::Build,
+                "cargo check failed with compiler errors",
+                Some("shell".to_string()),
+                Some("cargo check".to_string()),
+            )
+            .with_success(false),
+        );
+
+        assert!(state.saw_tool_activity);
+        assert!(!state.build_succeeded);
+        assert!(!state.satisfies_profile());
+        assert_eq!(state.evidence.len(), 1);
+        assert!(!state.evidence[0].success);
+    }
+
+    #[test]
+    fn failed_mutation_evidence_does_not_mark_mutation_requirement_complete() {
+        let mut state = TaskExecutionState::default();
+        state.merge_profile(TaskVerificationProfile {
+            execution_kind: TaskExecutionKind::Implementation,
+            requires_mutation: true,
+            ..TaskVerificationProfile::default()
+        });
+
+        state.record_evidence(
+            TaskExecutionEvidence::new(
+                TaskExecutionEvidenceKind::Mutation,
+                "Attempted to edit src/main.rs but the patch failed",
+                Some("code".to_string()),
+                None,
+            )
+            .with_success(false),
+        );
+
+        assert!(state.saw_tool_activity);
+        assert!(!state.saw_mutation);
+        assert!(!state.satisfies_profile());
+        assert!(!state.evidence[0].success);
+    }
+
+    #[test]
+    fn contradiction_and_blocker_evidence_are_tracked_as_diagnostic_progress() {
+        let mut state = TaskExecutionState::default();
+
+        state.record_evidence(TaskExecutionEvidence::new(
+            TaskExecutionEvidenceKind::Contradiction,
+            "Observed result contradicted the expected outcome",
+            Some("shell".to_string()),
+            Some("curl -I http://localhost:3000/missing".to_string()),
+        ));
+        state.record_evidence(TaskExecutionEvidence::new(
+            TaskExecutionEvidenceKind::Blocker,
+            "Verification is blocked on a missing dependency",
+            Some("shell".to_string()),
+            Some("npm test".to_string()),
+        ));
+
+        assert!(state.saw_tool_activity);
+        assert!(state.saw_diagnostic_progress);
+        assert!(state.saw_contradiction);
+        assert!(state.saw_blocker);
+        assert_eq!(state.evidence.len(), 2);
+    }
+
+    #[test]
     fn external_verification_profile_requires_post_mutation_external_evidence() {
         let mut state = TaskExecutionState::default();
         state.merge_profile(TaskVerificationProfile {
@@ -2236,6 +2782,48 @@ mod tests {
             "Cross-checked the updated draft against outside sources",
             Some("web_search".to_string()),
             None,
+        ));
+        assert!(state.satisfies_profile());
+    }
+
+    #[test]
+    fn launch_verification_profile_requires_post_mutation_launch_evidence() {
+        let mut state = TaskExecutionState::default();
+        state.merge_profile(TaskVerificationProfile {
+            execution_kind: TaskExecutionKind::Verification,
+            requires_launch_evidence: true,
+            ..TaskVerificationProfile::default()
+        });
+
+        state.record_evidence(TaskExecutionEvidence::new(
+            TaskExecutionEvidenceKind::ToolActivity,
+            "Reviewed logs only",
+            Some("read_file".to_string()),
+            None,
+        ));
+        assert!(!state.satisfies_profile());
+
+        state.record_evidence(TaskExecutionEvidence::new(
+            TaskExecutionEvidenceKind::ToolActivity,
+            "Launched the app in dev mode",
+            Some("shell".to_string()),
+            Some("cargo tauri dev".to_string()),
+        ));
+        assert!(state.satisfies_profile());
+
+        state.record_evidence(TaskExecutionEvidence::new(
+            TaskExecutionEvidenceKind::Mutation,
+            "Updated the app after launch verification",
+            Some("file".to_string()),
+            None,
+        ));
+        assert!(!state.satisfies_profile());
+
+        state.record_evidence(TaskExecutionEvidence::new(
+            TaskExecutionEvidenceKind::ToolActivity,
+            "Re-launched the app after the update",
+            Some("shell".to_string()),
+            Some("cargo tauri dev --no-watch".to_string()),
         ));
         assert!(state.satisfies_profile());
     }
@@ -2283,6 +2871,183 @@ mod tests {
         assert_eq!(
             breakdown.created_tasks[1].parent_id.as_deref(),
             Some(breakdown.created_tasks[0].id.as_str())
+        );
+    }
+
+    #[test]
+    fn parse_requirement_breakdown_response_rejects_unknown_parent_names() {
+        let error = parse_requirement_breakdown_response(
+            r#"[
+                {"name":"Root","description":"Plan","priority":"high","is_blocking":true,"parent_name":null},
+                {"name":"Child","description":"Implement","priority":"medium","is_blocking":false,"parent_name":"Missing"}
+            ]"#,
+        )
+        .unwrap_err();
+
+        assert!(
+            error
+                .to_string()
+                .contains("references unknown parent 'Missing'")
+        );
+    }
+
+    #[test]
+    fn materialize_requirement_breakdown_under_parent_handles_out_of_order_specs() {
+        let temp_dir = TempDir::new().unwrap();
+        let manager = TaskManager::new(temp_dir.path());
+        let root = manager
+            .create_task("session-123", "Root", "Tracked root", None)
+            .unwrap();
+
+        let breakdown = manager
+            .materialize_requirement_breakdown_under_parent(
+                "session-123",
+                &root.id,
+                &[
+                    RequirementBreakdownTaskSpec {
+                        name: "Child".to_string(),
+                        description: "Implement child".to_string(),
+                        priority: "medium".to_string(),
+                        is_blocking: false,
+                        parent_name: Some("Parent".to_string()),
+                    },
+                    RequirementBreakdownTaskSpec {
+                        name: "Parent".to_string(),
+                        description: "Create parent".to_string(),
+                        priority: "high".to_string(),
+                        is_blocking: true,
+                        parent_name: None,
+                    },
+                ],
+            )
+            .unwrap();
+
+        assert_eq!(breakdown.root_task_ids.len(), 1);
+        let parent = breakdown
+            .created_tasks
+            .iter()
+            .find(|task| task.name == "Parent")
+            .unwrap();
+        let child = breakdown
+            .created_tasks
+            .iter()
+            .find(|task| task.name == "Child")
+            .unwrap();
+        assert_eq!(parent.parent_id.as_deref(), Some(root.id.as_str()));
+        assert_eq!(child.parent_id.as_deref(), Some(parent.id.as_str()));
+    }
+
+    #[test]
+    fn materialize_requirement_breakdown_under_parent_reuses_existing_matching_tasks() {
+        let temp_dir = TempDir::new().unwrap();
+        let manager = TaskManager::new(temp_dir.path());
+        let root = manager
+            .create_task("session-123", "Root", "Tracked root", None)
+            .unwrap();
+        let specs = [
+            RequirementBreakdownTaskSpec {
+                name: "Build Tauri application".to_string(),
+                description: "Build the packaged app".to_string(),
+                priority: "high".to_string(),
+                is_blocking: true,
+                parent_name: None,
+            },
+            RequirementBreakdownTaskSpec {
+                name: "Perform hello-world smoke test".to_string(),
+                description: "Launch the app and verify it runs".to_string(),
+                priority: "high".to_string(),
+                is_blocking: true,
+                parent_name: Some("Build Tauri application".to_string()),
+            },
+        ];
+
+        let first = manager
+            .materialize_requirement_breakdown_under_parent("session-123", &root.id, &specs)
+            .unwrap();
+        let second = manager
+            .materialize_requirement_breakdown_under_parent("session-123", &root.id, &specs)
+            .unwrap();
+
+        assert_eq!(first.created_tasks.len(), 2);
+        assert_eq!(second.created_tasks.len(), 2);
+        assert_eq!(
+            manager
+                .list_descendants("session-123", &root.id)
+                .unwrap()
+                .len(),
+            2
+        );
+
+        let first_build = first
+            .created_tasks
+            .iter()
+            .find(|task| task.name == "Build Tauri application")
+            .unwrap();
+        let second_build = second
+            .created_tasks
+            .iter()
+            .find(|task| task.name == "Build Tauri application")
+            .unwrap();
+        let first_smoke = first
+            .created_tasks
+            .iter()
+            .find(|task| task.name == "Perform hello-world smoke test")
+            .unwrap();
+        let second_smoke = second
+            .created_tasks
+            .iter()
+            .find(|task| task.name == "Perform hello-world smoke test")
+            .unwrap();
+
+        assert_eq!(first_build.id, second_build.id);
+        assert_eq!(first_smoke.id, second_smoke.id);
+        assert_eq!(
+            second_smoke.parent_id.as_deref(),
+            Some(second_build.id.as_str())
+        );
+    }
+
+    #[test]
+    fn initialize_auto_tracked_execution_plan_creates_single_root_context() {
+        let temp_dir = TempDir::new().unwrap();
+        let manager = TaskManager::new(temp_dir.path());
+
+        let plan = manager
+            .initialize_auto_tracked_execution_plan(
+                "session-123",
+                "Implement feature",
+                "Plan and implement the feature",
+                &[
+                    RequirementBreakdownTaskSpec {
+                        name: "Design".to_string(),
+                        description: "Design the feature".to_string(),
+                        priority: "high".to_string(),
+                        is_blocking: true,
+                        parent_name: None,
+                    },
+                    RequirementBreakdownTaskSpec {
+                        name: "Implement".to_string(),
+                        description: "Implement the feature".to_string(),
+                        priority: "high".to_string(),
+                        is_blocking: false,
+                        parent_name: None,
+                    },
+                ],
+            )
+            .unwrap();
+
+        assert_eq!(plan.root_task.name, "Implement feature");
+        assert_eq!(plan.generated_task_count, 2);
+        assert_eq!(
+            manager.get_current_task_id("session-123").unwrap(),
+            plan.initial_task_id
+        );
+        assert_eq!(
+            manager
+                .list_descendants("session-123", &plan.root_task.id)
+                .unwrap()
+                .len(),
+            2
         );
     }
 
@@ -2338,6 +3103,61 @@ mod tests {
     }
 
     #[test]
+    fn finalize_tracked_task_does_not_reopen_completed_root_with_open_descendants() {
+        let temp_dir = TempDir::new().unwrap();
+        let manager = TaskManager::new(temp_dir.path());
+        let session_id = "session-finalize-sticky-complete";
+
+        let root = manager
+            .create_task(session_id, "Root", "Tracked root", None)
+            .unwrap();
+        let child = manager
+            .create_task(
+                session_id,
+                "Child",
+                "Outstanding child",
+                Some(root.id.clone()),
+            )
+            .unwrap();
+
+        manager
+            .update_task_status(session_id, &root.id, TaskStatus::Completed)
+            .unwrap_err();
+        manager
+            .update_task_status(session_id, &child.id, TaskStatus::Completed)
+            .unwrap();
+        manager
+            .update_task_status(session_id, &root.id, TaskStatus::Completed)
+            .unwrap();
+
+        let mut task_list = manager.load_task_list(session_id).unwrap();
+        task_list
+            .find_task_mut(&child.id)
+            .expect("stored child task")
+            .set_status(TaskStatus::NotStarted);
+        manager.replace_task_list(task_list).unwrap();
+
+        let outcome = manager
+            .finalize_tracked_task_after_agent_run(session_id, &root.id)
+            .unwrap();
+
+        assert_eq!(
+            outcome,
+            TrackedTaskFinalization::StillInProgress {
+                open_subtask_ids: vec![child.id.clone()],
+            }
+        );
+        assert_eq!(
+            manager
+                .get_task(session_id, &root.id)
+                .unwrap()
+                .unwrap()
+                .status,
+            TaskStatus::Completed
+        );
+    }
+
+    #[test]
     fn record_task_result_merges_metadata_and_status() {
         let temp_dir = TempDir::new().unwrap();
         let manager = TaskManager::new(temp_dir.path());
@@ -2373,5 +3193,103 @@ mod tests {
             Some(42)
         );
         assert_eq!(task.status, TaskStatus::Completed);
+    }
+
+    #[test]
+    fn completing_last_child_auto_completes_parent_and_clears_current_task() {
+        let temp_dir = TempDir::new().unwrap();
+        let manager = TaskManager::new(temp_dir.path());
+        let session_id = "session-parent-auto-complete";
+
+        let root = manager
+            .create_task(session_id, "Root", "Root", None)
+            .unwrap();
+        let child = manager
+            .create_task(session_id, "Child", "Child", Some(root.id.clone()))
+            .unwrap();
+
+        manager
+            .set_current_task_id(session_id, Some(root.id.clone()))
+            .unwrap();
+        manager
+            .update_task_status(session_id, &child.id, TaskStatus::Completed)
+            .unwrap();
+
+        let stored_root = manager.get_task(session_id, &root.id).unwrap().unwrap();
+        assert_eq!(stored_root.status, TaskStatus::Completed);
+        assert_eq!(manager.get_current_task_id(session_id).unwrap(), None);
+    }
+
+    #[test]
+    fn completing_nested_leaf_auto_completes_all_ancestors() {
+        let temp_dir = TempDir::new().unwrap();
+        let manager = TaskManager::new(temp_dir.path());
+        let session_id = "session-nested-parent-auto-complete";
+
+        let root = manager
+            .create_task(session_id, "Root", "Root", None)
+            .unwrap();
+        let child = manager
+            .create_task(session_id, "Child", "Child", Some(root.id.clone()))
+            .unwrap();
+        let grandchild = manager
+            .create_task(
+                session_id,
+                "Grandchild",
+                "Grandchild",
+                Some(child.id.clone()),
+            )
+            .unwrap();
+
+        manager
+            .update_task_status(session_id, &grandchild.id, TaskStatus::Completed)
+            .unwrap();
+
+        assert_eq!(
+            manager
+                .get_task(session_id, &child.id)
+                .unwrap()
+                .unwrap()
+                .status,
+            TaskStatus::Completed
+        );
+        assert_eq!(
+            manager
+                .get_task(session_id, &root.id)
+                .unwrap()
+                .unwrap()
+                .status,
+            TaskStatus::Completed
+        );
+    }
+
+    #[test]
+    fn reopening_descendant_reopens_completed_ancestors() {
+        let temp_dir = TempDir::new().unwrap();
+        let manager = TaskManager::new(temp_dir.path());
+        let session_id = "session-reopen-ancestor";
+
+        let root = manager
+            .create_task(session_id, "Root", "Root", None)
+            .unwrap();
+        let child = manager
+            .create_task(session_id, "Child", "Child", Some(root.id.clone()))
+            .unwrap();
+
+        manager
+            .update_task_status(session_id, &child.id, TaskStatus::Completed)
+            .unwrap();
+        manager
+            .update_task_status(session_id, &child.id, TaskStatus::InProgress)
+            .unwrap();
+
+        assert_eq!(
+            manager
+                .get_task(session_id, &root.id)
+                .unwrap()
+                .unwrap()
+                .status,
+            TaskStatus::InProgress
+        );
     }
 }

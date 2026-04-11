@@ -1010,6 +1010,23 @@ impl WindowManager {
         self.schedule_save_sessions_to_disk();
     }
 
+    /// Remember an assistant summary without adding a new conversation message.
+    pub fn remember_assistant_summary(
+        &self,
+        session_id: &str,
+        content: &str,
+        thinking: Option<String>,
+    ) {
+        let mut sessions = self.sessions.lock().unwrap();
+        if let Some(session) = sessions.get_mut(session_id) {
+            session.state.remember_assistant_summary(content, thinking);
+            session.last_active = chrono::Utc::now();
+        }
+        drop(sessions);
+
+        self.schedule_save_sessions_to_disk();
+    }
+
     /// Append continuation content to the most recent assistant message.
     pub fn append_to_last_assistant_message(
         &self,
@@ -1685,6 +1702,13 @@ pub fn add_user_message(session_id: &str, content: &str, source: MessageSource) 
 pub fn add_assistant_message(session_id: &str, content: &str, thinking: Option<String>) {
     if let Some(manager) = get_window_manager() {
         manager.add_assistant_message(session_id, content, thinking);
+    }
+}
+
+/// Remember an assistant summary without adding a new conversation message.
+pub fn remember_assistant_summary(session_id: &str, content: &str, thinking: Option<String>) {
+    if let Some(manager) = get_window_manager() {
+        manager.remember_assistant_summary(session_id, content, thinking);
     }
 }
 
