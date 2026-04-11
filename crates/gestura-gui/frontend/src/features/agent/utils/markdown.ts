@@ -100,7 +100,32 @@ function parseMarkdownTableAlignments(sepLine: string, colCount: number): Array<
 // ─── Inline markdown ──────────────────────────────────────────────────────────
 
 export function renderInlineMarkdown(text: string): string {
-  let s = escapeHtmlText(text);
+  // Parse links and bare URLs BEFORE escaping so we see raw URLs for
+  // sanitization, then replace them with safe tokens to prevent
+  // double-matching and HTML-escape corruption.
+  const linkTokens: string[] = [];
+  let working = text;
+
+  // Markdown links: [label](url)
+  working = working.replace(/\[([^\]]+)\]\((https?:\/\/[^)]+)\)/g, (_m, label: string, url: string) => {
+    const token = makeSafeToken('LINK', linkTokens.length);
+    const safeLabel = escapeHtmlText(label);
+    const href = escapeHtml(url);
+    linkTokens.push(`<a href="${href}" target="_blank" rel="noopener noreferrer">${safeLabel}</a>`);
+    return token;
+  });
+
+  // Bare URLs (not already captured as markdown links)
+  working = working.replace(/(^|[^(A-Za-z0-9])(https?:\/\/[^\s<>"')\]]+)/g, (_m, lead: string, url: string) => {
+    const token = makeSafeToken('LINK', linkTokens.length);
+    const href = escapeHtml(url);
+    linkTokens.push(`<a href="${href}" target="_blank" rel="noopener noreferrer">${escapeHtmlText(url)}</a>`);
+    return `${lead}${token}`;
+  });
+
+  // Now HTML-escape the remaining text (link tokens are safe NUL-delimited strings)
+  let s = escapeHtmlText(working);
+
   // Bold + italic
   s = s.replace(/\*\*\*(.+?)\*\*\*/g, '<strong><em>$1</em></strong>');
   // Bold
@@ -113,10 +138,12 @@ export function renderInlineMarkdown(text: string): string {
   s = s.replace(/~~(.+?)~~/g, '<del>$1</del>');
   // Inline code
   s = s.replace(/`([^`\n]+)`/g, '<code>$1</code>');
-  // Links
-  s = s.replace(/\[([^\]]+)\]\((https?:\/\/[^)]+)\)/g, '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>');
-  // Bare URLs
-  s = s.replace(/(https?:\/\/[^\s<>"']+)/g, '<a href="$1" target="_blank" rel="noopener noreferrer">$1</a>');
+
+  // Restore link tokens
+  for (let j = 0; j < linkTokens.length; j++) {
+    s = s.split(makeSafeToken('LINK', j)).join(linkTokens[j]);
+  }
+
   return s;
 }
 
