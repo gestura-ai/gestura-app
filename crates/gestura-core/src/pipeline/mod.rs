@@ -59,6 +59,7 @@ pub use types::*;
 
 pub(super) const STREAM_CHUNK_BUFFER_CAPACITY: usize = 256;
 const REQUIREMENT_DETECTION_INPUT_HINT_KEY: &str = "requirement_detection_input";
+const INTERNAL_REQUIREMENT_BREAKDOWN_HINT_KEY: &str = "internal.requirement_breakdown";
 const NONCRITICAL_STREAM_CHUNK_SEND_TIMEOUT: std::time::Duration =
     std::time::Duration::from_millis(100);
 
@@ -133,6 +134,14 @@ fn requirement_detection_input(request: &AgentRequest) -> &str {
         .map(String::as_str)
         .filter(|value| !value.trim().is_empty())
         .unwrap_or(&request.input)
+}
+
+fn is_internal_requirement_breakdown_request(request: &AgentRequest) -> bool {
+    request
+        .metadata
+        .hints
+        .get(INTERNAL_REQUIREMENT_BREAKDOWN_HINT_KEY)
+        .is_some_and(|value| value == "true")
 }
 
 /// The main agent pipeline for processing requests
@@ -419,6 +428,43 @@ impl AgentPipeline {
             .unwrap_or(self.pipeline_config.reflection.enabled)
     }
 
+    #[inline(always)]
+    async fn maybe_apply_advanced_primitives_middleware(
+        &self,
+        request: &mut AgentRequest,
+        analysis: &crate::context::RequestAnalysis,
+    ) {
+        let intent = requirement_detection_input(request).trim().to_string();
+        if !gestura_core_tasks::ADVANCED_PRIMITIVES_ENABLED
+            || is_internal_requirement_breakdown_request(request)
+            || !analysis.needs_tools
+            || !Self::should_auto_track_request(&intent, request.metadata.task_id.as_deref())
+        {
+            return;
+        }
+
+        let enhancement = gestura_core_tasks::AdvancedPrimitives::run_enhanced_plan(
+            gestura_core_tasks::AdvancedPlanRequest {
+                user_intent: intent.clone(),
+                base_system_prompt: request.system_prompt.clone().unwrap_or_else(|| {
+                    gestura_core_pipeline::persona::default_system_prompt(&request.metadata)
+                }),
+                session_id: request.metadata.session_id.clone(),
+                task_id: request.metadata.task_id.clone(),
+                source: format!("{:?}", request.metadata.source),
+                complex_intent: true,
+                requires_verification: Self::prompt_requires_build_and_test(&intent),
+                metadata_hints: request.metadata.hints.clone(),
+            },
+        )
+        .await;
+
+        if enhancement.applied {
+            request.system_prompt = Some(enhancement.system_prompt);
+            request.metadata.hints.extend(enhancement.metadata_hints);
+        }
+    }
+
     fn append_task_tool_for_auto_tracked_request(
         analysis: &crate::context::RequestAnalysis,
         candidate_names: &HashSet<&str>,
@@ -454,6 +500,80 @@ impl AgentPipeline {
         } else {
             candidate.chars().take(96).collect()
         }
+    }
+
+    /// Generate a typed requirement breakdown using the shared core pipeline.
+    pub async fn generate_requirement_breakdown_specs(
+        cfg: AppConfig,
+        source: RequestSource,
+        session_id: Option<&str>,
+        requirements: &str,
+    ) -> Result<Vec<crate::tasks::RequirementBreakdownTaskSpec>, String> {
+        let pipeline = AgentPipeline::with_provider_optimized_config(cfg);
+        let mut request = AgentRequest::new(Self::build_requirement_breakdown_prompt(requirements))
+            .with_streaming(false)
+            .with_source(source)
+            .with_tools_enabled(false);
+
+        if let Some(session_id) = session_id {
+            request = request.with_session(session_id);
+        }
+        request.metadata.hints.insert(
+            INTERNAL_REQUIREMENT_BREAKDOWN_HINT_KEY.to_string(),
+            "true".to_string(),
+        );
+
+        let response = Box::pin(pipeline.process_blocking(request))
+            .await
+            .map_err(|error| format!("LLM error: {error}"))?;
+
+        crate::tasks::parse_requirement_breakdown_response(&response.content)
+            .map_err(|error| error.to_string())
+    }
+
+    /// Build the default tracked execution specs used when LLM planning is unavailable.
+    pub fn default_auto_tracked_execution_specs(
+        message: &str,
+    ) -> Vec<crate::tasks::RequirementBreakdownTaskSpec> {
+        Self::default_auto_tracked_execution_subtasks(message)
+            .into_iter()
+            .map(
+                |(name, description)| crate::tasks::RequirementBreakdownTaskSpec {
+                    name,
+                    description,
+                    priority: "high".to_string(),
+                    is_blocking: false,
+                    parent_name: None,
+                },
+            )
+            .collect()
+    }
+
+    fn build_requirement_breakdown_prompt(requirements: &str) -> String {
+        format!(
+            r#"You are a project planning assistant. Analyze the following requirements and break them down into a structured task list.
+
+Requirements:
+{}
+
+Please respond with a JSON array of tasks. Each task should have:
+- "name": A concise task name (max 60 chars)
+- "description": A detailed description of what needs to be done
+- "priority": "high", "medium", or "low"
+- "is_blocking": true if other tasks depend on this, false otherwise
+- "parent_name": null for root tasks, or the exact name of the parent task for subtasks
+
+Order tasks by priority and logical execution order. Group related tasks under parent tasks.
+
+Example format:
+[
+  {{"name": "Setup project structure", "description": "Initialize the project...", "priority": "high", "is_blocking": true, "parent_name": null}},
+  {{"name": "Configure build system", "description": "Set up the build...", "priority": "high", "is_blocking": false, "parent_name": "Setup project structure"}}
+]
+
+Respond ONLY with the JSON array, no additional text."#,
+            requirements
+        )
     }
 
     fn default_auto_tracked_execution_subtasks(message: &str) -> Vec<(String, String)> {
@@ -663,12 +783,14 @@ impl AgentPipeline {
         handoff
     }
 
-    fn maybe_initialize_tracked_request_task(
+    async fn maybe_initialize_tracked_request_task(
+        &self,
         request: &mut AgentRequest,
         analysis_needs_tools: bool,
         task_tool_available: bool,
     ) {
         if request.metadata.task_id.is_some()
+            || is_internal_requirement_breakdown_request(request)
             || !analysis_needs_tools
             || !task_tool_available
             || !Self::should_auto_track_request(&request.input, None)
@@ -690,105 +812,46 @@ impl AgentPipeline {
             .or_insert_with(|| original_input.clone());
 
         let task_name = Self::derive_agent_request_task_name(&original_input);
-        let execution_subtasks = Self::default_auto_tracked_execution_subtasks(&original_input);
-        let description = format!(
-            "Autogenerated tracked execution task for request:\n\n{}",
-            original_input
-        );
         let requirement_input = requirement_detection_input(request).to_string();
+        let plan_specs = match Box::pin(Self::generate_requirement_breakdown_specs(
+            self.config.clone(),
+            request.metadata.source,
+            Some(session_id),
+            &original_input,
+        ))
+        .await
+        {
+            Ok(specs) => specs,
+            Err(error) => {
+                tracing::warn!(
+                    session_id = %session_id,
+                    error = %error,
+                    "Failed to generate structured tracked plan; falling back to default tracked subtasks"
+                );
+                Self::default_auto_tracked_execution_specs(&original_input)
+            }
+        };
 
-        match manager.create_task(session_id, &task_name, &description, None) {
-            Ok(task) => {
-                let mut planned_subtasks = Vec::new();
-                request.metadata.task_id = Some(task.id.clone());
-
-                if let Err(error) =
-                    manager.update_task_status(session_id, &task.id, crate::TaskStatus::InProgress)
-                {
-                    tracing::warn!(
-                        session_id = %session_id,
-                        task_id = %task.id,
-                        error = %error,
-                        "Failed to mark tracked root task in progress during initialization"
-                    );
-                }
-
-                let mut first_subtask_id: Option<String> = None;
-                for (index, (name, subtask_description)) in execution_subtasks.iter().enumerate() {
-                    match manager.create_task(
-                        session_id,
-                        name,
-                        subtask_description,
-                        Some(task.id.clone()),
-                    ) {
-                        Ok(subtask) => {
-                            if index == 0 {
-                                if let Err(error) = manager.update_task_status(
-                                    session_id,
-                                    &subtask.id,
-                                    crate::TaskStatus::InProgress,
-                                ) {
-                                    tracing::warn!(
-                                        session_id = %session_id,
-                                        task_id = %subtask.id,
-                                        error = %error,
-                                        "Failed to mark initial execution subtask in progress"
-                                    );
-                                } else {
-                                    first_subtask_id = Some(subtask.id.clone());
-                                    planned_subtasks.push(format!("{} [inprogress]", subtask.name));
-                                    continue;
-                                }
-                            }
-                            planned_subtasks.push(format!("{} [notstarted]", subtask.name));
-                        }
-                        Err(error) => {
-                            tracing::warn!(
-                                session_id = %session_id,
-                                root_task_id = %task.id,
-                                subtask_name = %name,
-                                error = %error,
-                                "Failed to initialize default execution subtask for tracked request"
-                            );
-                        }
-                    }
-                }
-
-                let current_task_id = first_subtask_id.unwrap_or_else(|| task.id.clone());
-                let _ = manager.set_current_task_id(session_id, Some(current_task_id));
-                if let Err(error) = manager.record_memory_event(
-                    session_id,
-                    &task.id,
-                    crate::tasks::TaskMemoryEvent::new(
-                        crate::tasks::TaskMemoryPhase::Handoff,
-                        format!(
-                            "Initialized tracked request with {} planned tracked subtasks",
-                            planned_subtasks.len()
-                        ),
-                        Some("session".to_string()),
-                        Some("handoff".to_string()),
-                        None,
-                    ),
-                ) {
-                    tracing::warn!(
-                        session_id = %session_id,
-                        task_id = %task.id,
-                        error = %error,
-                        "Failed to record tracked request initialization memory event"
-                    );
-                }
-
+        match manager.initialize_auto_tracked_execution_plan(
+            session_id,
+            &task_name,
+            &original_input,
+            &plan_specs,
+        ) {
+            Ok(plan) => {
+                request.metadata.task_id = Some(plan.root_task.id.clone());
                 request.input = Self::build_auto_tracked_execution_handoff_message(
                     &requirement_input,
-                    &task.name,
-                    &planned_subtasks,
+                    &plan.root_task.name,
+                    &plan.planned_subtasks,
                 );
                 tracing::info!(
                     session_id = %session_id,
-                    task_id = %task.id,
-                    task_name = %task.name,
-                    planned_subtasks = planned_subtasks.len(),
-                    "Initialized tracked root task and default tracked subtasks for agent request"
+                    task_id = %plan.root_task.id,
+                    task_name = %plan.root_task.name,
+                    planned_subtasks = plan.generated_task_count,
+                    initial_task_id = ?plan.initial_task_id,
+                    "Initialized tracked root task and shared execution plan for agent request"
                 );
             }
             Err(error) => {
@@ -1205,6 +1268,7 @@ impl AgentPipeline {
             analysis.needs_tools,
             analysis.confidence
         );
+        self.maybe_apply_advanced_primitives_middleware(&mut request, &analysis).await;
 
         // 1b. Pre-flight LLM tool routing (only when strategy != Keyword).
         // The router merges its selection into analysis.suggested_tools, which
@@ -1256,11 +1320,12 @@ impl AgentPipeline {
                         .iter()
                         .any(|t| t == "mcp" || t.starts_with("mcp__"))
             );
-        Self::maybe_initialize_tracked_request_task(
+        self.maybe_initialize_tracked_request_task(
             &mut request,
             analysis.needs_tools,
             relevant_tools.iter().any(|tool| tool.name == "task"),
-        );
+        )
+        .await;
         // Record the final filtered tool set that will shape prompt/tool schema construction.
         telemetry
             .record_tool_selection(
@@ -2001,6 +2066,7 @@ impl AgentPipeline {
             self.analyzer.analyze(&request.input)
         });
         telemetry.record_analysis(&analysis).await;
+        self.maybe_apply_advanced_primitives_middleware(&mut request, &analysis).await;
 
         // 1b. Pre-flight LLM tool routing (only when strategy != Keyword).
         if let Some(router) = &self.tool_router
@@ -2041,11 +2107,12 @@ impl AgentPipeline {
                     .allowed_tools
                     .iter()
                     .any(|t| t == "mcp" || t.starts_with("mcp__")));
-        Self::maybe_initialize_tracked_request_task(
+        self.maybe_initialize_tracked_request_task(
             &mut request,
             analysis.needs_tools,
             relevant_tools.iter().any(|tool| tool.name == "task"),
-        );
+        )
+        .await;
         telemetry
             .record_tool_selection(
                 relevant_tools.len(),

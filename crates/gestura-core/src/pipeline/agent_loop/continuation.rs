@@ -518,6 +518,7 @@ impl AgentPipeline {
         tool_calls: &[ToolCallRecord],
         reason: IncompleteRunReason,
     ) -> Option<String> {
+        let tool_calls = Self::synthetic_summary_tool_calls(tool_calls);
         if tool_calls.is_empty() {
             return None;
         }
@@ -546,6 +547,9 @@ impl AgentPipeline {
         };
 
         summary.push(' ');
+        summary.push_str(&Self::synthetic_final_status_line(&tool_calls));
+
+        summary.push(' ');
         summary.push_str(&format!(
             "The observed run covered {} tool call(s) ({} succeeded, {} failed, {} skipped).",
             tool_calls.len(),
@@ -554,7 +558,12 @@ impl AgentPipeline {
             skipped_count
         ));
 
-        if let Some(last_call) = tool_calls.last() {
+        if let Some(verification_summary) = Self::synthetic_verification_status_line(&tool_calls) {
+            summary.push(' ');
+            summary.push_str(&verification_summary);
+        }
+
+        if let Some(last_call) = tool_calls.last().copied() {
             let last_result = self.describe_tool_call_for_summary(last_call);
             summary.push(' ');
             summary.push_str(&last_result);
@@ -563,6 +572,178 @@ impl AgentPipeline {
         summary.push_str(" Review the recorded tool activity above for the detailed outputs.");
 
         Some(summary)
+    }
+
+    fn synthetic_summary_tool_calls(tool_calls: &[ToolCallRecord]) -> Vec<&ToolCallRecord> {
+        let mut seen = std::collections::HashSet::new();
+        let mut unique = Vec::new();
+
+        for tool_call in tool_calls {
+            if seen.insert(Self::synthetic_summary_tool_call_key(tool_call)) {
+                unique.push(tool_call);
+            }
+        }
+
+        unique
+    }
+
+    fn synthetic_summary_tool_call_key(tool_call: &ToolCallRecord) -> String {
+        if !tool_call.id.trim().is_empty() {
+            return format!("id:{}", tool_call.id);
+        }
+
+        let result_key = match &tool_call.result {
+            ToolResult::Success(output) => format!("success:{output}"),
+            ToolResult::Error(output) => format!("error:{output}"),
+            ToolResult::Skipped(output) => format!("skipped:{output}"),
+        };
+
+        format!(
+            "{}|{}|{}|{}|{}",
+            tool_call.name, tool_call.arguments, result_key, tool_call.duration_ms, tool_call.id
+        )
+    }
+
+    fn synthetic_final_status_line(tool_calls: &[&ToolCallRecord]) -> String {
+        if let Some((latest_index, latest_command, latest_success)) =
+            Self::synthetic_latest_verification_event(tool_calls)
+        {
+            return if latest_success {
+                if Self::synthetic_previous_failed_verification(tool_calls, latest_index).is_some()
+                {
+                    "Final status from the observed run: the latest verification finished successfully after earlier failed attempts.".to_string()
+                } else {
+                    format!(
+                        "Final status from the observed run: the latest observed verification command {latest_command} succeeded, but this fallback is standing in for the missing user-facing wrap-up."
+                    )
+                }
+            } else if Self::synthetic_previous_passing_verification(tool_calls, latest_index)
+                .is_some()
+            {
+                "Final status from the observed run: the latest verification ended with a failure or unresolved state after an earlier passing check.".to_string()
+            } else {
+                "Final status from the observed run: the latest verification ended without a clean success signal.".to_string()
+            };
+        }
+
+        let relevant_calls = tool_calls
+            .iter()
+            .copied()
+            .filter(|tool_call| !Self::is_task_tool_name(&tool_call.name))
+            .collect::<Vec<_>>();
+        let relevant_calls = if relevant_calls.is_empty() {
+            tool_calls.to_vec()
+        } else {
+            relevant_calls
+        };
+
+        let effective_successes = relevant_calls
+            .iter()
+            .filter(|tool_call| Self::tool_call_effective_success(tool_call))
+            .count();
+        let unresolved = relevant_calls.len().saturating_sub(effective_successes);
+
+        match (effective_successes > 0, unresolved > 0) {
+            (true, true) => "Final status from the observed run: mixed results — some steps succeeded, but at least one later step failed or stayed unresolved.".to_string(),
+            (true, false) => "Final status from the observed run: the recorded steps finished without a visible failure, but this fallback is standing in for the missing user-facing wrap-up.".to_string(),
+            (false, true) => "Final status from the observed run: the recorded path ended without a clean completion signal.".to_string(),
+            (false, false) => "Final status from the observed run is unavailable.".to_string(),
+        }
+    }
+
+    fn synthetic_verification_status_line(tool_calls: &[&ToolCallRecord]) -> Option<String> {
+        let (latest_index, latest_command, latest_success) =
+            Self::synthetic_latest_verification_event(tool_calls)?;
+
+        if latest_success {
+            if let Some(previous_failure) =
+                Self::synthetic_previous_failed_verification(tool_calls, latest_index)
+            {
+                Some(format!(
+                    "Verification evidence: the latest observed verification command {latest_command} succeeded after earlier failing attempts such as {previous_failure}."
+                ))
+            } else {
+                Some(format!(
+                    "Verification evidence: the latest observed verification command {latest_command} succeeded."
+                ))
+            }
+        } else if let Some(previous_success) =
+            Self::synthetic_previous_passing_verification(tool_calls, latest_index)
+        {
+            Some(format!(
+                "Verification evidence: the latest observed verification command {latest_command} failed or stayed unresolved after an earlier passing command {previous_success}."
+            ))
+        } else {
+            Some(format!(
+                "Verification evidence: the latest observed verification command {latest_command} failed or stayed unresolved."
+            ))
+        }
+    }
+
+    fn synthetic_latest_verification_event(
+        tool_calls: &[&ToolCallRecord],
+    ) -> Option<(usize, String, bool)> {
+        tool_calls
+            .iter()
+            .enumerate()
+            .filter_map(|(index, tool_call)| {
+                Self::synthetic_verification_event(tool_call)
+                    .map(|(command_label, success)| (index, command_label, success))
+            })
+            .next_back()
+    }
+
+    fn synthetic_previous_failed_verification(
+        tool_calls: &[&ToolCallRecord],
+        latest_index: usize,
+    ) -> Option<String> {
+        tool_calls
+            .iter()
+            .take(latest_index)
+            .filter_map(|tool_call| Self::synthetic_verification_event(tool_call))
+            .filter_map(|(command_label, success)| (!success).then_some(command_label))
+            .next_back()
+    }
+
+    fn synthetic_previous_passing_verification(
+        tool_calls: &[&ToolCallRecord],
+        latest_index: usize,
+    ) -> Option<String> {
+        tool_calls
+            .iter()
+            .take(latest_index)
+            .filter_map(|tool_call| Self::synthetic_verification_event(tool_call))
+            .filter_map(|(command_label, success)| success.then_some(command_label))
+            .next_back()
+    }
+
+    fn synthetic_verification_event(tool_call: &ToolCallRecord) -> Option<(String, bool)> {
+        if tool_call.name != "shell" {
+            return None;
+        }
+
+        let command = Self::extract_shell_command_from_record_arguments(&tool_call.arguments)?;
+        if !Self::is_build_or_check_command(&command)
+            && !Self::is_test_command(&command)
+            && !Self::is_http_probe_command(&command)
+            && !Self::is_launch_verification_command(&command)
+        {
+            return None;
+        }
+
+        Some((
+            Self::synthetic_summary_command_label(&command),
+            Self::tool_call_effective_success(tool_call),
+        ))
+    }
+
+    fn synthetic_summary_command_label(command: &str) -> String {
+        let normalized = command.split_whitespace().collect::<Vec<_>>().join(" ");
+        let mut excerpt = normalized.chars().take(80).collect::<String>();
+        if normalized.chars().count() > 80 {
+            excerpt.push('…');
+        }
+        format!("`{excerpt}`")
     }
 
     pub(super) fn has_iteration_headroom(iteration: usize, max_iterations: Option<usize>) -> bool {

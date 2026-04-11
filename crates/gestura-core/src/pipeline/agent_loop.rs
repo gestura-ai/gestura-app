@@ -332,6 +332,10 @@ impl AgentPipeline {
     }
 
     fn task_mentions_test_verification(task: &crate::Task) -> bool {
+        if Self::task_requires_launch_verification(task) {
+            return false;
+        }
+
         Self::task_text_contains_any(
             task,
             &[
@@ -364,6 +368,47 @@ impl AgentPipeline {
                 "recent sources",
                 "supporting sources",
                 "source verification",
+            ],
+        )
+    }
+
+    fn task_requires_launch_verification(task: &crate::Task) -> bool {
+        Self::task_text_contains_any(
+            task,
+            &[
+                "launch behavior",
+                "app launch",
+                "launch the app",
+                "launch the desktop app",
+                "startup behavior",
+                "startup flow",
+                "open the app",
+                "open app window",
+                "app window",
+                "window opens",
+                "window launch",
+                "boot the app",
+                "start the app",
+            ],
+        )
+    }
+
+    fn task_requires_user_facing_closeout(task: &crate::Task) -> bool {
+        Self::task_text_contains_any(
+            task,
+            &[
+                "document results",
+                "results and next steps",
+                "next steps",
+                "final summary",
+                "final answer",
+                "write up",
+                "write-up",
+                "closeout",
+                "summarize results",
+                "report results",
+                "document findings",
+                "document the results",
             ],
         )
     }
@@ -427,8 +472,9 @@ impl AgentPipeline {
         }
         if verification_score > 0 {
             profile.execution_kind = TaskExecutionKind::Verification;
+            let requires_launch = Self::task_requires_launch_verification(task);
             let mentions_build = Self::task_mentions_build_verification(task);
-            let mentions_test = Self::task_mentions_test_verification(task);
+            let mentions_test = Self::task_mentions_test_verification(task) && !requires_launch;
 
             if mentions_build || requires_build_and_test {
                 profile.requires_build = true;
@@ -441,6 +487,7 @@ impl AgentPipeline {
                 profile.requires_test = requires_build_and_test;
             }
             profile.requires_external_evidence = Self::task_requires_external_verification(task);
+            profile.requires_launch_evidence = requires_launch;
             return profile;
         }
 
@@ -507,6 +554,10 @@ impl AgentPipeline {
             parts.push(format!("Current task: {} [{}]", task.name, task.status));
         } else if !ready_tasks.is_empty() {
             parts.push("I have ready next steps, but I haven't focused one yet".to_string());
+        } else if missing_requirements.is_empty() {
+            parts.push(
+                "Tracked work is closed out and ready for the final user summary".to_string(),
+            );
         } else {
             parts.push("I don't have a clear next step yet".to_string());
         }
@@ -1206,6 +1257,31 @@ impl AgentPipeline {
         .any(|marker| Self::shell_command_invokes_marker(&normalized, marker))
     }
 
+    fn is_launch_verification_command(command: &str) -> bool {
+        let normalized = Self::normalize_shell_command(command);
+        [
+            "cargo tauri dev",
+            "tauri dev",
+            "npm run tauri dev",
+            "pnpm tauri dev",
+            "pnpm run tauri dev",
+            "yarn tauri dev",
+            "yarn run tauri dev",
+            "bun tauri dev",
+            "bun run tauri dev",
+            "cargo run",
+            "npm run dev",
+            "pnpm dev",
+            "pnpm run dev",
+            "yarn dev",
+            "yarn run dev",
+            "bun dev",
+            "bun run dev",
+        ]
+        .iter()
+        .any(|marker| Self::shell_command_invokes_marker(&normalized, marker))
+    }
+
     fn shell_command_invokes_marker(normalized_command: &str, marker: &str) -> bool {
         normalized_command == marker
             || normalized_command.starts_with(&format!("{marker} "))
@@ -1293,6 +1369,15 @@ impl AgentPipeline {
 
     fn output_contains_failure_markers(output: &str) -> bool {
         let lower = output.to_ascii_lowercase();
+        let normalized = lower
+            .replace("0 failed", "")
+            .replace("0 failures", "")
+            .replace("0 errors", "")
+            .replace("0 error", "")
+            .replace("0 not ok", "")
+            .replace("test result: ok", "")
+            .replace("build succeeded", "")
+            .replace("tests passed", "");
         [
             " failed",
             "failure",
@@ -1305,10 +1390,9 @@ impl AgentPipeline {
             "not found",
             "cannot navigate to invalid url",
             "expected ",
-            "mismatch",
         ]
         .iter()
-        .any(|marker| lower.contains(marker))
+        .any(|marker| normalized.contains(marker))
     }
 
     fn shell_success_output_negative_summary(
@@ -1545,6 +1629,19 @@ impl AgentPipeline {
             && matches!(tool_call.name.as_str(), "web" | "web_search")
     }
 
+    fn latest_successful_launch_verification_command(
+        tool_calls: &[ToolCallRecord],
+    ) -> Option<String> {
+        tool_calls.iter().rev().find_map(|tool_call| {
+            if tool_call.name != "shell" || !Self::tool_call_effective_success(tool_call) {
+                return None;
+            }
+
+            let command = Self::extract_shell_command_from_record_arguments(&tool_call.arguments)?;
+            Self::is_launch_verification_command(&command).then_some(command)
+        })
+    }
+
     fn latest_generic_verification_tool_name(tool_calls: &[ToolCallRecord]) -> Option<String> {
         tool_calls
             .iter()
@@ -1565,6 +1662,10 @@ impl AgentPipeline {
         }
 
         let profile = Self::task_execution_profile(task, false);
+        if profile.requires_launch_evidence {
+            return Self::latest_successful_launch_verification_command(tool_calls).is_some();
+        }
+
         if !profile.requires_external_evidence {
             return true;
         }
@@ -1916,6 +2017,21 @@ impl AgentPipeline {
                 requires_mutating_file_tool_success,
                 all_tool_calls,
             )
+    }
+
+    fn should_retry_execution_after_empty_terminal_response(
+        saw_any_tool_calls: bool,
+        terminal_text_is_meaningful: bool,
+        forced_execution_after_empty_response: bool,
+        completion_ready: bool,
+        iteration: usize,
+        max_iterations: Option<usize>,
+    ) -> bool {
+        saw_any_tool_calls
+            && !terminal_text_is_meaningful
+            && !forced_execution_after_empty_response
+            && !completion_ready
+            && Self::has_iteration_headroom(iteration, max_iterations)
     }
 
     fn is_any_loop_breaker_skip(tool_call: &ToolCallRecord) -> bool {
@@ -3125,6 +3241,10 @@ impl AgentPipeline {
                     );
                 }
                 let open_descendant_summary = runtime_state.open_descendant_summary;
+                let completion_ready = runtime_state
+                    .tracked
+                    .as_ref()
+                    .is_some_and(|state| state.completion_ready);
                 if let Some(fingerprint) = Self::no_tool_open_subtask_fingerprint(
                     runtime_state.tracked.as_ref(),
                     open_descendant_summary,
@@ -3168,19 +3288,39 @@ impl AgentPipeline {
                         stagnant_no_tool_open_subtask_streak = stagnant_no_tool_open_subtask_streak,
                         "[AgentLoop] Repeated no-tool responses left the same tracked subtasks open — escalating to forced in-progress/final status prompt"
                     );
-                    current_prompt = self.build_forced_final_summary_prompt(
-                        &current_prompt,
-                        &response.content,
-                        requires_build_and_test,
-                        requires_mutating_file_tool_success,
-                        &response.tool_calls,
-                        runtime_state
-                            .tracked
-                            .as_ref()
-                            .map(|state| state.snapshot.missing_requirements.as_slice())
-                            .unwrap_or(&[]),
-                        open_descendant_summary,
-                    );
+                    current_prompt = if completion_ready {
+                        self.build_tool_free_final_summary_prompt(
+                            &current_prompt,
+                            &response.content,
+                            requires_build_and_test,
+                            requires_mutating_file_tool_success,
+                            &response.tool_calls,
+                            runtime_state
+                                .tracked
+                                .as_ref()
+                                .map(|state| state.snapshot.missing_requirements.as_slice())
+                                .unwrap_or(&[]),
+                            open_descendant_summary,
+                        )
+                    } else {
+                        self.build_forced_final_summary_prompt(
+                            &current_prompt,
+                            &response.content,
+                            requires_build_and_test,
+                            requires_mutating_file_tool_success,
+                            &response.tool_calls,
+                            runtime_state
+                                .tracked
+                                .as_ref()
+                                .map(|state| state.snapshot.missing_requirements.as_slice())
+                                .unwrap_or(&[]),
+                            open_descendant_summary,
+                        )
+                    };
+                    if completion_ready {
+                        force_tool_free_final_summary = true;
+                        forced_execution_after_empty_response = true;
+                    }
                     forced_final_summary_requested = true;
                     iteration += 1;
                     continue;
@@ -3382,11 +3522,14 @@ impl AgentPipeline {
                     continue;
                 }
 
-                if saw_any_tool_calls
-                    && !terminal_text_is_meaningful
-                    && !forced_execution_after_empty_response
-                    && Self::has_iteration_headroom(iteration, max_iterations)
-                {
+                if Self::should_retry_execution_after_empty_terminal_response(
+                    saw_any_tool_calls,
+                    terminal_text_is_meaningful,
+                    forced_execution_after_empty_response,
+                    completion_ready,
+                    iteration,
+                    max_iterations,
+                ) {
                     telemetry
                         .record_iteration_completed(
                             iteration,
@@ -3435,10 +3578,6 @@ impl AgentPipeline {
                     && !forced_final_summary_requested
                     && Self::has_iteration_headroom(iteration, max_iterations)
                 {
-                    let completion_ready = runtime_state
-                        .tracked
-                        .as_ref()
-                        .is_some_and(|state| state.completion_ready);
                     telemetry
                         .record_iteration_completed(
                             iteration,
@@ -3773,46 +3912,24 @@ impl AgentPipeline {
                     open_descendant_summary,
                 );
 
-            if should_force_completion_ready_final_summary
-                && Self::has_iteration_headroom(iteration, max_iterations)
-            {
+            if should_force_completion_ready_final_summary {
                 tracing::info!(
                     iteration = iteration,
                     tool_calls_count = tool_calls_in_iteration.len(),
-                    "[AgentLoop] Tool iteration completed the tracked runtime without a usable terminal summary — forcing tool-free closeout"
+                    "[AgentLoop] Tool iteration completed the tracked runtime without a usable terminal summary — finalizing with synthetic closeout"
                 );
+                response.tool_calls = combined_tool_calls;
+                response.content = iteration_content;
+                delivered_terminal_summary = false;
                 telemetry
                     .record_iteration_completed(
                         iteration,
                         tool_calls_in_iteration.len(),
-                        iteration_content.chars().count(),
-                        false,
+                        response.content.chars().count(),
+                        delivered_terminal_summary,
                     )
                     .await;
-                telemetry
-                    .record_iteration_continuation(
-                        iteration,
-                        AgentLoopContinuation::ForcedFinalSummary,
-                    )
-                    .await;
-                current_prompt = self.build_tool_free_final_summary_prompt(
-                    &current_prompt,
-                    &response.content,
-                    requires_build_and_test,
-                    requires_mutating_file_tool_success,
-                    &response.tool_calls,
-                    runtime_state
-                        .tracked
-                        .as_ref()
-                        .map(|state| state.snapshot.missing_requirements.as_slice())
-                        .unwrap_or(&[]),
-                    open_descendant_summary,
-                );
-                force_tool_free_final_summary = true;
-                forced_execution_after_empty_response = true;
-                forced_final_summary_requested = true;
-                iteration += 1;
-                continue;
+                break;
             }
 
             if should_force_tool_free_final_summary
@@ -4155,6 +4272,10 @@ impl AgentPipeline {
                     _last_runtime_task_snapshot = Some(state.snapshot.clone());
                 }
                 let open_descendant_summary = runtime_state.open_descendant_summary;
+                let completion_ready = runtime_state
+                    .tracked
+                    .as_ref()
+                    .is_some_and(|state| state.completion_ready);
                 if let Some(fingerprint) = Self::no_tool_open_subtask_fingerprint(
                     runtime_state.tracked.as_ref(),
                     open_descendant_summary,
@@ -4282,11 +4403,14 @@ impl AgentPipeline {
                     continue;
                 }
 
-                if saw_any_tool_calls
-                    && !terminal_text_is_meaningful
-                    && !forced_execution_after_empty_response
-                    && Self::has_iteration_headroom(iteration, max_iterations)
-                {
+                if Self::should_retry_execution_after_empty_terminal_response(
+                    saw_any_tool_calls,
+                    terminal_text_is_meaningful,
+                    forced_execution_after_empty_response,
+                    completion_ready,
+                    iteration,
+                    max_iterations,
+                ) {
                     telemetry
                         .record_iteration_completed(iteration, 0, content.chars().count(), false)
                         .await;
@@ -4328,19 +4452,39 @@ impl AgentPipeline {
                             AgentLoopContinuation::ForcedFinalSummary,
                         )
                         .await;
-                    current_prompt = self.build_forced_final_summary_prompt(
-                        &current_prompt,
-                        &response.content,
-                        requires_build_and_test,
-                        requires_mutating_file_tool_success,
-                        &response.tool_calls,
-                        runtime_state
-                            .tracked
-                            .as_ref()
-                            .map(|state| state.snapshot.missing_requirements.as_slice())
-                            .unwrap_or(&[]),
-                        open_descendant_summary,
-                    );
+                    current_prompt = if completion_ready {
+                        self.build_tool_free_final_summary_prompt(
+                            &current_prompt,
+                            &response.content,
+                            requires_build_and_test,
+                            requires_mutating_file_tool_success,
+                            &response.tool_calls,
+                            runtime_state
+                                .tracked
+                                .as_ref()
+                                .map(|state| state.snapshot.missing_requirements.as_slice())
+                                .unwrap_or(&[]),
+                            open_descendant_summary,
+                        )
+                    } else {
+                        self.build_forced_final_summary_prompt(
+                            &current_prompt,
+                            &response.content,
+                            requires_build_and_test,
+                            requires_mutating_file_tool_success,
+                            &response.tool_calls,
+                            runtime_state
+                                .tracked
+                                .as_ref()
+                                .map(|state| state.snapshot.missing_requirements.as_slice())
+                                .unwrap_or(&[]),
+                            open_descendant_summary,
+                        )
+                    };
+                    if completion_ready {
+                        force_tool_free_final_summary = true;
+                        forced_execution_after_empty_response = true;
+                    }
                     forced_final_summary_requested = true;
                     iteration += 1;
                     continue;
@@ -4660,46 +4804,25 @@ impl AgentPipeline {
                     open_descendant_summary,
                 );
 
-            if should_force_completion_ready_final_summary
-                && Self::has_iteration_headroom(iteration, max_iterations)
-            {
+            if should_force_completion_ready_final_summary {
                 tracing::info!(
                     iteration = iteration,
                     tool_calls_count = iteration_tool_calls.len(),
-                    "Blocking loop: tool iteration completed the tracked runtime without a usable terminal summary — forcing tool-free closeout"
+                    "Blocking loop: tool iteration completed the tracked runtime without a usable terminal summary — finalizing with synthetic closeout"
                 );
+                response.tool_calls = combined_tool_calls;
+                response.content = content;
+                response.thinking = thinking;
+                delivered_terminal_summary = false;
                 telemetry
                     .record_iteration_completed(
                         iteration,
                         iteration_tool_calls.len(),
-                        content.chars().count(),
-                        false,
+                        response.content.chars().count(),
+                        delivered_terminal_summary,
                     )
                     .await;
-                telemetry
-                    .record_iteration_continuation(
-                        iteration,
-                        AgentLoopContinuation::ForcedFinalSummary,
-                    )
-                    .await;
-                current_prompt = self.build_tool_free_final_summary_prompt(
-                    &current_prompt,
-                    &response.content,
-                    requires_build_and_test,
-                    requires_mutating_file_tool_success,
-                    &response.tool_calls,
-                    runtime_state
-                        .tracked
-                        .as_ref()
-                        .map(|state| state.snapshot.missing_requirements.as_slice())
-                        .unwrap_or(&[]),
-                    open_descendant_summary,
-                );
-                force_tool_free_final_summary = true;
-                forced_execution_after_empty_response = true;
-                forced_final_summary_requested = true;
-                iteration += 1;
-                continue;
+                break;
             }
 
             if should_force_required_verification

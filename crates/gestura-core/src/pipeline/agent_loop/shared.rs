@@ -204,6 +204,8 @@ impl AgentPipeline {
         telemetry: &AgentRequestTelemetry,
         tx: Option<&mpsc::Sender<StreamChunk>>,
     ) {
+        let raw_terminal_response = response.content.clone();
+
         if saw_any_tool_calls && !delivered_terminal_summary {
             let reason = if let Some(limit) =
                 Self::exhausted_iteration_budget(response.iterations, max_iterations)
@@ -233,8 +235,6 @@ impl AgentPipeline {
                 Self::append_response_text(response, tx, summary).await;
             }
         }
-
-        let raw_terminal_response = response.content.clone();
 
         self.reconcile_tracked_task_after_success_with_history_validation(
             requires_build_and_test,

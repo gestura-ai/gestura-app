@@ -671,6 +671,21 @@ impl AgentPipeline {
         previous_snapshot: Option<&crate::streaming::TaskRuntimeSnapshot>,
         recent_tool_calls: &[ToolCallRecord],
     ) -> PublicNarrationChangeKind {
+        if let Some(tool_call) = recent_tool_calls.last() {
+            if Self::tool_call_blocker_summary(tool_call).is_some() {
+                return PublicNarrationChangeKind::Blocker;
+            }
+            if Self::tool_call_contradiction_summary(tool_call).is_some() {
+                return PublicNarrationChangeKind::Contradiction;
+            }
+            if matches!(
+                tool_call.result,
+                ToolResult::Error(_) | ToolResult::Skipped(_)
+            ) {
+                return PublicNarrationChangeKind::Contradiction;
+            }
+        }
+
         if let Some(snapshot) = snapshot {
             let (cleared_requirements, added_requirements) =
                 Self::runtime_requirement_delta(previous_snapshot, snapshot);
@@ -693,16 +708,7 @@ impl AgentPipeline {
         }
 
         if let Some(tool_call) = recent_tool_calls.last() {
-            if Self::tool_call_blocker_summary(tool_call).is_some() {
-                return PublicNarrationChangeKind::Blocker;
-            }
-            if Self::tool_call_contradiction_summary(tool_call).is_some() {
-                return PublicNarrationChangeKind::Contradiction;
-            }
             match tool_call.result {
-                ToolResult::Error(_) | ToolResult::Skipped(_) => {
-                    return PublicNarrationChangeKind::Contradiction;
-                }
                 ToolResult::Success(_) => {
                     return match tool_call.name.as_str() {
                         "file" | "read_file" | "code" | "web" | "web_search" => {
@@ -710,6 +716,9 @@ impl AgentPipeline {
                         }
                         _ => PublicNarrationChangeKind::Confirmation,
                     };
+                }
+                ToolResult::Error(_) | ToolResult::Skipped(_) => {
+                    return PublicNarrationChangeKind::Contradiction;
                 }
             }
         }

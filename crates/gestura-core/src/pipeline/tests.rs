@@ -156,15 +156,18 @@ fn missing_session_ids_are_synthesized_for_core_requests() {
     assert!(session_id.starts_with("agent-run-"));
 }
 
-#[test]
-fn core_can_auto_initialize_a_tracked_root_task() {
+#[tokio::test]
+async fn core_can_auto_initialize_a_tracked_root_task() {
     let temp = tempdir().unwrap();
     let mut request =
         AgentRequest::new("Carefully plan and implement the change, then build and test it")
             .with_workspace(temp.path());
+    let pipeline = AgentPipeline::new(AppConfig::default());
 
     AgentPipeline::ensure_request_session_id(&mut request);
-    AgentPipeline::maybe_initialize_tracked_request_task(&mut request, true, true);
+    pipeline
+        .maybe_initialize_tracked_request_task(&mut request, true, true)
+        .await;
 
     let session_id = request
         .metadata
@@ -211,7 +214,7 @@ fn core_can_auto_initialize_a_tracked_root_task() {
     assert!(
         request
             .input
-            .contains("Validate the result and summarize follow-up [notstarted]")
+            .contains("Validate the result and summarize follow-up [not_started]")
     );
     assert_eq!(
         super::requirement_detection_input(&request),

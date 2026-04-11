@@ -274,6 +274,17 @@ impl AgentPipeline {
                                     None,
                                 ));
                             }
+                            if profile.requires_launch_evidence
+                                && let Some(command) =
+                                    Self::latest_successful_launch_verification_command(tool_calls)
+                            {
+                                state.record_evidence(TaskExecutionEvidence::new(
+                                    TaskExecutionEvidenceKind::ToolActivity,
+                                    "Runtime observed direct launch verification",
+                                    Some("shell".to_string()),
+                                    Some(command),
+                                ));
+                            }
                         }
                         TaskExecutionKind::General => {
                             if evidence.saw_successful_tool_work {
@@ -1103,6 +1114,12 @@ impl AgentPipeline {
             return Some(crate::TaskStatus::Cancelled);
         }
 
+        if Self::task_requires_user_facing_closeout(task)
+            && !Self::final_response_mentions_task(task, final_response)
+        {
+            return None;
+        }
+
         let inferred_profile = Self::task_execution_profile(task, false);
 
         if let Ok(Some(mut execution_state)) = manager.get_execution_state(session_id, &task.id) {
@@ -1112,6 +1129,7 @@ impl AgentPipeline {
             required_profile.requires_test |= inferred_profile.requires_test;
             required_profile.requires_external_evidence |=
                 inferred_profile.requires_external_evidence;
+            required_profile.requires_launch_evidence |= inferred_profile.requires_launch_evidence;
             execution_state.merge_profile(required_profile);
             match task.status {
                 crate::TaskStatus::InProgress | crate::TaskStatus::NotStarted
@@ -2039,11 +2057,16 @@ impl AgentPipeline {
         session_id: &str,
         task: &crate::Task,
     ) -> bool {
+        if Self::task_requires_user_facing_closeout(task) {
+            return false;
+        }
+
         let inferred_profile = Self::task_execution_profile(task, false);
         let requires_direct_proof = matches!(
             inferred_profile.execution_kind,
             TaskExecutionKind::Implementation | TaskExecutionKind::Verification
         ) || inferred_profile.requires_external_evidence
+            || inferred_profile.requires_launch_evidence
             || inferred_profile.requires_build
             || inferred_profile.requires_test;
 
@@ -2109,8 +2132,12 @@ impl AgentPipeline {
                         profile.execution_kind,
                         TaskExecutionKind::Implementation | TaskExecutionKind::Verification
                     ) || profile.requires_external_evidence
+                        || profile.requires_launch_evidence
                         || profile.requires_build
                         || profile.requires_test;
+                    if Self::task_requires_user_facing_closeout(descendant) {
+                        return None;
+                    }
                     let target_status = match descendant.status {
                         crate::TaskStatus::InProgress => {
                             if requires_direct_proof && broad_plan_completion_claimed {

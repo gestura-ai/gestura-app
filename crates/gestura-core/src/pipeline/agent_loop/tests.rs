@@ -168,10 +168,88 @@ fn synthetic_final_summary_reports_tool_activity_transparently() {
     assert!(summary.contains("2 tool call(s)"));
     assert!(summary.contains("1 succeeded, 1 failed, 0 skipped"));
     assert!(summary.contains("without producing a proper wrap-up for the user"));
+    assert!(summary.contains("Final status from the observed run: mixed results"));
     assert!(summary.contains("Last tool `shell` failed"));
     assert!(summary.contains("run a shell command"));
     assert!(summary.contains("Review the recorded tool activity above for the detailed outputs."));
     assert!(!summary.contains("cargo build failed"));
+}
+
+#[test]
+fn synthetic_final_summary_reports_latest_verification_outcomes() {
+    let pipeline = AgentPipeline::new(AppConfig::default());
+    let summary = pipeline
+        .build_synthetic_final_summary(
+            &[
+                ToolCallRecord {
+                    id: "1".to_string(),
+                    name: "shell".to_string(),
+                    arguments: serde_json::json!({
+                        "command": "cargo test --manifest-path src-tauri/Cargo.toml"
+                    })
+                    .to_string(),
+                    result: ToolResult::Success("test result: ok. 0 passed; 0 failed".to_string()),
+                    duration_ms: 12,
+                },
+                ToolCallRecord {
+                    id: "2".to_string(),
+                    name: "shell".to_string(),
+                    arguments: serde_json::json!({
+                        "command": "npm run tauri build -- --bundles app"
+                    })
+                    .to_string(),
+                    result: ToolResult::Error("bundle build failed".to_string()),
+                    duration_ms: 40,
+                },
+                ToolCallRecord {
+                    id: "3".to_string(),
+                    name: "shell".to_string(),
+                    arguments: serde_json::json!({
+                        "command": "cargo test --manifest-path src-tauri/Cargo.toml"
+                    })
+                    .to_string(),
+                    result: ToolResult::Success("test result: ok. 4 passed; 0 failed".to_string()),
+                    duration_ms: 52,
+                },
+            ],
+            IncompleteRunReason::MissingTerminalSummary,
+        )
+        .expect("summary should be generated");
+
+    assert!(summary.contains(
+        "Final status from the observed run: the latest verification finished successfully after earlier failed attempts."
+    ));
+    assert!(summary.contains(
+        "the latest observed verification command `cargo test --manifest-path src-tauri/Cargo.toml` succeeded after earlier failing attempts such as `npm run tauri build -- --bundles app`"
+    ));
+}
+
+#[test]
+fn synthetic_final_summary_deduplicates_replayed_tool_calls() {
+    let pipeline = AgentPipeline::new(AppConfig::default());
+    let repeated = ToolCallRecord {
+        id: "dup-shell".to_string(),
+        name: "shell".to_string(),
+        arguments: serde_json::json!({
+            "command": "cargo test -p gestura-core --lib"
+        })
+        .to_string(),
+        result: ToolResult::Success("test result: ok".to_string()),
+        duration_ms: 18,
+    };
+
+    let summary = pipeline
+        .build_synthetic_final_summary(
+            &[repeated.clone(), repeated],
+            IncompleteRunReason::MissingTerminalSummary,
+        )
+        .expect("summary should be generated");
+
+    assert!(
+        summary.contains(
+            "The observed run covered 1 tool call(s) (1 succeeded, 0 failed, 0 skipped)."
+        )
+    );
 }
 
 #[test]
@@ -2118,6 +2196,44 @@ fn completion_ready_tool_iteration_guard_does_not_fire_with_open_descendants() {
 }
 
 #[test]
+fn empty_terminal_retry_is_disabled_once_runtime_is_completion_ready() {
+    assert!(
+        !AgentPipeline::should_retry_execution_after_empty_terminal_response(
+            true,
+            false,
+            false,
+            true,
+            2,
+            Some(8),
+        )
+    );
+}
+
+#[test]
+fn empty_terminal_retry_still_runs_when_runtime_is_not_completion_ready() {
+    assert!(
+        AgentPipeline::should_retry_execution_after_empty_terminal_response(
+            true,
+            false,
+            false,
+            false,
+            2,
+            Some(8),
+        )
+    );
+}
+
+#[test]
+fn runtime_snapshot_status_message_reports_terminal_closeout_when_ready_to_summarize() {
+    let status = AgentPipeline::runtime_snapshot_status_message(None, &[], &[], &[]);
+
+    assert_eq!(
+        status,
+        "Tracked work is closed out and ready for the final user summary"
+    );
+}
+
+#[test]
 fn tool_iteration_finalization_ignores_build_test_words_from_continuation_prompt() {
     let tool_calls = vec![ToolCallRecord {
         id: "1".to_string(),
@@ -3390,6 +3506,121 @@ fn success_reconciliation_does_not_complete_verification_from_under_scoped_execu
 }
 
 #[test]
+fn success_reconciliation_keeps_launch_behavior_task_open_without_launch_evidence() {
+    let manager = crate::get_global_task_manager();
+    let session_id = format!("agent-loop-success-launch-proof-{}", uuid::Uuid::new_v4());
+    let mut verify = crate::Task::new(
+        &session_id,
+        "Test app launch behavior",
+        "Launch the desktop app and confirm the window opens",
+        None,
+    );
+    verify.set_status(crate::TaskStatus::InProgress);
+
+    let mut task_list = crate::TaskList::new(&session_id);
+    task_list.add_task(verify.clone());
+    manager
+        .replace_task_list(task_list)
+        .expect("replace task list");
+
+    manager
+        .update_execution_state(&session_id, &verify.id, |state| {
+            state.merge_profile(TaskVerificationProfile {
+                execution_kind: TaskExecutionKind::Verification,
+                requires_launch_evidence: true,
+                ..TaskVerificationProfile::default()
+            });
+            state.record_evidence(TaskExecutionEvidence::new(
+                TaskExecutionEvidenceKind::Test,
+                "cargo test",
+                Some("shell".to_string()),
+                Some("cargo test".to_string()),
+            ));
+        })
+        .expect("execution state update should succeed");
+
+    let stored_verify = manager
+        .get_task(&session_id, &verify.id)
+        .expect("verification lookup should succeed")
+        .expect("verification task should exist");
+
+    let status = AgentPipeline::target_status_for_open_descendant_after_success(
+        &session_id,
+        &stored_verify,
+        "Built and tested the app.",
+        &[ToolCallRecord {
+            id: "1".to_string(),
+            name: "shell".to_string(),
+            arguments: serde_json::json!({
+                "command": "cargo test"
+            })
+            .to_string(),
+            result: ToolResult::Success("test result: ok".to_string()),
+            duration_ms: 1,
+        }],
+    );
+
+    assert_eq!(status, None);
+}
+
+#[test]
+fn success_reconciliation_keeps_user_closeout_task_open_without_matching_final_summary() {
+    let session_id = format!("agent-loop-success-closeout-proof-{}", uuid::Uuid::new_v4());
+    let mut summarize = crate::Task::new(
+        &session_id,
+        "Document results and next steps",
+        "Summarize the outcome for the user and list next steps",
+        None,
+    );
+    summarize.set_status(crate::TaskStatus::InProgress);
+
+    let status = AgentPipeline::target_status_for_open_descendant_after_success(
+        &session_id,
+        &summarize,
+        "Built the app and ran cargo test successfully.",
+        &[],
+    );
+
+    assert_eq!(status, None);
+}
+
+#[test]
+fn history_validated_direct_proof_rejects_user_closeout_tasks() {
+    let manager = crate::get_global_task_manager();
+    let session_id = format!("agent-loop-history-closeout-proof-{}", uuid::Uuid::new_v4());
+    let summarize = crate::Task::new(
+        &session_id,
+        "Document results and next steps",
+        "Summarize the outcome for the user and list next steps",
+        None,
+    );
+
+    let mut task_list = crate::TaskList::new(&session_id);
+    task_list.add_task(summarize.clone());
+    manager
+        .replace_task_list(task_list)
+        .expect("replace task list");
+
+    manager
+        .update_execution_state(&session_id, &summarize.id, |state| {
+            state.record_evidence(TaskExecutionEvidence::new(
+                TaskExecutionEvidenceKind::ToolActivity,
+                "Compiled notes internally but did not deliver the user-facing summary",
+                Some("shell".to_string()),
+                Some("printf done".to_string()),
+            ));
+        })
+        .expect("execution state update should succeed");
+
+    assert!(
+        !AgentPipeline::history_validated_completion_satisfies_direct_proof(
+            &session_id,
+            &summarize,
+        )
+    );
+}
+
+#[test]
 fn tracked_task_reconciliation_completes_started_descendants_after_success() {
     let manager = crate::get_global_task_manager();
     let session_id = format!("agent-loop-cleanup-{}", uuid::Uuid::new_v4());
@@ -3878,6 +4109,68 @@ fn successful_http_probe_with_404_is_treated_as_contradiction() {
         AgentPipeline::tool_call_contradiction_summary(&tool_call)
             .is_some_and(|summary| summary.contains("HTTP failure response"))
     );
+}
+
+#[test]
+fn successful_cargo_test_output_with_zero_failed_is_not_treated_as_contradiction() {
+    let tool_call = ToolCallRecord {
+        id: "1".to_string(),
+        name: "shell".to_string(),
+        arguments: serde_json::json!({
+            "command": "cargo test --manifest-path src-tauri/Cargo.toml"
+        })
+        .to_string(),
+        result: ToolResult::Success(
+            "running 0 tests\n\ntest result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s"
+                .to_string(),
+        ),
+        duration_ms: 1,
+    };
+
+    assert!(AgentPipeline::tool_call_effective_success(&tool_call));
+    assert!(AgentPipeline::tool_call_contradiction_summary(&tool_call).is_none());
+}
+
+#[test]
+fn build_and_test_completion_status_accepts_composite_verification_with_zero_failed_test_output() {
+    let tool_calls = vec![ToolCallRecord {
+        id: "1".to_string(),
+        name: "shell".to_string(),
+        arguments: serde_json::json!({
+            "command": "cargo test --manifest-path src-tauri/Cargo.toml && cargo check --manifest-path src-tauri/Cargo.toml && cargo build --manifest-path src-tauri/Cargo.toml --release"
+        })
+        .to_string(),
+        result: ToolResult::Success(
+            "Finished `test` profile [unoptimized + debuginfo] target(s) in 0.39s\nRunning unittests src/lib.rs\n\nrunning 0 tests\n\ntest result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s\n\nFinished `dev` profile [unoptimized + debuginfo] target(s) in 0.45s\nFinished `release` profile [optimized] target(s) in 0.46s"
+                .to_string(),
+        ),
+        duration_ms: 1,
+    }];
+
+    assert_eq!(
+        AgentPipeline::build_and_test_completion_status(&tool_calls),
+        (true, true, true, true)
+    );
+}
+
+#[test]
+fn successful_tauri_build_output_with_mismatched_versions_info_is_not_a_contradiction() {
+    let tool_call = ToolCallRecord {
+        id: "1".to_string(),
+        name: "shell".to_string(),
+        arguments: serde_json::json!({
+            "command": "npm install && cargo test --manifest-path src-tauri/Cargo.toml && cargo check --manifest-path src-tauri/Cargo.toml && npm run tauri build -- --no-bundle --ci"
+        })
+        .to_string(),
+        result: ToolResult::Success(
+            "up to date, audited 3 packages in 798ms\n\nfound 0 vulnerabilities\n\nFinished `test` profile [unoptimized + debuginfo] target(s) in 0.44s\nrunning 0 tests\n\ntest result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s\n\nInfo Looking up installed tauri packages to check mismatched versions...\nFinished `release` profile [optimized] target(s) in 0.41s\nBuilt application at: /Users/example/src-tauri/target/release/tauri-app"
+                .to_string(),
+        ),
+        duration_ms: 1,
+    };
+
+    assert!(AgentPipeline::tool_call_effective_success(&tool_call));
+    assert!(AgentPipeline::tool_call_contradiction_summary(&tool_call).is_none());
 }
 
 #[test]
@@ -4680,6 +4973,43 @@ fn results_review_narration_does_not_report_completion_until_snapshot_is_fully_c
         AgentPipeline::results_review_narration_change_kind(Some(&snapshot), None, &[]);
 
     assert_ne!(change_kind, PublicNarrationChangeKind::Completion);
+}
+
+#[test]
+fn results_review_narration_prioritizes_failed_latest_tool_over_completion_snapshot() {
+    let snapshot = crate::streaming::TaskRuntimeSnapshot {
+        root_task_id: "root".to_string(),
+        current_task: None,
+        ready_tasks: Vec::new(),
+        parallel_ready_tasks: Vec::new(),
+        blocked_tasks: Vec::new(),
+        open_tasks: Vec::new(),
+        completed_tasks: vec![crate::streaming::TaskRuntimeTaskView {
+            id: "verify".to_string(),
+            name: "Build Tauri app".to_string(),
+            status: "completed".to_string(),
+        }],
+        missing_requirements: Vec::new(),
+        status_message: "Everything is complete.".to_string(),
+    };
+    let recent_tool_calls = vec![ToolCallRecord {
+        id: "1".to_string(),
+        name: "shell".to_string(),
+        arguments: serde_json::json!({
+            "command": "npm run tauri build -- --bundles app"
+        })
+        .to_string(),
+        result: ToolResult::Error("bundle build failed".to_string()),
+        duration_ms: 1,
+    }];
+
+    let change_kind = AgentPipeline::results_review_narration_change_kind(
+        Some(&snapshot),
+        None,
+        &recent_tool_calls,
+    );
+
+    assert_eq!(change_kind, PublicNarrationChangeKind::Contradiction);
 }
 
 #[test]
