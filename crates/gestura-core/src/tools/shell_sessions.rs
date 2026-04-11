@@ -875,13 +875,13 @@ mod imp {
                     self.emit_session_lifecycle();
                     self.terminate().await?;
                     let flushed = parser.finish();
-                    if !flushed.is_empty() {
-                        stdout.push_str(&flushed);
+                    if !flushed.output.is_empty() {
+                        stdout.push_str(&flushed.output);
                         let output_chunk = StreamChunk::ShellOutput {
                             process_id: process_id.clone(),
                             shell_session_id: Some(self.shell_session_id.clone()),
                             stream: ShellOutputStream::Stdout,
-                            data: flushed,
+                            data: flushed.output,
                         };
                         self.emit_broadcast(output_chunk.clone());
                         send_shell_output_chunk_best_effort(&tx, output_chunk).await;
@@ -1026,16 +1026,58 @@ mod imp {
                     }
                     Ok(None) => {
                         let flushed = parser.finish();
-                        if !flushed.is_empty() {
-                            stdout.push_str(&flushed);
+                        if !flushed.output.is_empty() {
+                            stdout.push_str(&flushed.output);
                             let output_chunk = StreamChunk::ShellOutput {
                                 process_id: process_id.clone(),
                                 shell_session_id: Some(self.shell_session_id.clone()),
                                 stream: ShellOutputStream::Stdout,
-                                data: flushed,
+                                data: flushed.output.clone(),
                             };
                             self.emit_broadcast(output_chunk.clone());
                             send_shell_output_chunk_best_effort(&tx, output_chunk).await;
+                        }
+
+                        if let Some(exit_code) = flushed.exit_code {
+                            let user_stopped =
+                                self.user_stop_requested.swap(false, Ordering::SeqCst);
+                            let duration_ms = start.elapsed().as_millis() as u64;
+                            let process_state = if user_stopped {
+                                ShellProcessState::Stopped
+                            } else if exit_code == 0 {
+                                ShellProcessState::Completed
+                            } else {
+                                ShellProcessState::Failed
+                            };
+                            let reported_exit = if user_stopped && exit_code == 0 {
+                                130
+                            } else {
+                                exit_code
+                            };
+                            let session_state = if user_stopped {
+                                ShellSessionState::Stopped
+                            } else if self.is_closed() {
+                                ShellSessionState::Failed
+                            } else {
+                                ShellSessionState::Idle
+                            };
+
+                            return self
+                                .finish_command(
+                                    &tx,
+                                    command,
+                                    command_cwd,
+                                    CommandCompletion {
+                                        process_id,
+                                        stdout,
+                                        exit_code: reported_exit,
+                                        process_state,
+                                        duration_ms,
+                                        session_state,
+                                        failure_kind: runtime_failure_kind,
+                                    },
+                                )
+                                .await;
                         }
 
                         let user_stopped = self.user_stop_requested.swap(false, Ordering::SeqCst);
@@ -1223,13 +1265,13 @@ mod imp {
                         self.emit_session_lifecycle();
                         self.terminate().await?;
                         let flushed = parser.finish();
-                        if !flushed.is_empty() {
-                            stdout.push_str(&flushed);
+                        if !flushed.output.is_empty() {
+                            stdout.push_str(&flushed.output);
                             let output_chunk = StreamChunk::ShellOutput {
                                 process_id: process_id.clone(),
                                 shell_session_id: Some(self.shell_session_id.clone()),
                                 stream: ShellOutputStream::Stdout,
-                                data: flushed,
+                                data: flushed.output,
                             };
                             self.emit_broadcast(output_chunk.clone());
                             send_shell_output_chunk_best_effort(&tx, output_chunk).await;
@@ -1705,12 +1747,31 @@ mod imp {
             }
         }
 
-        fn finish(&mut self) -> String {
+        fn finish(&mut self) -> ParsedChunk {
             if !self.started {
                 self.pending.clear();
-                return String::new();
+                return ParsedChunk {
+                    output: String::new(),
+                    exit_code: None,
+                };
             }
-            std::mem::take(&mut self.pending)
+
+            if let Some((output_end, _, exit_code)) =
+                find_done_marker(&self.pending, &self.done_prefix)
+                    .or_else(|| find_done_marker_allow_eof(&self.pending, &self.done_prefix))
+            {
+                let output = self.pending[..output_end].to_string();
+                self.pending.clear();
+                return ParsedChunk {
+                    output,
+                    exit_code: Some(exit_code),
+                };
+            }
+
+            ParsedChunk {
+                output: std::mem::take(&mut self.pending),
+                exit_code: None,
+            }
         }
 
         fn buffered_output(&self) -> &str {
@@ -1775,6 +1836,19 @@ mod imp {
             idx
         };
         Some((output_end, consume_end, exit_code))
+    }
+
+    fn find_done_marker_allow_eof(buffer: &str, done_prefix: &str) -> Option<(usize, usize, i32)> {
+        let marker = format!("\n{done_prefix}");
+        let idx = buffer.find(&marker)?;
+        let code_start = idx + marker.len();
+        let exit_code = buffer[code_start..].trim_end_matches('\r').parse().ok()?;
+        let output_end = if idx > 0 && buffer.as_bytes()[idx - 1] == b'\r' {
+            idx - 1
+        } else {
+            idx
+        };
+        Some((output_end, buffer.len(), exit_code))
     }
 
     fn find_start_marker(buffer: &str, start_marker: &str) -> Option<usize> {
@@ -2032,6 +2106,24 @@ mod imp {
             let second = parser.push(" world\n__GESTURA_DONE_abc__:0\r\n");
             assert_eq!(second.output, "hello world");
             assert_eq!(second.exit_code, Some(0));
+        }
+
+        #[test]
+        fn parser_finish_extracts_trailing_done_marker_after_channel_close() {
+            let mut parser = SessionOutputParser::new(
+                "__GESTURA_START_abc__".to_string(),
+                "__GESTURA_DONE_abc__:".to_string(),
+            );
+
+            let first = parser.push(
+                "printf '__GESTURA_START_abc__\\n'\r\n__GESTURA_START_abc__\r\nhello world\n__GESTURA_DONE_abc__:0\r",
+            );
+            assert_eq!(first.output, "");
+            assert_eq!(first.exit_code, None);
+
+            let finished = parser.finish();
+            assert_eq!(finished.output, "hello world");
+            assert_eq!(finished.exit_code, Some(0));
         }
 
         #[test]
