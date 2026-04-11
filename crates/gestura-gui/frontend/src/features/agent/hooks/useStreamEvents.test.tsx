@@ -239,6 +239,39 @@ describe('useStreamEvents', () => {
     });
   });
 
+  it('dispatches shell session lifecycle events to chat state immediately', async () => {
+    const dispatch = createDispatchMock();
+    render(<HookHarness sessionId="session-123" dispatch={dispatch} />);
+
+    await waitFor(() => {
+      expect(listeners.has('agent-stream-shell-session-lifecycle')).toBe(true);
+    });
+
+    await act(async () => {
+      listeners.get('agent-stream-shell-session-lifecycle')?.({
+        payload: {
+          session_id: 'session-123',
+          shell_session_id: 'shell-session-1',
+          state: 'Busy',
+          active_process_id: 'proc-1',
+          active_command: 'cargo test',
+        },
+      });
+    });
+
+    expect(dispatch).toHaveBeenCalledWith({
+      type: 'shell-session-lifecycle',
+      shellSessionId: 'shell-session-1',
+      payload: {
+        session_id: 'session-123',
+        shell_session_id: 'shell-session-1',
+        state: 'Busy',
+        active_process_id: 'proc-1',
+        active_command: 'cargo test',
+      },
+    });
+  });
+
   it('registers shell listeners even if earlier listeners are still pending', async () => {
     const resolveProbeRef: { current: null | (() => void) } = { current: null };
     listenMock.mockImplementationOnce(() => new Promise((resolve) => {

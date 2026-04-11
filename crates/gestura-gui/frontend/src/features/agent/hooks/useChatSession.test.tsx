@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { useChatSession } from './useChatSession';
 import type { StreamEventDispatch } from './useStreamEvents';
+import type { ShellSessionRecord } from '../types';
 
 let streamDispatch: StreamEventDispatch | null = null;
 
@@ -88,8 +89,8 @@ function blocksToText(
     .join('|');
 }
 
-function Harness() {
-  const state = useChatSession('session-123');
+function Harness({ shellSessions = [] }: { shellSessions?: ShellSessionRecord[] }) {
+  const state = useChatSession('session-123', { shellSessions });
   return (
     <div>
       <div data-testid="status">{state.status.text}</div>
@@ -225,7 +226,7 @@ describe('useChatSession', () => {
     expect(screen.getByTestId('runtime-task-snapshot')).toHaveTextContent('verification still required');
   });
 
-  it('materializes the first shell block immediately from shell lifecycle events', async () => {
+  it('materializes a shell session block immediately from session lifecycle events', async () => {
     render(<Harness />);
 
     await waitFor(() => {
@@ -234,14 +235,16 @@ describe('useChatSession', () => {
 
     await act(async () => {
       streamDispatch?.({
-        type: 'shell-lifecycle',
-        processId: 'proc-1',
+        type: 'shell-session-lifecycle',
+        shellSessionId: 'shell-session-1',
         payload: {
-          process_id: 'proc-1',
           shell_session_id: 'shell-session-1',
-          state: 'Started',
-          command: 'cargo test',
+          state: 'Busy',
+          active_process_id: 'proc-1',
+          active_command: 'cargo test',
           cwd: '/workspace',
+          interactive: true,
+          user_managed: false,
         },
       });
     });
@@ -250,11 +253,11 @@ describe('useChatSession', () => {
     expect(blocks).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
-          kind: 'shell',
-          processId: 'proc-1',
+          kind: 'shell-session',
           shellSessionId: 'shell-session-1',
-          state: 'Started',
-          command: 'cargo test',
+          state: 'Busy',
+          activeProcessId: 'proc-1',
+          activeCommand: 'cargo test',
           cwd: '/workspace',
         }),
       ]),
@@ -279,12 +282,11 @@ describe('useChatSession', () => {
     });
 
     let blocks = JSON.parse(screen.getByTestId('streaming-blocks').textContent ?? '[]') as Array<Record<string, unknown>>;
-    let shellBlock = blocks.find((block) => block.kind === 'shell');
+    let shellBlock = blocks.find((block) => block.kind === 'shell-session');
 
     expect(shellBlock).toEqual(expect.objectContaining({
-      processId: 'proc-out-first',
       shellSessionId: 'shell-session-out-first',
-      state: 'Running',
+      state: 'Idle',
     }));
     expect(shellBlock?.lines).toEqual(expect.arrayContaining([
       expect.objectContaining({ data: 'compiling...\n' }),
@@ -305,17 +307,77 @@ describe('useChatSession', () => {
     });
 
     blocks = JSON.parse(screen.getByTestId('streaming-blocks').textContent ?? '[]');
-    shellBlock = blocks.find((block) => block.kind === 'shell');
+    shellBlock = blocks.find((block) => block.kind === 'shell-session');
     const lines = Array.isArray(shellBlock?.lines) ? shellBlock.lines as Array<Record<string, unknown>> : [];
 
     expect(shellBlock).toEqual(expect.objectContaining({
-      processId: 'proc-out-first',
       shellSessionId: 'shell-session-out-first',
-      command: 'cargo check',
+      state: 'Busy',
+      activeProcessId: 'proc-out-first',
+      activeCommand: 'cargo check',
       cwd: '/workspace',
     }));
     expect(String(lines[0]?.data ?? '')).toContain('cargo check');
     expect(String(lines[1]?.data ?? '')).toContain('compiling...');
+    expect(blocks.find((block) => block.kind === 'shell')).toBeUndefined();
+  });
+
+  it('keeps a session-backed shell transcript reusable after a failed command', async () => {
+    render(<Harness />);
+
+    await waitFor(() => {
+      expect(streamDispatch).not.toBeNull();
+    });
+
+    await act(async () => {
+      streamDispatch?.({
+        type: 'shell-lifecycle',
+        processId: 'proc-failed-1',
+        payload: {
+          process_id: 'proc-failed-1',
+          shell_session_id: 'shell-session-failed-1',
+          state: 'Started',
+          command: 'cargo test --workspace',
+          cwd: '/workspace',
+        },
+      });
+      streamDispatch?.({
+        type: 'shell-output',
+        processId: 'proc-failed-1',
+        shellSessionId: 'shell-session-failed-1',
+        stream: 'Stderr',
+        data: 'error: test failed\n',
+      });
+      streamDispatch?.({
+        type: 'shell-lifecycle',
+        processId: 'proc-failed-1',
+        payload: {
+          process_id: 'proc-failed-1',
+          shell_session_id: 'shell-session-failed-1',
+          state: 'Failed',
+          command: 'cargo test --workspace',
+          cwd: '/workspace',
+          exit_code: 1,
+          duration_ms: 55,
+        },
+      });
+    });
+
+    const blocks = JSON.parse(screen.getByTestId('streaming-blocks').textContent ?? '[]') as Array<Record<string, unknown>>;
+    const shellBlock = blocks.find((block) => block.kind === 'shell-session');
+    const lines = Array.isArray(shellBlock?.lines) ? shellBlock.lines as Array<Record<string, unknown>> : [];
+
+    expect(shellBlock).toEqual(expect.objectContaining({
+      shellSessionId: 'shell-session-failed-1',
+      state: 'Idle',
+      activeProcessId: null,
+      activeCommand: null,
+      lastExitCode: 1,
+      availableForReuse: true,
+    }));
+    expect(lines.some((line) => String(line.data ?? '').includes('cargo test --workspace'))).toBe(true);
+    expect(lines.some((line) => String(line.data ?? '').includes('error: test failed'))).toBe(true);
+    expect(blocks.find((block) => block.kind === 'shell')).toBeUndefined();
   });
 
   it('marks stop as in progress on the first click and ignores repeated clicks', async () => {
@@ -500,6 +562,315 @@ describe('useChatSession', () => {
     expect(screen.getByTestId('streaming-blocks')).toHaveTextContent('[]');
   });
 
+  it('recovers an inline shell-session block from shared shell session state during an active request', async () => {
+    sendMessageStreamingMock.mockResolvedValue(undefined);
+
+    const { rerender } = render(<Harness shellSessions={[]} />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('status')).toHaveTextContent('Ready');
+    });
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Send' }));
+    });
+
+    expect(screen.getByTestId('is-processing')).toHaveTextContent('true');
+    expect(screen.getByTestId('streaming-blocks')).toHaveTextContent('[]');
+
+    rerender(
+      <Harness shellSessions={[
+        {
+          kind: 'shell-session',
+          id: 'shell-session-recovered',
+          shellSessionId: 'shell-session-recovered',
+          cwd: '/workspace',
+          state: 'Busy',
+          interactive: true,
+          userManaged: false,
+          activeProcessId: 'proc-recovered',
+          activeCommand: 'cargo test --workspace',
+          lastExitCode: null,
+          durationMs: null,
+          startedAt: Date.now(),
+          lastActivityAt: Date.now(),
+          lines: [{ stream: 'Stdout', data: '$ cargo test --workspace\n' }],
+          collapsed: false,
+          availableForReuse: false,
+        },
+      ]}
+      />,
+    );
+
+    await waitFor(() => {
+      const blocks = JSON.parse(screen.getByTestId('streaming-blocks').textContent ?? '[]') as Array<Record<string, unknown>>;
+      const shellBlock = blocks.find((block) => block.kind === 'shell-session');
+      expect(shellBlock).toEqual(expect.objectContaining({
+        shellSessionId: 'shell-session-recovered',
+        state: 'Busy',
+        activeProcessId: 'proc-recovered',
+        activeCommand: 'cargo test --workspace',
+      }));
+    });
+  });
+
+  it('upgrades a provisional shell block into a shell-session block when shared session state arrives', async () => {
+    sendMessageStreamingMock.mockResolvedValue(undefined);
+    const { rerender } = render(<Harness shellSessions={[]} />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('status')).toHaveTextContent('Ready');
+    });
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Send' }));
+    });
+
+    await waitFor(() => {
+      expect(streamDispatch).not.toBeNull();
+    });
+
+    await act(async () => {
+      streamDispatch?.({
+        type: 'shell-output',
+        processId: 'proc-upgrade',
+        shellSessionId: null,
+        stream: 'Stdout',
+        data: 'running...\n',
+      });
+    });
+
+    let blocks = JSON.parse(screen.getByTestId('streaming-blocks').textContent ?? '[]') as Array<Record<string, unknown>>;
+    expect(blocks.find((block) => block.kind === 'shell')).toBeTruthy();
+
+    rerender(
+      <Harness shellSessions={[
+        {
+          kind: 'shell-session',
+          id: 'shell-session-upgrade',
+          shellSessionId: 'shell-session-upgrade',
+          cwd: '/workspace',
+          state: 'Busy',
+          interactive: true,
+          userManaged: false,
+          activeProcessId: 'proc-upgrade',
+          activeCommand: 'cargo check',
+          lastExitCode: null,
+          durationMs: null,
+          startedAt: Date.now(),
+          lastActivityAt: Date.now(),
+          lines: [{ stream: 'Stdout', data: '$ cargo check\n' }],
+          collapsed: true,
+          availableForReuse: false,
+        },
+      ]}
+      />,
+    );
+
+    await waitFor(() => {
+      blocks = JSON.parse(screen.getByTestId('streaming-blocks').textContent ?? '[]') as Array<Record<string, unknown>>;
+      expect(blocks.find((block) => block.kind === 'shell')).toBeUndefined();
+      expect(blocks.find((block) => block.kind === 'shell-session')).toEqual(expect.objectContaining({
+        shellSessionId: 'shell-session-upgrade',
+        activeProcessId: 'proc-upgrade',
+      }));
+    });
+  });
+
+  it('prebinds a reusable shell session on shell tool start for follow-up requests', async () => {
+    sendMessageStreamingMock.mockResolvedValue(undefined);
+
+    render(
+      <Harness shellSessions={[
+        {
+          kind: 'shell-session',
+          id: 'shell-session-reuse',
+          shellSessionId: 'shell-session-reuse',
+          cwd: '/workspace',
+          state: 'Idle',
+          interactive: true,
+          userManaged: false,
+          activeProcessId: null,
+          activeCommand: null,
+          lastExitCode: 0,
+          durationMs: 31,
+          startedAt: Date.now() - 2_000,
+          lastActivityAt: Date.now() - 1_000,
+          lines: [{ stream: 'Stdout', data: '$ cargo test --workspace\n' }],
+          collapsed: false,
+          availableForReuse: true,
+        },
+      ]}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByTestId('status')).toHaveTextContent('Ready');
+    });
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Send' }));
+    });
+
+    await waitFor(() => {
+      expect(streamDispatch).not.toBeNull();
+    });
+
+    await act(async () => {
+      streamDispatch?.({ type: 'tool-start', toolName: 'shell', toolCallId: 'tool-shell-reuse' });
+    });
+
+    await waitFor(() => {
+      const blocks = JSON.parse(screen.getByTestId('streaming-blocks').textContent ?? '[]') as Array<Record<string, unknown>>;
+      expect(blocks.find((block) => block.kind === 'shell-session')).toEqual(expect.objectContaining({
+        shellSessionId: 'shell-session-reuse',
+        state: 'Starting',
+        activeProcessId: null,
+      }));
+    });
+  });
+
+  it('keeps a prebound reusable shell session in Starting while shared state is still stale Idle', async () => {
+    sendMessageStreamingMock.mockResolvedValue(undefined);
+
+    const reusableShell: ShellSessionRecord = {
+      kind: 'shell-session',
+      id: 'shell-session-stale-reuse',
+      shellSessionId: 'shell-session-stale-reuse',
+      cwd: '/workspace',
+      state: 'Idle',
+      interactive: true,
+      userManaged: false,
+      activeProcessId: null,
+      activeCommand: null,
+      lastExitCode: 0,
+      durationMs: 31,
+      startedAt: Date.now() - 2_000,
+      lastActivityAt: Date.now() - 1_000,
+      lines: [{ stream: 'Stdout', data: '$ cargo test --workspace\n' }],
+      collapsed: false,
+      availableForReuse: true,
+    };
+
+    const { rerender } = render(<Harness shellSessions={[reusableShell]} />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('status')).toHaveTextContent('Ready');
+    });
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Send' }));
+    });
+
+    await waitFor(() => {
+      expect(streamDispatch).not.toBeNull();
+    });
+
+    await act(async () => {
+      streamDispatch?.({ type: 'tool-start', toolName: 'shell', toolCallId: 'tool-shell-stale-reuse' });
+    });
+
+    rerender(<Harness shellSessions={[{ ...reusableShell }]} />);
+
+    await waitFor(() => {
+      const blocks = JSON.parse(screen.getByTestId('streaming-blocks').textContent ?? '[]') as Array<Record<string, unknown>>;
+      expect(blocks.find((block) => block.kind === 'shell-session')).toEqual(expect.objectContaining({
+        shellSessionId: 'shell-session-stale-reuse',
+        state: 'Starting',
+        activeProcessId: null,
+        activeCommand: null,
+        availableForReuse: false,
+      }));
+    });
+
+    rerender(<Harness shellSessions={[{
+      ...reusableShell,
+      state: 'Busy',
+      activeProcessId: 'proc-shell-stale-reuse',
+      activeCommand: 'cargo fmt --check',
+      lastActivityAt: Date.now(),
+      availableForReuse: false,
+    }]} />);
+
+    await waitFor(() => {
+      const blocks = JSON.parse(screen.getByTestId('streaming-blocks').textContent ?? '[]') as Array<Record<string, unknown>>;
+      expect(blocks.find((block) => block.kind === 'shell-session')).toEqual(expect.objectContaining({
+        shellSessionId: 'shell-session-stale-reuse',
+        state: 'Busy',
+        activeProcessId: 'proc-shell-stale-reuse',
+        activeCommand: 'cargo fmt --check',
+      }));
+    });
+  });
+
+  it('keeps a locally started reusable shell session Busy when shared state briefly lags behind as stale Idle', async () => {
+    sendMessageStreamingMock.mockResolvedValue(undefined);
+
+    const reusableShell: ShellSessionRecord = {
+      kind: 'shell-session',
+      id: 'shell-session-busy-stale-reuse',
+      shellSessionId: 'shell-session-busy-stale-reuse',
+      cwd: '/workspace',
+      state: 'Idle',
+      interactive: true,
+      userManaged: false,
+      activeProcessId: null,
+      activeCommand: null,
+      lastExitCode: 0,
+      durationMs: 31,
+      startedAt: Date.now() - 2_000,
+      lastActivityAt: Date.now() - 1_000,
+      lines: [{ stream: 'Stdout', data: '$ cargo test --workspace\n' }],
+      collapsed: false,
+      availableForReuse: true,
+    };
+
+    const { rerender } = render(<Harness shellSessions={[reusableShell]} />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('status')).toHaveTextContent('Ready');
+    });
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Send' }));
+    });
+
+    await waitFor(() => {
+      expect(streamDispatch).not.toBeNull();
+    });
+
+    await act(async () => {
+      streamDispatch?.({ type: 'tool-start', toolName: 'shell', toolCallId: 'tool-shell-busy-stale-reuse' });
+      streamDispatch?.({
+        type: 'shell-lifecycle',
+        processId: 'proc-shell-busy-stale-reuse',
+        payload: {
+          process_id: 'proc-shell-busy-stale-reuse',
+          shell_session_id: 'shell-session-busy-stale-reuse',
+          state: 'Started',
+          command: 'cargo fmt --check',
+          cwd: '/workspace',
+        },
+      });
+    });
+
+    rerender(<Harness shellSessions={[{ ...reusableShell }]} />);
+
+    await waitFor(() => {
+      const blocks = JSON.parse(screen.getByTestId('streaming-blocks').textContent ?? '[]') as Array<Record<string, unknown>>;
+      const shellBlock = blocks.find((block) => block.kind === 'shell-session') as Record<string, unknown> | undefined;
+      expect(shellBlock).toEqual(expect.objectContaining({
+        shellSessionId: 'shell-session-busy-stale-reuse',
+        state: 'Busy',
+        activeProcessId: 'proc-shell-busy-stale-reuse',
+        activeCommand: 'cargo fmt --check',
+        availableForReuse: false,
+      }));
+      const lines = Array.isArray(shellBlock?.lines) ? shellBlock.lines as Array<Record<string, unknown>> : [];
+      expect(lines.some((line) => String(line.data ?? '').includes('$ cargo fmt --check'))).toBe(true);
+    });
+  });
+
   it('restores the active status after a retry succeeds and streaming resumes', async () => {
     render(<Harness />);
 
@@ -643,13 +1014,14 @@ describe('useChatSession', () => {
       streamDispatch?.({
         type: 'shell-output',
         processId: 'proc-shell-1',
+        shellSessionId: 'shell-session-1',
         stream: 'Stdout',
         data: 'running tests...\n',
       });
     });
 
     const blocks = JSON.parse(screen.getByTestId('streaming-blocks').textContent ?? '[]') as Array<Record<string, unknown>>;
-    const shellBlock = blocks.find((block) => block.kind === 'shell');
+    const shellBlock = blocks.find((block) => block.kind === 'shell-session');
     const lines = Array.isArray(shellBlock?.lines) ? shellBlock.lines as Array<Record<string, unknown>> : [];
 
     expect(String(lines[0]?.data ?? '')).toContain('cargo test --workspace');
