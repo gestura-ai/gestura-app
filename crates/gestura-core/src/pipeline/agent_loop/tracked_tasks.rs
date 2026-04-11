@@ -1100,6 +1100,100 @@ impl AgentPipeline {
             .any(|keyword| name.contains(keyword) || description.contains(keyword))
     }
 
+    /// Returns `true` when a task is contingent on verification results (e.g. "fix issues
+    /// from verification", "address test failures", "resolve build errors"). These tasks
+    /// should not auto-complete until sibling verification tasks have actually run and
+    /// reached a terminal state.
+    #[allow(dead_code)]
+    pub(super) fn task_is_contingent_on_verification(task: &crate::Task) -> bool {
+        Self::task_text_contains_any(
+            task,
+            &[
+                "fix issues from verification",
+                "fix issues from test",
+                "fix issues from build",
+                "address test failures",
+                "address build failures",
+                "address verification failures",
+                "resolve test failures",
+                "resolve build failures",
+                "resolve build errors",
+                "resolve test errors",
+                "fix failing tests",
+                "fix build errors",
+                "fix test errors",
+                "fix verification issues",
+                "fix issues found",
+                "address issues found",
+                "resolve issues found",
+            ],
+        )
+    }
+
+    /// Returns `true` when a contingent-fix task still has open verification siblings
+    /// that have not yet reached a terminal state, meaning the fix task should stay open.
+    #[allow(dead_code)]
+    pub(super) fn contingent_fix_has_open_verification_siblings(
+        session_id: &str,
+        task: &crate::Task,
+    ) -> bool {
+        let manager = crate::get_global_task_manager();
+        let Ok(task_list) = manager.load_task_list(session_id) else {
+            return true;
+        };
+
+        let sibling_candidates = if let Some(parent_id) = task.parent_id.as_deref() {
+            task_list.subtasks(parent_id)
+        } else {
+            task_list.root_tasks()
+        };
+
+        let verification_keywords = [
+            "build",
+            "test",
+            "verify",
+            "validation",
+            "check",
+            "compile",
+            "lint",
+            "smoke",
+        ];
+
+        sibling_candidates.into_iter().any(|candidate| {
+            if candidate.id == task.id || candidate.is_terminal() {
+                return false;
+            }
+            let name = candidate.name.to_ascii_lowercase();
+            let description = candidate.description.to_ascii_lowercase();
+            verification_keywords
+                .iter()
+                .any(|keyword| name.contains(keyword) || description.contains(keyword))
+        })
+    }
+
+    #[allow(dead_code)]
+    pub(super) fn user_facing_closeout_has_open_non_closeout_siblings(
+        session_id: &str,
+        task: &crate::Task,
+    ) -> bool {
+        let manager = crate::get_global_task_manager();
+        let Ok(task_list) = manager.load_task_list(session_id) else {
+            return true;
+        };
+
+        let sibling_candidates = if let Some(parent_id) = task.parent_id.as_deref() {
+            task_list.subtasks(parent_id)
+        } else {
+            task_list.root_tasks()
+        };
+
+        sibling_candidates.into_iter().any(|candidate| {
+            candidate.id != task.id
+                && !candidate.is_terminal()
+                && !Self::task_requires_user_facing_closeout(candidate)
+        })
+    }
+
     #[allow(dead_code)]
     pub(super) fn target_status_for_open_descendant_after_success(
         session_id: &str,
@@ -1115,7 +1209,16 @@ impl AgentPipeline {
         }
 
         if Self::task_requires_user_facing_closeout(task)
-            && !Self::final_response_mentions_task(task, final_response)
+            && (Self::user_facing_closeout_has_open_non_closeout_siblings(session_id, task)
+                || !Self::final_response_mentions_task(task, final_response))
+        {
+            return None;
+        }
+
+        // Contingent-fix tasks (e.g. "fix issues from verification") must not
+        // auto-complete before the verification they depend on has actually run.
+        if Self::task_is_contingent_on_verification(task)
+            && Self::contingent_fix_has_open_verification_siblings(session_id, task)
         {
             return None;
         }

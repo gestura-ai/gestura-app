@@ -3585,6 +3585,189 @@ fn success_reconciliation_keeps_user_closeout_task_open_without_matching_final_s
 }
 
 #[test]
+fn success_reconciliation_keeps_user_closeout_task_open_while_non_closeout_sibling_is_open() {
+    let manager = crate::get_global_task_manager();
+    let session_id = format!("agent-loop-success-closeout-order-{}", uuid::Uuid::new_v4());
+    let mut root = crate::Task::new(&session_id, "Root", "Root", None);
+    let mut summarize = crate::Task::new(
+        &session_id,
+        "Document results and next steps",
+        "Summarize the outcome for the user and list next steps",
+        Some(root.id.clone()),
+    );
+    let mut verify = crate::Task::new(
+        &session_id,
+        "Test app launch behavior",
+        "Launch the desktop app and confirm the window opens",
+        Some(root.id.clone()),
+    );
+    root.set_status(crate::TaskStatus::InProgress);
+    summarize.set_status(crate::TaskStatus::InProgress);
+    verify.set_status(crate::TaskStatus::InProgress);
+
+    let mut task_list = crate::TaskList::new(&session_id);
+    task_list.add_task(root);
+    task_list.add_task(summarize.clone());
+    task_list.add_task(verify);
+    manager
+        .replace_task_list(task_list)
+        .expect("replace task list");
+
+    let status = AgentPipeline::target_status_for_open_descendant_after_success(
+        &session_id,
+        &summarize,
+        "Documented results and next steps after implementing the app.",
+        &[],
+    );
+
+    assert_eq!(status, None);
+}
+
+#[test]
+fn success_reconciliation_allows_user_closeout_task_when_no_non_closeout_siblings_remain_open() {
+    let manager = crate::get_global_task_manager();
+    let session_id = format!("agent-loop-success-closeout-ready-{}", uuid::Uuid::new_v4());
+    let mut root = crate::Task::new(&session_id, "Root", "Root", None);
+    let mut summarize = crate::Task::new(
+        &session_id,
+        "Document results and next steps",
+        "Summarize the outcome for the user and list next steps",
+        Some(root.id.clone()),
+    );
+    root.set_status(crate::TaskStatus::InProgress);
+    summarize.set_status(crate::TaskStatus::InProgress);
+
+    let mut task_list = crate::TaskList::new(&session_id);
+    task_list.add_task(root);
+    task_list.add_task(summarize.clone());
+    manager
+        .replace_task_list(task_list)
+        .expect("replace task list");
+
+    let status = AgentPipeline::target_status_for_open_descendant_after_success(
+        &session_id,
+        &summarize,
+        "Documented results and next steps after finishing the requested work.",
+        &[],
+    );
+
+    assert_eq!(status, Some(crate::TaskStatus::Completed));
+}
+
+#[test]
+fn render_validation_task_requires_launch_evidence() {
+    let task = crate::Task::new(
+        "test-session",
+        "Validate hello world rendering",
+        "Launch the app and confirm the hello world UI renders correctly",
+        None,
+    );
+
+    assert!(AgentPipeline::task_requires_launch_verification(&task));
+}
+
+#[test]
+fn visual_verification_task_requires_launch_evidence() {
+    let task = crate::Task::new(
+        "test-session",
+        "Verify the UI displays correctly",
+        "Confirm the application shows the expected interface",
+        None,
+    );
+
+    assert!(AgentPipeline::task_requires_launch_verification(&task));
+}
+
+#[test]
+fn contingent_fix_task_stays_open_while_verification_sibling_is_open() {
+    let manager = crate::get_global_task_manager();
+    let session_id = format!("agent-loop-contingent-fix-open-{}", uuid::Uuid::new_v4());
+    let mut root = crate::Task::new(&session_id, "Root", "Root", None);
+    let mut fix_task = crate::Task::new(
+        &session_id,
+        "Fix issues from verification",
+        "Address any issues found during build and test verification",
+        Some(root.id.clone()),
+    );
+    let mut verify_task = crate::Task::new(
+        &session_id,
+        "Build and test the app",
+        "Run cargo build and cargo test to verify the implementation",
+        Some(root.id.clone()),
+    );
+    root.set_status(crate::TaskStatus::InProgress);
+    fix_task.set_status(crate::TaskStatus::NotStarted);
+    verify_task.set_status(crate::TaskStatus::InProgress);
+
+    let mut task_list = crate::TaskList::new(&session_id);
+    task_list.add_task(root);
+    task_list.add_task(fix_task.clone());
+    task_list.add_task(verify_task);
+    manager
+        .replace_task_list(task_list)
+        .expect("replace task list");
+
+    let status = AgentPipeline::target_status_for_open_descendant_after_success(
+        &session_id,
+        &fix_task,
+        "All verification passed successfully.",
+        &[],
+    );
+
+    assert_eq!(status, None);
+}
+
+#[test]
+fn contingent_fix_task_can_complete_when_verification_siblings_are_terminal() {
+    let manager = crate::get_global_task_manager();
+    let session_id = format!("agent-loop-contingent-fix-ready-{}", uuid::Uuid::new_v4());
+    let mut root = crate::Task::new(&session_id, "Root", "Root", None);
+    let mut fix_task = crate::Task::new(
+        &session_id,
+        "Fix issues from verification",
+        "Address any issues found during build and test verification",
+        Some(root.id.clone()),
+    );
+    let mut verify_task = crate::Task::new(
+        &session_id,
+        "Build and test the app",
+        "Run cargo build and cargo test to verify the implementation",
+        Some(root.id.clone()),
+    );
+    root.set_status(crate::TaskStatus::InProgress);
+    fix_task.set_status(crate::TaskStatus::NotStarted);
+    verify_task.set_status(crate::TaskStatus::Completed);
+
+    let mut task_list = crate::TaskList::new(&session_id);
+    task_list.add_task(root);
+    task_list.add_task(fix_task.clone());
+    task_list.add_task(verify_task);
+    manager
+        .replace_task_list(task_list)
+        .expect("replace task list");
+
+    // With verification sibling terminal, the contingent fix task should
+    // be eligible for normal reconciliation (not blocked by the guard).
+    let _status = AgentPipeline::target_status_for_open_descendant_after_success(
+        &session_id,
+        &fix_task,
+        "All verification passed successfully, no issues found.",
+        &[],
+    );
+
+    // With the verification sibling terminal, the contingent-fix guard
+    // does NOT block. The task falls through to the general reconciliation
+    // path (which may or may not complete it depending on other evidence).
+    // The important assertion is that we got here without the guard
+    // returning None — i.e., the guard is not blocking when siblings
+    // are terminal.
+    assert!(
+        !AgentPipeline::contingent_fix_has_open_verification_siblings(&session_id, &fix_task),
+        "contingent-fix guard should not block when verification siblings are terminal"
+    );
+}
+
+#[test]
 fn history_validated_direct_proof_rejects_user_closeout_tasks() {
     let manager = crate::get_global_task_manager();
     let session_id = format!("agent-loop-history-closeout-proof-{}", uuid::Uuid::new_v4());
