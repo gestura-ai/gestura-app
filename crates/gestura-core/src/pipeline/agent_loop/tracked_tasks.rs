@@ -376,7 +376,27 @@ impl AgentPipeline {
             };
 
             if let Some(target_status) = target_status {
-                let _ = Self::apply_tracked_phase_status(session_id, &task.id, target_status);
+                // User-facing closeout tasks (e.g. "Document results and follow-ups")
+                // must not be auto-completed while non-closeout siblings are still open,
+                // even during tool-activity reconciliation.
+                let closeout_blocked = target_status == crate::TaskStatus::Completed
+                    && Self::task_requires_user_facing_closeout(&task)
+                    && Self::user_facing_closeout_has_open_non_closeout_siblings(session_id, &task);
+                // Contingent-fix tasks (e.g. "fix issues from verification") must not
+                // auto-complete before the verification they depend on has actually run.
+                let contingent_blocked = target_status == crate::TaskStatus::Completed
+                    && Self::task_is_contingent_on_verification(&task)
+                    && Self::contingent_fix_has_open_verification_siblings(session_id, &task);
+
+                if closeout_blocked || contingent_blocked {
+                    let _ = Self::apply_tracked_phase_status(
+                        session_id,
+                        &task.id,
+                        crate::TaskStatus::InProgress,
+                    );
+                } else {
+                    let _ = Self::apply_tracked_phase_status(session_id, &task.id, target_status);
+                }
             }
         }
 

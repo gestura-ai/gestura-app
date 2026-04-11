@@ -936,6 +936,7 @@ fn completed_tool_iteration_can_finalize_after_successful_tool_results() {
         &tool_calls,
         OpenDescendantSummary::default(),
         false,
+        false,
     ));
 }
 
@@ -960,6 +961,7 @@ fn completed_tool_iteration_does_not_finalize_with_only_not_started_descendants(
             ..OpenDescendantSummary::default()
         },
         true,
+        false,
     ));
 }
 
@@ -983,6 +985,7 @@ fn completed_tool_iteration_does_not_finalize_with_in_progress_descendants() {
             in_progress: 1,
             ..OpenDescendantSummary::default()
         },
+        false,
         false,
     ));
 }
@@ -2133,7 +2136,6 @@ fn completion_ready_tool_iteration_without_terminal_text_forces_tool_free_summar
     assert!(
         AgentPipeline::should_force_tool_free_final_summary_after_completion_ready_tool_iteration(
             true,
-            true,
             "",
             &tool_calls,
             &tool_calls,
@@ -2181,7 +2183,6 @@ fn completion_ready_tool_iteration_guard_does_not_fire_with_open_descendants() {
 
     assert!(
         !AgentPipeline::should_force_tool_free_final_summary_after_completion_ready_tool_iteration(
-            true,
             false,
             "",
             &tool_calls,
@@ -2250,6 +2251,7 @@ fn tool_iteration_finalization_ignores_build_test_words_from_continuation_prompt
         &tool_calls,
         &tool_calls,
         OpenDescendantSummary::default(),
+        false,
         false,
     ));
 }
@@ -7368,5 +7370,91 @@ fn failed_verification_attempt_moves_verification_task_in_progress() {
             .missing_requirements
             .iter()
             .any(|message| message == "test command not yet observed")
+    );
+}
+
+#[test]
+fn closeout_task_stays_open_during_tool_activity_reconciliation_while_siblings_are_open() {
+    use crate::pipeline::agent_loop::ToolCallRecord;
+    use crate::pipeline::agent_loop::ToolResult;
+
+    let manager = crate::get_global_task_manager();
+    let session_id = format!("agent-loop-closeout-tool-activity-{}", uuid::Uuid::new_v4());
+    let mut root = crate::Task::new(&session_id, "Root task", "Root", None);
+    let mut implement = crate::Task::new(
+        &session_id,
+        "Implement the feature",
+        "Write the code for the feature",
+        Some(root.id.clone()),
+    );
+    let mut build_test = crate::Task::new(
+        &session_id,
+        "Build and test application",
+        "Run build and test commands to verify",
+        Some(root.id.clone()),
+    );
+    let document = crate::Task::new(
+        &session_id,
+        "Document results and follow-ups",
+        "Summarize what was implemented and any remaining steps",
+        Some(root.id.clone()),
+    );
+
+    root.set_status(crate::TaskStatus::InProgress);
+    implement.set_status(crate::TaskStatus::Completed);
+    build_test.set_status(crate::TaskStatus::InProgress);
+
+    let mut task_list = crate::TaskList::new(&session_id);
+    task_list.add_task(root.clone());
+    task_list.add_task(implement);
+    task_list.add_task(build_test.clone());
+    task_list.add_task(document.clone());
+    manager
+        .replace_task_list(task_list)
+        .expect("replace task list");
+
+    // Set the current task to the document task so it gets targeted
+    manager
+        .set_current_task_id(&session_id, Some(document.id.clone()))
+        .expect("set current task");
+
+    // Simulate tool activity (file write) that would normally trigger
+    // General-kind completion for the document task
+    AgentPipeline::reconcile_tracked_execution_progress_from_tool_activity(
+        false,
+        false,
+        Some(&session_id),
+        Some(&root.id),
+        &[ToolCallRecord {
+            id: "1".to_string(),
+            name: "file".to_string(),
+            arguments: serde_json::json!({
+                "operation": "write",
+                "path": "src/main.rs",
+                "content": "fn main() { println!(\"hello\"); }",
+            })
+            .to_string(),
+            result: ToolResult::Success("wrote src/main.rs".to_string()),
+            duration_ms: 1,
+        }],
+    );
+
+    let stored_document = manager
+        .get_task(&session_id, &document.id)
+        .expect("document lookup should succeed")
+        .expect("document should exist");
+    let stored_build_test = manager
+        .get_task(&session_id, &build_test.id)
+        .expect("build_test lookup should succeed")
+        .expect("build_test should exist");
+
+    // Build and test is still open
+    assert_eq!(stored_build_test.status, crate::TaskStatus::InProgress);
+    // Document results must NOT be completed while build_test sibling is open
+    assert_ne!(
+        stored_document.status,
+        crate::TaskStatus::Completed,
+        "closeout task 'Document results and follow-ups' should not be auto-completed \
+         during tool-activity reconciliation while non-closeout sibling 'Build and test' is open"
     );
 }

@@ -1987,13 +1987,20 @@ impl AgentPipeline {
         iteration_tool_calls: &[ToolCallRecord],
         open_descendant_summary: OpenDescendantSummary,
         _task_tool_suspended: bool,
+        completion_ready: bool,
     ) -> bool {
+        // When completion_ready is true (all tracked tasks terminal), skip the
+        // is_missing_requested_build_and_test check — the task system has
+        // already signed off on the work.
+        let verification_missing = !completion_ready
+            && Self::is_missing_requested_build_and_test(requires_build_and_test, all_tool_calls);
+
         if iteration_tool_calls.is_empty()
             || !Self::has_meaningful_final_text(iteration_content)
             || Self::text_signals_user_blocker_or_question(iteration_content)
             || Self::text_signals_failed_or_incomplete_work(iteration_content)
             || Self::text_defers_remaining_work(iteration_content)
-            || Self::is_missing_requested_build_and_test(requires_build_and_test, all_tool_calls)
+            || verification_missing
             || !Self::tool_results_support_successful_completion(
                 requires_mutating_file_tool_success,
                 all_tool_calls,
@@ -2009,7 +2016,6 @@ impl AgentPipeline {
     }
 
     fn should_force_tool_free_final_summary_after_completion_ready_tool_iteration(
-        requires_build_and_test: bool,
         requires_mutating_file_tool_success: bool,
         iteration_content: &str,
         all_tool_calls: &[ToolCallRecord],
@@ -2021,6 +2027,11 @@ impl AgentPipeline {
             return false;
         };
 
+        // When completion_ready is true (all tracked tasks are terminal),
+        // skip the is_missing_requested_build_and_test check — the task system
+        // has already signed off on the work and we should not block the
+        // summary because of unsatisfied frontend-verification requirements
+        // that the agent has already worked around (e.g. --no-sign).
         runtime_state.completion_ready
             && !open_descendant_summary.has_open()
             && !iteration_tool_calls.is_empty()
@@ -2028,7 +2039,6 @@ impl AgentPipeline {
             && !Self::text_signals_user_blocker_or_question(iteration_content)
             && !Self::text_signals_failed_or_incomplete_work(iteration_content)
             && !Self::text_defers_remaining_work(iteration_content)
-            && !Self::is_missing_requested_build_and_test(requires_build_and_test, all_tool_calls)
             && Self::tool_results_support_successful_completion(
                 requires_mutating_file_tool_success,
                 all_tool_calls,
@@ -3724,6 +3734,11 @@ impl AgentPipeline {
             let stagnation_summary =
                 Self::summarize_stagnation_fingerprint(&stagnation_fingerprint);
 
+            let tool_iter_completion_ready = runtime_state
+                .tracked
+                .as_ref()
+                .is_some_and(|state| state.completion_ready);
+
             if Self::should_finalize_completed_tool_iteration(
                 requires_build_and_test,
                 requires_mutating_file_tool_success,
@@ -3732,6 +3747,7 @@ impl AgentPipeline {
                 &tool_calls_in_iteration,
                 open_descendant_summary,
                 task_tool_suspended,
+                tool_iter_completion_ready,
             ) {
                 tracing::info!(
                     iteration = iteration,
@@ -3812,11 +3828,6 @@ impl AgentPipeline {
                 iteration += 1;
                 continue;
             }
-
-            let tool_iter_completion_ready = runtime_state
-                .tracked
-                .as_ref()
-                .is_some_and(|state| state.completion_ready);
 
             if stagnant_tool_iteration_streak >= 2
                 && requires_build_and_test
@@ -3932,7 +3943,6 @@ impl AgentPipeline {
 
             let should_force_completion_ready_final_summary =
                 Self::should_force_tool_free_final_summary_after_completion_ready_tool_iteration(
-                    requires_build_and_test,
                     requires_mutating_file_tool_success,
                     &iteration_content,
                     &combined_tool_calls,
@@ -4802,6 +4812,7 @@ impl AgentPipeline {
                 &iteration_tool_calls,
                 open_descendant_summary,
                 task_tool_suspended,
+                tool_iter_completion_ready,
             ) {
                 tracing::info!(
                     iteration = iteration,
@@ -4836,7 +4847,6 @@ impl AgentPipeline {
 
             let should_force_completion_ready_final_summary =
                 Self::should_force_tool_free_final_summary_after_completion_ready_tool_iteration(
-                    requires_build_and_test,
                     requires_mutating_file_tool_success,
                     &content,
                     &combined_tool_calls,
