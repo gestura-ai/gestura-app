@@ -110,6 +110,7 @@ export type StreamEventAction =
   | { type: 'tool-args'; args: string; toolCallId?: string | null }
   | { type: 'tool-end'; toolCallId?: string | null }
   | { type: 'tool-result'; name: string; success: boolean; output: string | null; durationMs: number | null; toolCallId?: string | null }
+  | { type: 'shell-session-lifecycle'; shellSessionId: string; payload: Record<string, unknown> }
   | { type: 'shell-lifecycle'; processId: string; payload: Record<string, unknown> }
   | {
     type: 'shell-output';
@@ -399,6 +400,16 @@ export function useStreamEvents(sessionId: string, dispatch: StreamEventDispatch
             output: p['output'] != null ? String(p['output']) : null,
             durationMs: p['duration_ms'] != null ? Number(p['duration_ms']) : null,
             toolCallId: readOptionalString(p['id']),
+          });
+        }),
+        safeListen('agent-stream-shell-session-lifecycle', (e) => {
+          const r = accept<Record<string, unknown>>('agent-stream-shell-session-lifecycle', e.payload);
+          if (!r.ok) return;
+          const p = r.value as Record<string, unknown>;
+          dispatch({
+            type: 'shell-session-lifecycle',
+            shellSessionId: String(p['shell_session_id'] ?? ''),
+            payload: p,
           });
         }),
         safeListen('agent-stream-shell-lifecycle', (e) => {
