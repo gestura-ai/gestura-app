@@ -1,18 +1,23 @@
 name: Publish Rustdoc
 
 on:
-  # Deploy only after a successful Release workflow run that originated from
-  # main or a version tag.  workflow_run environment-protection checks use the
-  # head_branch of the *triggering* workflow, not the default branch, so
-  # without this filter a Release dispatched manually from "dev" would cause
-  # the deploy job to be rejected by the github-pages environment protection
-  # rules with "Branch 'dev' is not allowed to deploy to github-pages".
-  workflow_run:
-    workflows: ["Release"]
-    types: [completed]
-    branches:
-      - main
-      - 'v[0-9]*'
+  # Deploy docs when a GitHub Release is published.
+  #
+  # Why `release` instead of `workflow_run`:
+  #   workflow_run resolves head_branch from the commit's *associated branch*,
+  #   not from the tag name.  Every release commit is a merge from the dev PR
+  #   into main, so GitHub consistently labels it head_branch="dev" in the
+  #   workflow_run context — regardless of which tag triggered the Release
+  #   workflow.  The github-pages environment protection rules then reject the
+  #   deploy with "Branch 'dev' is not allowed to deploy to github-pages".
+  #   A branches filter on the trigger cannot fix this because the filter also
+  #   matches against head_branch, so "dev" never passes and docs never deploy.
+  #
+  #   The `release` event runs in the context of the tag / target-commitish
+  #   directly, which the github-pages environment accepts without any branch
+  #   restriction gymnastics.
+  release:
+    types: [published]
   # Allow manual re-deploys (e.g. after a Pages outage).
   workflow_dispatch:
 
@@ -33,17 +38,14 @@ jobs:
   build:
     name: Build Rustdoc artifact
     runs-on: ubuntu-22.04
-    # For workflow_run: only proceed when the Release workflow succeeded.
-    # For workflow_dispatch: always run (manual re-deploy).
-    if: github.event.workflow_run.conclusion == 'success' || github.event_name == 'workflow_dispatch'
 
     steps:
       - name: Checkout release commit
         uses: actions/checkout@v4
         with:
-          # Use the exact SHA that the release workflow built from.
-          # Falls back to HEAD when triggered manually.
-          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+          # For release events github.sha is the tagged commit.
+          # For workflow_dispatch it is the HEAD of the selected branch.
+          ref: ${{ github.sha }}
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
