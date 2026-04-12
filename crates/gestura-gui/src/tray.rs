@@ -586,7 +586,22 @@ fn handle_menu_event(app: &AppHandle, event: tauri::menu::MenuEvent) {
 
     match event.id().as_ref() {
         "listen" => {
-            toggle_listening_mode(app);
+            // `toggle_listening_mode` calls `try_get_api_key_from_keychain_sync`
+            // (via validation and tray-menu rebuild) which uses
+            // `std::thread::spawn().join()` — a synchronous blocking call.
+            // Menu-event handlers are dispatched on the macOS main thread, so
+            // running that blocking work here freezes the entire UI.  Offload to
+            // a `spawn_blocking` thread so the main thread stays responsive.
+            // `tauri::async_runtime::spawn` (tokio::spawn) is safe to call from
+            // within a `spawn_blocking` task.
+            let app_handle = app.clone();
+            tauri::async_runtime::spawn(async move {
+                if let Err(e) =
+                    tokio::task::spawn_blocking(move || toggle_listening_mode(&app_handle)).await
+                {
+                    tracing::error!("toggle_listening_mode task panicked: {:?}", e);
+                }
+            });
         }
         "new_agent" => {
             if let Err(e) = window_manager::create_new_agent_session() {
@@ -793,15 +808,26 @@ fn handle_tray_event(tray: &tauri::tray::TrayIcon, event: TrayIconEvent) {
             // Single left-click: create a new agent session — but only when the app
             // has been fully configured (onboarding complete + providers assigned).
             tracing::info!("Tray single-click detected");
-            if !is_app_configured() {
-                tracing::info!(
-                    "Tray single-click ignored: onboarding not complete or providers not configured"
-                );
-                return;
-            }
-            if let Err(e) = window_manager::create_new_agent_session() {
-                tracing::error!("Failed to create agent session on click: {}", e);
-            }
+            // `is_app_configured` reads the keychain via `try_get_api_key_from_keychain_sync`
+            // which blocks.  Tray-icon events are dispatched on the macOS main thread, so
+            // we must offload to a `spawn_blocking` thread to keep the UI responsive.
+            tauri::async_runtime::spawn(async move {
+                if let Err(e) = tokio::task::spawn_blocking(|| {
+                    if !is_app_configured() {
+                        tracing::info!(
+                            "Tray single-click ignored: onboarding not complete or providers not configured"
+                        );
+                        return;
+                    }
+                    if let Err(e) = window_manager::create_new_agent_session() {
+                        tracing::error!("Failed to create agent session on click: {}", e);
+                    }
+                })
+                .await
+                {
+                    tracing::error!("create_new_agent_session task panicked: {:?}", e);
+                }
+            });
         }
         TrayIconEvent::DoubleClick {
             button: MouseButton::Left,
@@ -810,13 +836,27 @@ fn handle_tray_event(tray: &tauri::tray::TrayIcon, event: TrayIconEvent) {
             // Double left-click: toggle listening mode — gated behind the same
             // configuration check as the "Start Listening" menu item.
             tracing::info!("Tray double-click detected - toggling listen mode");
-            if !is_app_configured() {
-                tracing::info!(
-                    "Tray double-click ignored: onboarding not complete or providers not configured"
-                );
-                return;
-            }
-            toggle_listening_mode(app);
+            // Both `is_app_configured` and `toggle_listening_mode` call
+            // `try_get_api_key_from_keychain_sync` which blocks via
+            // `std::thread::spawn().join()`.  Tray events fire on the macOS
+            // main thread; blocking there freezes the UI.  Offload to
+            // `spawn_blocking` to keep the event loop responsive.
+            let app_handle = app.clone();
+            tauri::async_runtime::spawn(async move {
+                if let Err(e) = tokio::task::spawn_blocking(move || {
+                    if !is_app_configured() {
+                        tracing::info!(
+                            "Tray double-click ignored: onboarding not complete or providers not configured"
+                        );
+                        return;
+                    }
+                    toggle_listening_mode(&app_handle);
+                })
+                .await
+                {
+                    tracing::error!("toggle_listening_mode task panicked: {:?}", e);
+                }
+            });
         }
         // Note: Right-click events are handled automatically by the tray system
         _ => {
