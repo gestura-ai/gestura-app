@@ -35,6 +35,7 @@ members = [
     "crates/gestura-core-retry",
     "crates/gestura-core-agents",
     "crates/gestura-core-context",
+    "crates/gestura-core-intent",
 ]
 
 # Default members for `cargo build` without specifying a package
@@ -202,6 +203,9 @@ gestura-core-agents = { path = "crates/gestura-core-agents" }
 
 # Domain crate: smart context management (analysis, caching, resolution).
 gestura-core-context = { path = "crates/gestura-core-context" }
+
+# Domain crate: unified intent normalization layer.
+gestura-core-intent = { path = "crates/gestura-core-intent" }
 
 [profile.dev]
 opt-level = 0

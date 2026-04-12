@@ -465,6 +465,61 @@ impl AgentPipeline {
         }
     }
 
+    /// Normalize a raw request into a unified [`gestura_core_intent::Intent`] and
+    /// attach the result as metadata hints.
+    ///
+    /// When `advanced-primitives` is disabled at compile time the
+    /// [`gestura_core_intent::INTENT_NORMALIZATION_ENABLED`] constant is `false`
+    /// and this entire branch constant-folds away, preserving the original
+    /// pipeline behavior.
+    #[inline(always)]
+    fn maybe_attach_normalized_intent(request: &mut AgentRequest) {
+        if !gestura_core_intent::INTENT_NORMALIZATION_ENABLED {
+            return;
+        }
+
+        let modality =
+            gestura_core_intent::InputModality::from_request_source(&request.metadata.source);
+        let raw_input = gestura_core_intent::RawInput {
+            text: request.input.clone(),
+            modality,
+            session_id: request.metadata.session_id.clone(),
+            gesture_data: None,
+        };
+        let intent = gestura_core_intent::normalize_input_to_intent(raw_input);
+
+        tracing::debug!(
+            intent_id = %intent.id,
+            modality = %intent.modality.label(),
+            action = %intent.primary_action,
+            confidence = intent.confidence,
+            "Normalized input to unified intent"
+        );
+
+        request
+            .metadata
+            .hints
+            .insert("intent.id".to_string(), intent.id.clone());
+        request.metadata.hints.insert(
+            "intent.primary_action".to_string(),
+            intent.primary_action.clone(),
+        );
+        request.metadata.hints.insert(
+            "intent.modality".to_string(),
+            intent.modality.label().to_string(),
+        );
+        request.metadata.hints.insert(
+            "intent.confidence".to_string(),
+            format!("{:.2}", intent.confidence),
+        );
+        if !intent.context_hints.is_empty() {
+            request.metadata.hints.insert(
+                "intent.context_hints".to_string(),
+                intent.context_hints.join(","),
+            );
+        }
+    }
+
     fn append_task_tool_for_auto_tracked_request(
         analysis: &crate::context::RequestAnalysis,
         candidate_names: &HashSet<&str>,
@@ -1269,6 +1324,7 @@ Respond ONLY with the JSON array, no additional text."#,
             analysis.confidence
         );
         self.maybe_apply_advanced_primitives_middleware(&mut request, &analysis).await;
+        Self::maybe_attach_normalized_intent(&mut request);
 
         // 1b. Pre-flight LLM tool routing (only when strategy != Keyword).
         // The router merges its selection into analysis.suggested_tools, which
@@ -2067,6 +2123,7 @@ Respond ONLY with the JSON array, no additional text."#,
         });
         telemetry.record_analysis(&analysis).await;
         self.maybe_apply_advanced_primitives_middleware(&mut request, &analysis).await;
+        Self::maybe_attach_normalized_intent(&mut request);
 
         // 1b. Pre-flight LLM tool routing (only when strategy != Keyword).
         if let Some(router) = &self.tool_router

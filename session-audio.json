@@ -1,0 +1,150 @@
+{
+  "schema_version": 1,
+  "exported_at": "2026-04-12T17:56:43.914994Z",
+  "session": {
+    "id": "2bb4b1f0-53b0-4ed0-8118-f3f2e6fb510f",
+    "title": "Agent Apr 12, 17:55",
+    "created_at": "2026-04-12T17:55:41.007814Z",
+    "last_active": "2026-04-12T17:55:54.171131Z",
+    "is_open": true,
+    "window_label": "agent-2bb4b1f0-53b0-4ed0-8118-f3f2e6fb510f",
+    "message_count": 1,
+    "state": {
+      "messages": [
+        {
+          "role": "user",
+          "content": "This is a test of intent first intent first. Wish I had a gesture to throw up. [BLANK_AUDIO]",
+          "timestamp": "2026-04-12T17:55:42.639293Z",
+          "source": "text"
+        }
+      ],
+      "tool_calls": [],
+      "activity_log": [
+        {
+          "event_type": "session-user-message",
+          "payload": {
+            "content": "This is a test of intent first intent first. Wish I had a gesture to throw up. [BLANK_AUDIO]",
+            "source": "text"
+          },
+          "timestamp": "2026-04-12T17:55:42.639293Z"
+        },
+        {
+          "event_type": "agent-token-usage",
+          "payload": {
+            "estimated": 17600,
+            "estimated_cost": 0.0088,
+            "limit": 123904,
+            "percentage": 14,
+            "session_id": "2bb4b1f0-53b0-4ed0-8118-f3f2e6fb510f",
+            "status": "green"
+          },
+          "timestamp": "2026-04-12T17:55:46.031600Z"
+        },
+        {
+          "event_type": "agent-stream-agent-iteration",
+          "payload": {
+            "iteration": 0,
+            "session_id": "2bb4b1f0-53b0-4ed0-8118-f3f2e6fb510f"
+          },
+          "timestamp": "2026-04-12T17:55:46.033804Z"
+        },
+        {
+          "event_type": "agent-stream-task-state",
+          "payload": {
+            "session_id": "2bb4b1f0-53b0-4ed0-8118-f3f2e6fb510f",
+            "snapshot": {
+              "current_task": {
+                "id": "9cdb85fb-2c73-4ff0-b3a3-7c6320ecf436",
+                "name": "Review task list",
+                "status": "not_started"
+              },
+              "open_tasks": [
+                {
+                  "id": "7873b235-36ec-4b67-86af-f23cd11934fe",
+                  "name": "Analyze requirements",
+                  "status": "in_progress"
+                },
+                {
+                  "id": "8f3424e9-bc7c-4b81-bc98-49e796b654c1",
+                  "name": "Create task structure",
+                  "status": "not_started"
+                },
+                {
+                  "id": "9cdb85fb-2c73-4ff0-b3a3-7c6320ecf436",
+                  "name": "Review task list",
+                  "status": "not_started"
+                }
+              ],
+              "parallel_ready_tasks": [
+                {
+                  "id": "9cdb85fb-2c73-4ff0-b3a3-7c6320ecf436",
+                  "name": "Review task list",
+                  "status": "not_started"
+                }
+              ],
+              "ready_tasks": [
+                {
+                  "id": "9cdb85fb-2c73-4ff0-b3a3-7c6320ecf436",
+                  "name": "Review task list",
+                  "status": "not_started"
+                }
+              ],
+              "root_task_id": "67876e81-a040-4100-8615-ccec3b51612b",
+              "status_message": "Current task: Review task list [not_started] · can also run in parallel: Review task list"
+            }
+          },
+          "timestamp": "2026-04-12T17:55:46.038992Z"
+        },
+        {
+          "event_type": "agent-stream-retry",
+          "payload": {
+            "attempt": 1,
+            "delay_ms": 1212,
+            "max_attempts": 3,
+            "reason": "LLM error: OpenAI /v1/chat/completions HTTP 400 Bad Request: {\n  \"error\": {\n    \"message\": \"This model's maximum context length is 16385 tokens. However, your messages resulted in 17063 tokens (15599 in the messages, 1464 in the functions). Please reduce the length of the messages or functions.\",\n    \"type\": \"invalid_request_error\",\n    \"param\": \"messages\",\n    \"code\": \"context_length_exceeded\"\n  }\n}",
+            "session_id": "2bb4b1f0-53b0-4ed0-8118-f3f2e6fb510f"
+          },
+          "timestamp": "2026-04-12T17:55:47.734957Z"
+        },
+        {
+          "event_type": "agent-stream-retry",
+          "payload": {
+            "attempt": 2,
+            "delay_ms": 2432,
+            "max_attempts": 3,
+            "reason": "LLM error: OpenAI /v1/chat/completions HTTP 400 Bad Request: {\n  \"error\": {\n    \"message\": \"This model's maximum context length is 16385 tokens. However, your messages resulted in 17063 tokens (15599 in the messages, 1464 in the functions). Please reduce the length of the messages or functions.\",\n    \"type\": \"invalid_request_error\",\n    \"param\": \"messages\",\n    \"code\": \"context_length_exceeded\"\n  }\n}",
+            "session_id": "2bb4b1f0-53b0-4ed0-8118-f3f2e6fb510f"
+          },
+          "timestamp": "2026-04-12T17:55:49.798202Z"
+        },
+        {
+          "event_type": "agent-stream-error",
+          "payload": {
+            "session_id": "2bb4b1f0-53b0-4ed0-8118-f3f2e6fb510f",
+            "value": "LLM error: OpenAI /v1/chat/completions HTTP 400 Bad Request: {\n  \"error\": {\n    \"message\": \"This model's maximum context length is 16385 tokens. However, your messages resulted in 17063 tokens (15599 in the messages, 1464 in the functions). Please reduce the length of the messages or functions.\",\n    \"type\": \"invalid_request_error\",\n    \"param\": \"messages\",\n    \"code\": \"context_length_exceeded\"\n  }\n}"
+          },
+          "timestamp": "2026-04-12T17:55:54.171128Z"
+        }
+      ],
+      "working_memory": {
+        "summary": "The run stopped before completion. Detail: LLM error: OpenAI /v1/chat/completions HTTP 400 Bad Request: {\n  \"error\": {\n    \"message\": \"This model's maximum context length is 16385 tokens. However, your messages resulted…",
+        "timeline": [
+          {
+            "id": "d807ab94-ffe9-4c8b-a656-f83ba2064fe9",
+            "kind": "user_goal",
+            "summary": "This is a test of intent first intent first. Wish I had a gesture to throw up. [BLANK_AUDIO]",
+            "created_at": "2026-04-12T17:55:42.639334Z"
+          },
+          {
+            "id": "0a684876-d39c-4d83-8e58-c7d2604cab28",
+            "kind": "assistant_summary",
+            "summary": "The run stopped before completion. Detail: LLM error: OpenAI /v1/chat/completions HTTP 400 Bad Request: {\n  \"error\": {\n    \"message\": \"This model's maximum context length is 16385 tokens. However, your messages resulted…",
+            "created_at": "2026-04-12T17:55:54.171010Z"
+          }
+        ]
+      },
+      "total_tokens": 0,
+      "workspace_dir": "/Users/bc/Documents/gestura/tmp/gestura-app/crates/gestura-gui"
+    }
+  }
+}
