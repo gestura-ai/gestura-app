@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Editor text content no longer renders below line numbers on macOS in packaged release builds. CodeMirror's structural layout CSS (`display:flex` on `.cm-scroller`, sticky positioning on `.cm-gutters`) is now anchored in the static Vite CSS bundle so the correct layout is present from the first painted frame, eliminating the race between WKWebView's aggressive frame commits and JavaScript runtime style injection.
+- Code folding keyboard shortcuts now function correctly in the text editor. The `codeFolding()` extension was missing alongside `foldGutter()`, causing fold actions wired into the default keymap to silently no-op.
+
+### Changed
+
+- Rustdoc deployment to GitHub Pages now triggers on the `release` event (`types: [published]`) instead of `workflow_run`. The previous trigger resolved `head_branch` from the commit's associated branch rather than the tag name, causing every release deploy to be rejected by environment protection rules with "Branch 'dev' is not allowed to deploy to github-pages".
+
+## [0.9.1] - 2026-04-12
+
+### Fixed
+
+- Windows release packaging now restores signed sidecar CLI binaries correctly via `sync_signed_cli`, preventing unsigned binary substitution after the Tauri bundle step.
+
+### Changed
+
+- Bumped project version to 0.9.1 across `Cargo.toml`, `tauri.conf.json`, and `package.json`.
+
 ## [0.9.0] - 2026-04-11
 
 ### Changed
