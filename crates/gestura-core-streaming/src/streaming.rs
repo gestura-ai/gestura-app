@@ -473,6 +473,17 @@ pub enum StreamChunk {
     Paused,
     /// An error occurred
     Error(String),
+    /// Context overflow error - requires compaction before retry.
+    ///
+    /// This is emitted when the LLM request exceeds the model's context window.
+    /// Unlike generic errors, this signals to the pipeline that it should:
+    /// 1. Compact the context (summarize history, remove old messages)
+    /// 2. Retry the request with the reduced context
+    /// 3. Optionally learn the model's actual limit for future requests
+    ContextOverflow {
+        /// The original error message from the provider
+        error_message: String,
+    },
     /// Experiential reflection phase has started (ERL-inspired).
     ///
     /// UIs can use this to surface that the pipeline is performing a
@@ -499,6 +510,8 @@ pub enum StreamChunk {
 enum AttemptOutcome {
     Success,
     RetryableError,
+    /// Context length exceeded - needs compaction, not blind retry
+    ContextOverflowError,
     FatalError,
     Cancelled,
     Paused,
@@ -623,6 +636,16 @@ async fn forward_attempt_stream(
                 };
             }
             StreamChunk::Error(e) => {
+                // Context overflow errors need special handling - they cannot be fixed
+                // by blind retries. The caller should compact context and retry.
+                if is_context_overflow_message(&e) {
+                    return AttemptForwardResult {
+                        outcome: AttemptOutcome::ContextOverflowError,
+                        forwarded_output,
+                        error: Some(e.clone()),
+                    };
+                }
+
                 // If we already streamed anything to the caller, we cannot safely retry
                 // without causing duplicated / confusing output.
                 if forwarded_output {
@@ -638,6 +661,14 @@ async fn forward_attempt_stream(
                     outcome: AttemptOutcome::RetryableError,
                     forwarded_output,
                     error: Some(e.clone()),
+                };
+            }
+            StreamChunk::ContextOverflow { error_message } => {
+                // Context overflow received as a chunk - forward and signal recovery needed
+                return AttemptForwardResult {
+                    outcome: AttemptOutcome::ContextOverflowError,
+                    forwarded_output,
+                    error: Some(error_message.clone()),
                 };
             }
         }
@@ -2204,6 +2235,19 @@ fn is_unconfigured_provider_message(message: &str) -> bool {
     message.contains("is not configured") || message.contains("not configured")
 }
 
+/// Returns `true` if an error message indicates a context length overflow.
+///
+/// These errors cannot be fixed by blind retries - they require context compaction
+/// or switching to a model with a larger context window.
+fn is_context_overflow_message(message: &str) -> bool {
+    let msg_lower = message.to_lowercase();
+    msg_lower.contains("context_length_exceeded")
+        || msg_lower.contains("context length")
+        || msg_lower.contains("maximum context")
+        || (msg_lower.contains("tokens") && msg_lower.contains("exceeds"))
+        || (msg_lower.contains("token") && msg_lower.contains("limit"))
+}
+
 /// Returns `true` if an [`AppError`] indicates a provider is not configured.
 fn is_unconfigured_provider_error(err: &AppError) -> bool {
     match err {
@@ -2400,6 +2444,28 @@ pub async fn start_streaming_with_fallback(
                         .unwrap_or_else(|| "Streaming failed".to_string()),
                 );
                 return Err(err);
+            }
+            AttemptOutcome::ContextOverflowError => {
+                // Context overflow cannot be fixed by retry - caller must compact context.
+                // Return immediately with a specific error so the pipeline can handle it.
+                let error_msg = forward
+                    .error
+                    .clone()
+                    .unwrap_or_else(|| "Context length exceeded".to_string());
+
+                tracing::warn!(
+                    error = %error_msg,
+                    "Context overflow detected - returning to pipeline for compaction"
+                );
+
+                // Emit a special chunk so the pipeline knows to compact
+                let _ = tx
+                    .send(StreamChunk::ContextOverflow {
+                        error_message: error_msg.clone(),
+                    })
+                    .await;
+
+                return Err(AppError::ContextOverflow(error_msg));
             }
             AttemptOutcome::RetryableError => {
                 if let Some(ref e) = forward.error {

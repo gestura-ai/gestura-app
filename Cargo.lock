@@ -3084,6 +3084,7 @@ dependencies = [
  "gestura-core-foundation",
  "gestura-core-llm",
  "serde",
+ "tracing",
 ]
 
 [[package]]

@@ -52,6 +52,7 @@ use crate::tasks::TaskManager;
 use crate::tool_confirmation::TOOL_CONFIRMATIONS;
 use crate::tools::PermissionManager;
 use crate::tools::registry::{ToolDefinition, all_tools};
+use gestura_core_llm::model_capabilities::ModelCapabilitiesCache;
 
 use request_telemetry::{AgentRequestTelemetry, RequestOutcome, RequestRunMode};
 use tool_dispatch::{FinalizePendingToolCallCtx, PendingToolCall};
@@ -164,6 +165,13 @@ pub struct AgentPipeline {
     knowledge_settings: Option<&'static KnowledgeSettingsManager>,
     /// Optional pre-flight LLM tool router (None when strategy is Keyword).
     tool_router: Option<Box<dyn tool_router::ToolRouter>>,
+    /// Model capabilities cache for dynamic context limit discovery.
+    ///
+    /// This cache learns model limits from:
+    /// - API discovery (Gemini, Anthropic, Grok, Ollama)
+    /// - Error parsing (context_length_exceeded messages)
+    /// - User configuration overrides
+    capabilities_cache: ModelCapabilitiesCache,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -944,6 +952,7 @@ Respond ONLY with the JSON array, no additional text."#,
             knowledge_store: None,
             knowledge_settings: None,
             tool_router,
+            capabilities_cache: ModelCapabilitiesCache::new(),
         }
     }
 
@@ -960,6 +969,7 @@ Respond ONLY with the JSON array, no additional text."#,
             knowledge_store: None,
             knowledge_settings: None,
             tool_router,
+            capabilities_cache: ModelCapabilitiesCache::new(),
         }
     }
 
@@ -1167,18 +1177,29 @@ Respond ONLY with the JSON array, no additional text."#,
     ///
     /// This automatically sets the context token limit based on the provider's capabilities
     /// and applies user settings from AppConfig.pipeline.
+    ///
+    /// **Note:** For model-specific limits, prefer [`with_model_optimized_config`].
     pub fn with_provider_optimized_config(config: AppConfig) -> Self {
         let provider = config.llm.primary.as_str();
-        let pipeline_config =
-            PipelineConfig::for_provider(provider).with_user_settings(&config.pipeline);
+        let model_id = Self::extract_model_id(&config, provider);
+        let capabilities_cache = ModelCapabilitiesCache::new();
+
+        // Use model-specific capabilities when we have a model ID
+        let pipeline_config = if let Some(model) = model_id {
+            PipelineConfig::for_model_with_cache(provider, model, &capabilities_cache)
+                .with_user_settings(&config.pipeline)
+        } else {
+            PipelineConfig::for_provider(provider).with_user_settings(&config.pipeline)
+        };
 
         tracing::info!(
             provider = provider,
+            model = model_id.unwrap_or("unknown"),
             max_context_tokens = pipeline_config.max_context_tokens,
             max_history_messages = pipeline_config.max_history_messages,
             auto_compact_threshold = pipeline_config.auto_compact_threshold,
             compaction_strategy = ?pipeline_config.compaction_strategy,
-            "Created pipeline with provider-optimized configuration and user settings"
+            "Created pipeline with model-optimized configuration and user settings"
         );
 
         let arc_config = std::sync::Arc::new(config.clone());
@@ -1192,7 +1213,65 @@ Respond ONLY with the JSON array, no additional text."#,
             knowledge_store: None,
             knowledge_settings: None,
             tool_router,
+            capabilities_cache,
         }
+    }
+
+    /// Create a pipeline with a shared capabilities cache for dynamic limit discovery.
+    ///
+    /// This allows the pipeline to learn model limits from errors and API discovery,
+    /// sharing that knowledge across pipeline instances.
+    pub fn with_shared_capabilities_cache(
+        config: AppConfig,
+        capabilities_cache: ModelCapabilitiesCache,
+    ) -> Self {
+        let provider = config.llm.primary.as_str();
+        let model_id = Self::extract_model_id(&config, provider);
+
+        let pipeline_config = if let Some(model) = model_id {
+            PipelineConfig::for_model_with_cache(provider, model, &capabilities_cache)
+                .with_user_settings(&config.pipeline)
+        } else {
+            PipelineConfig::for_provider(provider).with_user_settings(&config.pipeline)
+        };
+
+        tracing::info!(
+            provider = provider,
+            model = model_id.unwrap_or("unknown"),
+            max_context_tokens = pipeline_config.max_context_tokens,
+            "Created pipeline with shared capabilities cache"
+        );
+
+        let arc_config = std::sync::Arc::new(config.clone());
+        let tool_router = build_tool_router(&pipeline_config.tool_routing_strategy, arc_config);
+        Self {
+            config,
+            context_manager: Self::build_context_manager(),
+            analyzer: RequestAnalyzer::new(),
+            pipeline_config,
+            permission_manager: PermissionManager::new(),
+            knowledge_store: None,
+            knowledge_settings: None,
+            tool_router,
+            capabilities_cache,
+        }
+    }
+
+    /// Extract the model ID from config for the given provider.
+    fn extract_model_id<'a>(config: &'a AppConfig, provider: &str) -> Option<&'a str> {
+        match provider {
+            "openai" => config.llm.openai.as_ref().map(|c| c.model.as_str()),
+            "anthropic" => config.llm.anthropic.as_ref().map(|c| c.model.as_str()),
+            "grok" => config.llm.grok.as_ref().map(|c| c.model.as_str()),
+            "gemini" => config.llm.gemini.as_ref().map(|c| c.model.as_str()),
+            "ollama" => config.llm.ollama.as_ref().map(|c| c.model.as_str()),
+            _ => None,
+        }
+    }
+
+    /// Get a reference to the capabilities cache for learning model limits.
+    pub fn capabilities_cache(&self) -> &ModelCapabilitiesCache {
+        &self.capabilities_cache
     }
 
     fn effective_request_max_iterations(&self, request: &AgentRequest) -> Option<usize> {

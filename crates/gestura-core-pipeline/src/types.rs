@@ -419,7 +419,11 @@ impl Default for PipelineConfig {
 }
 
 impl PipelineConfig {
-    /// Get recommended context tokens for a specific provider
+    /// Get recommended context tokens for a specific provider (static fallback).
+    ///
+    /// **Prefer [`for_model`] or [`for_model_with_cache`]** for dynamic, model-specific limits.
+    /// This method only provides provider-level defaults and may be inaccurate for
+    /// models with different context sizes (e.g., gpt-3.5-turbo vs gpt-4o).
     pub fn context_tokens_for_provider(provider: &str) -> usize {
         match provider {
             "anthropic" => 200_000, // Claude 3.5 Sonnet supports 200k
@@ -431,12 +435,94 @@ impl PipelineConfig {
         }
     }
 
-    /// Create config optimized for a specific provider
+    /// Create config optimized for a specific provider (static).
+    ///
+    /// **Prefer [`for_model`]** for model-specific limits.
     pub fn for_provider(provider: &str) -> Self {
         Self {
             max_context_tokens: Self::context_tokens_for_provider(provider),
             ..Default::default()
         }
+    }
+
+    /// Create config optimized for a specific provider and model using dynamic capabilities.
+    ///
+    /// This uses heuristic-based model capabilities. For learned/cached capabilities,
+    /// use [`for_model_with_cache`] instead.
+    pub fn for_model(provider: &str, model_id: &str) -> Self {
+        use gestura_core_llm::model_capabilities::get_model_capabilities;
+
+        let caps = get_model_capabilities(provider, model_id);
+
+        tracing::debug!(
+            provider = provider,
+            model = model_id,
+            context_length = caps.context_length,
+            source = ?caps.source,
+            "Created pipeline config from model capabilities"
+        );
+
+        Self {
+            max_context_tokens: caps.context_length,
+            max_output_tokens: caps.max_output_tokens,
+            ..Default::default()
+        }
+    }
+
+    /// Create config for a model using a capabilities cache (for learned/API-discovered limits).
+    ///
+    /// This method uses cached capabilities if available, falling back to heuristics.
+    /// The cache can contain:
+    /// - API-discovered limits (most accurate)
+    /// - Error-learned limits (from context_length_exceeded errors)
+    /// - User-configured overrides
+    pub fn for_model_with_cache(
+        provider: &str,
+        model_id: &str,
+        cache: &gestura_core_llm::model_capabilities::ModelCapabilitiesCache,
+    ) -> Self {
+        let caps = cache.get(provider, model_id);
+
+        tracing::info!(
+            provider = provider,
+            model = model_id,
+            context_length = caps.context_length,
+            max_output = caps.max_output_tokens,
+            source = ?caps.source,
+            reliable = caps.is_reliable(),
+            "Created pipeline config from capabilities cache"
+        );
+
+        Self {
+            max_context_tokens: caps.context_length,
+            max_output_tokens: caps.max_output_tokens,
+            ..Default::default()
+        }
+    }
+
+    /// Update this config's context limits from a capabilities cache.
+    ///
+    /// Useful when you want to reconfigure an existing pipeline after learning
+    /// new model limits (e.g., from a context_length_exceeded error).
+    pub fn update_from_cache(
+        &mut self,
+        provider: &str,
+        model_id: &str,
+        cache: &gestura_core_llm::model_capabilities::ModelCapabilitiesCache,
+    ) {
+        let caps = cache.get(provider, model_id);
+
+        tracing::info!(
+            provider = provider,
+            model = model_id,
+            old_context = self.max_context_tokens,
+            new_context = caps.context_length,
+            source = ?caps.source,
+            "Updated pipeline config from capabilities cache"
+        );
+
+        self.max_context_tokens = caps.context_length;
+        self.max_output_tokens = caps.max_output_tokens;
     }
 }
 

@@ -3114,6 +3114,19 @@ impl AgentPipeline {
                         telemetry.mark_outcome(RequestOutcome::Paused);
                         return Ok(response);
                     }
+                    StreamChunk::ContextOverflow { error_message } => {
+                        // Context overflow detected - the streaming layer already
+                        // returns AppError::ContextOverflow, but we handle the chunk
+                        // here in case it arrives via forward.
+                        let error_msg = error_message.clone();
+                        tracing::warn!(
+                            iteration = iteration,
+                            error = %error_msg,
+                            "[AgentLoop] Context overflow — needs compaction before retry"
+                        );
+                        let _ = tx.send(chunk).await;
+                        return Err(AppError::ContextOverflow(error_msg));
+                    }
                 }
             }
 
