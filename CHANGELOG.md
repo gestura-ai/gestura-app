@@ -7,6 +7,51 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-04-11
+
+### Changed
+
+- Inline chat shell cards now report successfully finished session-backed commands as `Complete` and automatically collapse after the command finishes, reducing transcript noise while keeping failed runs expanded for inspection.
+- Agent task runtime reconciliation now keeps completion and closeout decisions anchored to explicit build/test/mutation evidence instead of weak summary text or partially satisfied execution state.
+- `gestura-core`'s pipeline runtime has been decomposed into focused sidecar modules so agent-loop narration, tracked-task bookkeeping, continuation handling, and shared async iteration/finalization helpers no longer live in a single oversized file.
+- `tool_dispatch` now keeps execution behavior separated from its large regression suite, making the runtime path easier to review and maintain without changing behavior.
+- `gestura-core-tasks` now acts as the shared task-management foundation for persistent task graphs, reusable workflow primitives, and optional advanced-planning middleware inputs across agent and UI flows.
+
+### Fixed
+
+- Follow-up shell requests now pre-bind reusable PTY sessions to the active streaming assistant message, so inline chat surfaces the shell immediately instead of waiting for later lifecycle/output updates.
+- Inline chat now re-reconciles shared shell-session state when a new streaming message is created, preventing delayed shell card hydration when a reusable session becomes active before the message finishes materializing.
+- Reused inline shell sessions now expand again when a follow-up command starts, and chat preserves fresher local in-flight shell state instead of regressing back to a stale reusable `Idle` snapshot during follow-up shell requests.
+- Completed tracked roots now stay sticky during runtime bookkeeping, so agent reconciliation no longer reopens already-finished task trees just because descendant/runtime state is still being recomputed.
+- Success closeout no longer terminalizes build/test verification descendants while runtime requirements remain unmet, preventing premature `Completed`/`Cancelled` task flips that later have to be reopened.
+- Results-review narration no longer claims the run has crossed into closeout until the runtime snapshot is fully clear of open work, ready tasks, blocked tasks, and missing requirements.
+- Requirement-breakdown materialization now reuses existing matching child tasks under the same parent instead of creating duplicate tracked subtasks during repeated planning passes.
+
+### Added
+
+- Regression coverage for follow-up reusable shell requests in chat and for backend PTY reuse event ordering, verifying reused sessions emit `Busy` before `Started` on subsequent commands.
+- Additional frontend regression coverage for reusable shell follow-up flows, including completion→reuse re-expansion and protection against stale `Idle` shared state overwriting locally started `Starting`/`Busy` shell activity.
+- Regression coverage for sticky completed roots, missing-evidence success closeout, under-scoped verification execution state, and runtime completion narration guards in `gestura-core` / `gestura-core-tasks`.
+- Dedicated sidecar test modules for `agent_loop` and `tool_dispatch`, preserving broad pipeline regression coverage while keeping the production runtime modules smaller and more navigable.
+- Optional advanced-primitives support in `gestura-core-tasks`, including structured advanced-plan envelopes plus feature-gated semantic-query and verification helpers for complex multi-step task flows.
+
+## [0.8.2] - 2026-04-09
+
+### Changed
+
+- Agent chat and Shell Manager now consume aligned session-backed shell lifecycle state so reusable terminal sessions appear inline as soon as the session is created and continue streaming through the same live transcript.
+- Session-backed shell transcript handling now uses shared reducer logic for lifecycle and output hydration, keeping command banners, output ordering, and session reuse metadata synchronized across replay and live streaming.
+
+### Fixed
+
+- Shell sessions no longer begin running before their inline chat card appears; chat now subscribes to session lifecycle events immediately and materializes the shell block at session startup.
+- Reusable shell sessions no longer remain marked as failed in chat after a single command error; failed commands now return the session-backed inline terminal to an idle reusable state when the session itself is still healthy.
+- Chat no longer renders a duplicate `shell` tool card when the same activity is already represented by an inline shell session block with a link into Shell Manager.
+
+### Added
+
+- Regression coverage for session-lifecycle dispatch, output-first shell hydration, reusable-session failure recovery, and duplicate inline shell/tool-card suppression.
+
 ## [0.8.1] - 2026-04-08
 
 ### Changed

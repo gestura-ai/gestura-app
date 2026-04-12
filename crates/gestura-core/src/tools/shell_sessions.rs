@@ -875,13 +875,13 @@ mod imp {
                     self.emit_session_lifecycle();
                     self.terminate().await?;
                     let flushed = parser.finish();
-                    if !flushed.is_empty() {
-                        stdout.push_str(&flushed);
+                    if !flushed.output.is_empty() {
+                        stdout.push_str(&flushed.output);
                         let output_chunk = StreamChunk::ShellOutput {
                             process_id: process_id.clone(),
                             shell_session_id: Some(self.shell_session_id.clone()),
                             stream: ShellOutputStream::Stdout,
-                            data: flushed,
+                            data: flushed.output,
                         };
                         self.emit_broadcast(output_chunk.clone());
                         send_shell_output_chunk_best_effort(&tx, output_chunk).await;
@@ -1026,16 +1026,58 @@ mod imp {
                     }
                     Ok(None) => {
                         let flushed = parser.finish();
-                        if !flushed.is_empty() {
-                            stdout.push_str(&flushed);
+                        if !flushed.output.is_empty() {
+                            stdout.push_str(&flushed.output);
                             let output_chunk = StreamChunk::ShellOutput {
                                 process_id: process_id.clone(),
                                 shell_session_id: Some(self.shell_session_id.clone()),
                                 stream: ShellOutputStream::Stdout,
-                                data: flushed,
+                                data: flushed.output.clone(),
                             };
                             self.emit_broadcast(output_chunk.clone());
                             send_shell_output_chunk_best_effort(&tx, output_chunk).await;
+                        }
+
+                        if let Some(exit_code) = flushed.exit_code {
+                            let user_stopped =
+                                self.user_stop_requested.swap(false, Ordering::SeqCst);
+                            let duration_ms = start.elapsed().as_millis() as u64;
+                            let process_state = if user_stopped {
+                                ShellProcessState::Stopped
+                            } else if exit_code == 0 {
+                                ShellProcessState::Completed
+                            } else {
+                                ShellProcessState::Failed
+                            };
+                            let reported_exit = if user_stopped && exit_code == 0 {
+                                130
+                            } else {
+                                exit_code
+                            };
+                            let session_state = if user_stopped {
+                                ShellSessionState::Stopped
+                            } else if self.is_closed() {
+                                ShellSessionState::Failed
+                            } else {
+                                ShellSessionState::Idle
+                            };
+
+                            return self
+                                .finish_command(
+                                    &tx,
+                                    command,
+                                    command_cwd,
+                                    CommandCompletion {
+                                        process_id,
+                                        stdout,
+                                        exit_code: reported_exit,
+                                        process_state,
+                                        duration_ms,
+                                        session_state,
+                                        failure_kind: runtime_failure_kind,
+                                    },
+                                )
+                                .await;
                         }
 
                         let user_stopped = self.user_stop_requested.swap(false, Ordering::SeqCst);
@@ -1223,13 +1265,13 @@ mod imp {
                         self.emit_session_lifecycle();
                         self.terminate().await?;
                         let flushed = parser.finish();
-                        if !flushed.is_empty() {
-                            stdout.push_str(&flushed);
+                        if !flushed.output.is_empty() {
+                            stdout.push_str(&flushed.output);
                             let output_chunk = StreamChunk::ShellOutput {
                                 process_id: process_id.clone(),
                                 shell_session_id: Some(self.shell_session_id.clone()),
                                 stream: ShellOutputStream::Stdout,
-                                data: flushed,
+                                data: flushed.output,
                             };
                             self.emit_broadcast(output_chunk.clone());
                             send_shell_output_chunk_best_effort(&tx, output_chunk).await;
@@ -1705,12 +1747,31 @@ mod imp {
             }
         }
 
-        fn finish(&mut self) -> String {
+        fn finish(&mut self) -> ParsedChunk {
             if !self.started {
                 self.pending.clear();
-                return String::new();
+                return ParsedChunk {
+                    output: String::new(),
+                    exit_code: None,
+                };
             }
-            std::mem::take(&mut self.pending)
+
+            if let Some((output_end, _, exit_code)) =
+                find_done_marker(&self.pending, &self.done_prefix)
+                    .or_else(|| find_done_marker_allow_eof(&self.pending, &self.done_prefix))
+            {
+                let output = self.pending[..output_end].to_string();
+                self.pending.clear();
+                return ParsedChunk {
+                    output,
+                    exit_code: Some(exit_code),
+                };
+            }
+
+            ParsedChunk {
+                output: std::mem::take(&mut self.pending),
+                exit_code: None,
+            }
         }
 
         fn buffered_output(&self) -> &str {
@@ -1775,6 +1836,19 @@ mod imp {
             idx
         };
         Some((output_end, consume_end, exit_code))
+    }
+
+    fn find_done_marker_allow_eof(buffer: &str, done_prefix: &str) -> Option<(usize, usize, i32)> {
+        let marker = format!("\n{done_prefix}");
+        let idx = buffer.find(&marker)?;
+        let code_start = idx + marker.len();
+        let exit_code = buffer[code_start..].trim_end_matches('\r').parse().ok()?;
+        let output_end = if idx > 0 && buffer.as_bytes()[idx - 1] == b'\r' {
+            idx - 1
+        } else {
+            idx
+        };
+        Some((output_end, buffer.len(), exit_code))
     }
 
     fn find_start_marker(buffer: &str, start_marker: &str) -> Option<usize> {
@@ -2035,6 +2109,24 @@ mod imp {
         }
 
         #[test]
+        fn parser_finish_extracts_trailing_done_marker_after_channel_close() {
+            let mut parser = SessionOutputParser::new(
+                "__GESTURA_START_abc__".to_string(),
+                "__GESTURA_DONE_abc__:".to_string(),
+            );
+
+            let first = parser.push(
+                "printf '__GESTURA_START_abc__\\n'\r\n__GESTURA_START_abc__\r\nhello world\n__GESTURA_DONE_abc__:0\r",
+            );
+            assert_eq!(first.output, "");
+            assert_eq!(first.exit_code, None);
+
+            let finished = parser.finish();
+            assert_eq!(finished.output, "hello world");
+            assert_eq!(finished.exit_code, Some(0));
+        }
+
+        #[test]
         #[cfg(not(windows))]
         fn wrap_command_changes_directory_before_execution() {
             let script = wrap_command(
@@ -2144,6 +2236,106 @@ mod imp {
                     "expected at least two started shell lifecycle events, got {chunks:?}"
                 );
                 assert_eq!(started_session_ids[0], started_session_ids[1]);
+            })
+            .await;
+        }
+
+        #[cfg(not(target_os = "windows"))]
+        #[tokio::test]
+        async fn reused_session_emits_busy_before_started_for_follow_up_command() {
+            run_pty_test("pty-reuse-order-pool", async move {
+                let (tx, rx) = mpsc::channel(128);
+                let collector = spawn_chunk_collector(rx);
+
+                let first_command = simple_output_command("first");
+                execute_in_session(
+                    "pty-reuse-order-pool",
+                    std::env::current_dir()
+                        .ok()
+                        .and_then(|p| p.to_str().map(ToOwned::to_owned))
+                        .as_deref(),
+                    first_command.as_str(),
+                    None,
+                    Some(10),
+                    tx.clone(),
+                )
+                .await
+                .expect("first command result");
+
+                let second_command = simple_output_command("second");
+                execute_in_session(
+                    "pty-reuse-order-pool",
+                    std::env::current_dir()
+                        .ok()
+                        .and_then(|p| p.to_str().map(ToOwned::to_owned))
+                        .as_deref(),
+                    second_command.as_str(),
+                    None,
+                    Some(10),
+                    tx.clone(),
+                )
+                .await
+                .expect("second command result");
+
+                shutdown_session("pty-reuse-order-pool")
+                    .await
+                    .expect("shutdown PTY reuse-order session pool");
+
+                drop(tx);
+                let chunks = tokio::time::timeout(Duration::from_secs(5), collector)
+                    .await
+                    .expect("timed out collecting reuse-order shell chunks")
+                    .expect("reuse-order collector should join");
+
+                let reused_session_id = chunks
+                    .iter()
+                    .find_map(|chunk| match chunk {
+                        StreamChunk::ShellLifecycle {
+                            shell_session_id: Some(shell_session_id),
+                            state: ShellProcessState::Started,
+                            ..
+                        } => Some(shell_session_id.clone()),
+                        _ => None,
+                    })
+                    .expect("expected started shell lifecycle event for reused session");
+
+                let busy_indices = chunks
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(index, chunk)| match chunk {
+                        StreamChunk::ShellSessionLifecycle {
+                            shell_session_id,
+                            state: ShellSessionState::Busy,
+                            interactive: false,
+                            user_managed: false,
+                            ..
+                        } if shell_session_id == &reused_session_id => Some(index),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>();
+
+                let started_indices = chunks
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(index, chunk)| match chunk {
+                        StreamChunk::ShellLifecycle {
+                            shell_session_id: Some(shell_session_id),
+                            state: ShellProcessState::Started,
+                            ..
+                        } if shell_session_id == &reused_session_id => Some(index),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>();
+
+                assert!(
+                    busy_indices.len() >= 2,
+                    "expected two busy shell session lifecycle events for reused session, got {chunks:?}"
+                );
+                assert!(
+                    started_indices.len() >= 2,
+                    "expected two started shell lifecycle events for reused session, got {chunks:?}"
+                );
+                assert!(busy_indices[1] < started_indices[1]);
             })
             .await;
         }

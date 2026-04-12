@@ -27,6 +27,32 @@ function isShellSessionRecord(block: RenderableShell): block is ShellSessionReco
   return block.kind === 'shell-session';
 }
 
+function didShellSessionCommandReachTerminalOutcome(block: ShellSessionRecord): boolean {
+  return !block.activeProcessId
+    && (block.state === 'Stopped'
+      || block.state === 'Failed'
+      || (block.state === 'Idle' && (block.lastExitCode ?? null) !== null));
+}
+
+function didRenderableShellReachAutoCollapseTerminalOutcome(block: RenderableShell): boolean {
+  if (isShellSessionRecord(block)) {
+    return didShellSessionCommandReachTerminalOutcome(block);
+  }
+
+  return block.state === 'Completed' || block.state === 'Failed' || block.state === 'Stopped';
+}
+
+function isRenderableShellActivelyRunning(block: RenderableShell): boolean {
+  if (isShellSessionRecord(block)) {
+    return block.state === 'Starting'
+      || block.state === 'Busy'
+      || block.state === 'Interrupting'
+      || block.state === 'Stopping';
+  }
+
+  return block.state === 'Started' || block.state === 'Running' || block.state === 'Resumed';
+}
+
 function isTerminalState(block: RenderableShell): boolean {
   if (isShellSessionRecord(block)) {
     return block.state === 'Stopped' || block.state === 'Failed';
@@ -37,7 +63,10 @@ function isTerminalState(block: RenderableShell): boolean {
 function statusClassName(block: RenderableShell): string {
   if (isShellSessionRecord(block)) {
     if (block.state === 'Interrupting') return 'paused';
-    if (block.state === 'Idle') return 'success';
+    if (block.state === 'Idle') {
+      if ((block.lastExitCode ?? null) === null) return 'success';
+      return block.lastExitCode === 0 ? 'success' : 'error';
+    }
     if (!isTerminalState(block)) return 'running';
     return block.state === 'Stopped' ? 'error' : 'error';
   }
@@ -46,10 +75,17 @@ function statusClassName(block: RenderableShell): string {
   return block.exitCode === 0 ? 'success' : 'error';
 }
 
-function statusLabel(block: RenderableShell): string {
+function statusLabel(block: RenderableShell, variant: 'inline' | 'panel'): string {
   if (isShellSessionRecord(block)) {
     switch (block.state) {
-      case 'Idle': return 'Idle';
+      case 'Idle':
+        if ((block.lastExitCode ?? null) === 0) {
+          return variant === 'inline' ? 'Complete' : 'Completed';
+        }
+        if ((block.lastExitCode ?? null) !== null) {
+          return `Exit ${block.lastExitCode}`;
+        }
+        return 'Idle';
       case 'Busy': return 'Running…';
       case 'Interrupting': return 'Interrupting…';
       case 'Stopping': return 'Stopping…';
@@ -118,6 +154,9 @@ export const ShellConsoleView: React.FC<ShellConsoleViewProps> = ({
   const [collapsed, setCollapsed] = useState(() => allowCollapse ? block.collapsed : false);
   const [activityNow, setActivityNow] = useState(() => Date.now());
   const outputRef = useRef<HTMLDivElement>(null);
+  const wasAutoCollapseTerminalOutcomeRef = useRef(
+    didRenderableShellReachAutoCollapseTerminalOutcome(block),
+  );
   const isTerminal = isTerminalState(block);
   const isCollapsed = allowCollapse ? collapsed : false;
   const copyValue = commandLabel(block);
@@ -136,6 +175,30 @@ export const ShellConsoleView: React.FC<ShellConsoleViewProps> = ({
     return () => window.clearInterval(intervalId);
   }, [isTerminal]);
 
+  useEffect(() => {
+    const reachedAutoCollapseTerminalOutcome = didRenderableShellReachAutoCollapseTerminalOutcome(block);
+    const isActivelyRunning = isRenderableShellActivelyRunning(block);
+    if (
+      variant === 'inline'
+      && allowCollapse
+      && reachedAutoCollapseTerminalOutcome
+      && !wasAutoCollapseTerminalOutcomeRef.current
+    ) {
+      setCollapsed(true);
+    }
+
+    if (
+      variant === 'inline'
+      && allowCollapse
+      && isActivelyRunning
+      && wasAutoCollapseTerminalOutcomeRef.current
+    ) {
+      setCollapsed(false);
+    }
+
+    wasAutoCollapseTerminalOutcomeRef.current = reachedAutoCollapseTerminalOutcome;
+  }, [allowCollapse, block, variant]);
+
   return (
     <div
       className={`shell-console shell-console--${variant}${isCollapsed ? ' collapsed' : ''}`}
@@ -153,7 +216,7 @@ export const ShellConsoleView: React.FC<ShellConsoleViewProps> = ({
               <span className="shell-console-heading-icon"><TerminalIcon /></span>
               <strong className="shell-cmd" title={copyValue}>{copyValue}</strong>
             </div>
-            <span className={`shell-console-status shell-console-status--${statusClassName(block)}`}>{statusLabel(block)}</span>
+            <span className={`shell-console-status shell-console-status--${statusClassName(block)}`}>{statusLabel(block, variant)}</span>
             <span className="shell-console-chevron">{isCollapsed ? '▸' : '▾'}</span>
           </button>
         ) : (
@@ -162,7 +225,7 @@ export const ShellConsoleView: React.FC<ShellConsoleViewProps> = ({
               <span className="shell-console-heading-icon"><TerminalIcon /></span>
               <strong className="shell-cmd" title={copyValue}>{copyValue}</strong>
             </div>
-            <span className={`shell-console-status shell-console-status--${statusClassName(block)}`}>{statusLabel(block)}</span>
+            <span className={`shell-console-status shell-console-status--${statusClassName(block)}`}>{statusLabel(block, variant)}</span>
           </div>
         )}
         <div className="shell-controls">

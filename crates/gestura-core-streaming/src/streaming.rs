@@ -11,8 +11,9 @@ use gestura_core_llm::openai::{
     OpenAiApi, is_openai_model_incompatible_with_agent_session, openai_agent_session_model_message,
     openai_api_for_model,
 };
+use gestura_core_retry::RetryPolicy;
 use gestura_core_tools::schemas::ProviderToolSchemas;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU8, Ordering};
 use std::time::Duration;
@@ -943,22 +944,91 @@ fn format_openai_http_error(
     model: &str,
     api: OpenAiApi,
     body: &str,
+    retry_after: Option<Duration>,
 ) -> String {
     if status == reqwest::StatusCode::NOT_FOUND && body.contains("This is not a chat model") {
-        return format!(
+        let mut message = format!(
             "{provider_name} model '{}' appears to require /v1/responses, but Gestura selected {}. Raw provider error: {}",
             model.trim(),
             openai_endpoint_path(api),
             body
         );
+        if let Some(retry_after) = retry_after {
+            message.push_str(&format_retry_after_suffix(retry_after));
+        }
+        return message;
     }
 
-    format!(
+    let mut message = format!(
         "{provider_name} {} HTTP {}: {}",
         openai_endpoint_path(api),
         status,
         body
+    );
+    if let Some(retry_after) = retry_after {
+        message.push_str(&format_retry_after_suffix(retry_after));
+    }
+    message
+}
+
+fn format_retry_after_suffix(retry_after: Duration) -> String {
+    format!(
+        " Provider suggested retrying after {} seconds.",
+        retry_after.as_secs().max(1)
     )
+}
+
+fn parse_retry_after_value(value: &str) -> Option<Duration> {
+    let seconds = value.trim().parse::<u64>().ok()?;
+    Some(Duration::from_secs(seconds.max(1)))
+}
+
+fn response_retry_after_hint(headers: &reqwest::header::HeaderMap) -> Option<Duration> {
+    headers
+        .get(reqwest::header::RETRY_AFTER)?
+        .to_str()
+        .ok()
+        .and_then(parse_retry_after_value)
+}
+
+fn retry_after_hint_from_error_message(message: &str) -> Option<Duration> {
+    let marker = "provider suggested retrying after ";
+    let lower = message.to_ascii_lowercase();
+    let start = lower.find(marker)? + marker.len();
+    let remainder = &lower[start..];
+    let seconds = remainder
+        .chars()
+        .take_while(|ch| ch.is_ascii_digit())
+        .collect::<String>()
+        .parse::<u64>()
+        .ok()?;
+    Some(Duration::from_secs(seconds.max(1)))
+}
+
+fn error_is_rate_limited_message(message: &str) -> bool {
+    let lower = message.to_ascii_lowercase();
+    lower.contains("http 429")
+        || lower.contains("rate limit")
+        || lower.contains("too many requests")
+        || lower.contains("quota")
+}
+
+fn select_streaming_retry_delay(
+    policy: &RetryPolicy,
+    retry_attempt: u32,
+    error_message: &str,
+) -> Duration {
+    let base_delay = policy.delay_for_attempt(retry_attempt);
+
+    if let Some(retry_after) = retry_after_hint_from_error_message(error_message) {
+        return retry_after.max(base_delay);
+    }
+
+    if error_is_rate_limited_message(error_message) {
+        return base_delay.max(Duration::from_secs(5));
+    }
+
+    base_delay
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -1045,14 +1115,11 @@ async fn emit_openai_tool_calls(
 
 fn merge_openai_responses_tool_item(
     pending: &mut BTreeMap<usize, PendingOpenAiResponsesToolCall>,
+    tool_indices: &mut HashMap<String, usize>,
     event: &serde_json::Value,
     fallback_index: usize,
 ) {
-    let index = event
-        .get("output_index")
-        .and_then(|value| value.as_u64())
-        .map(|value| value as usize)
-        .unwrap_or(fallback_index);
+    let index = resolve_openai_responses_tool_index(tool_indices, event, fallback_index);
 
     let item = event.get("item").unwrap_or(event);
     let entry = pending.entry(index).or_default();
@@ -1084,14 +1151,11 @@ fn merge_openai_responses_tool_item(
 
 fn merge_openai_responses_tool_argument_delta(
     pending: &mut BTreeMap<usize, PendingOpenAiResponsesToolCall>,
+    tool_indices: &mut HashMap<String, usize>,
     event: &serde_json::Value,
     fallback_index: usize,
 ) {
-    let index = event
-        .get("output_index")
-        .and_then(|value| value.as_u64())
-        .map(|value| value as usize)
-        .unwrap_or(fallback_index);
+    let index = resolve_openai_responses_tool_index(tool_indices, event, fallback_index);
 
     let entry = pending.entry(index).or_default();
 
@@ -1115,14 +1179,11 @@ fn merge_openai_responses_tool_argument_delta(
 
 fn complete_openai_responses_tool_arguments(
     pending: &mut BTreeMap<usize, PendingOpenAiResponsesToolCall>,
+    tool_indices: &mut HashMap<String, usize>,
     event: &serde_json::Value,
     fallback_index: usize,
 ) {
-    let index = event
-        .get("output_index")
-        .and_then(|value| value.as_u64())
-        .map(|value| value as usize)
-        .unwrap_or(fallback_index);
+    let index = resolve_openai_responses_tool_index(tool_indices, event, fallback_index);
 
     let entry = pending.entry(index).or_default();
 
@@ -1149,6 +1210,7 @@ fn complete_openai_responses_tool_arguments(
 async fn emit_ready_openai_responses_tool_calls(
     tx: &mpsc::Sender<StreamChunk>,
     pending: &mut BTreeMap<usize, PendingOpenAiResponsesToolCall>,
+    emitted_ids: &mut HashSet<String>,
     flush_all: bool,
 ) {
     let mut ready = Vec::new();
@@ -1177,6 +1239,15 @@ async fn emit_ready_openai_responses_tool_calls(
                 call.id
             };
 
+            if !emitted_ids.insert(id.clone()) {
+                tracing::debug!(
+                    tool_call_id = %id,
+                    pending_index = index,
+                    "Skipping duplicate OpenAI Responses tool-call emission"
+                );
+                continue;
+            }
+
             let _ = tx
                 .send(StreamChunk::ToolCallStart {
                     id,
@@ -1191,6 +1262,57 @@ async fn emit_ready_openai_responses_tool_calls(
             let _ = tx.send(StreamChunk::ToolCallEnd).await;
         }
     }
+}
+
+fn openai_responses_output_index(event: &serde_json::Value) -> Option<usize> {
+    event
+        .get("output_index")
+        .and_then(|value| value.as_u64())
+        .map(|value| value as usize)
+}
+
+fn openai_responses_tool_aliases(event: &serde_json::Value) -> Vec<String> {
+    let item = event.get("item").unwrap_or(event);
+    let mut aliases = Vec::with_capacity(4);
+
+    for candidate in [
+        item["call_id"].as_str(),
+        event["call_id"].as_str(),
+        item["id"].as_str(),
+        event["item_id"].as_str(),
+    ] {
+        if let Some(alias) = candidate.filter(|alias| !alias.is_empty())
+            && !aliases.iter().any(|existing| existing == alias)
+        {
+            aliases.push(alias.to_string());
+        }
+    }
+
+    aliases
+}
+
+fn resolve_openai_responses_tool_index(
+    tool_indices: &mut HashMap<String, usize>,
+    event: &serde_json::Value,
+    fallback_index: usize,
+) -> usize {
+    let aliases = openai_responses_tool_aliases(event);
+
+    if let Some(existing_index) = aliases
+        .iter()
+        .find_map(|alias| tool_indices.get(alias).copied())
+    {
+        for alias in aliases {
+            tool_indices.insert(alias, existing_index);
+        }
+        return existing_index;
+    }
+
+    let index = openai_responses_output_index(event).unwrap_or(fallback_index);
+    for alias in aliases {
+        tool_indices.insert(alias, index);
+    }
+    index
 }
 
 async fn stream_openai_chat_compatible(
@@ -1220,6 +1342,7 @@ async fn stream_openai_chat_compatible(
 
     if !response.status().is_success() {
         let status = response.status();
+        let retry_after = response_retry_after_hint(response.headers());
         let body = response.text().await.unwrap_or_default();
         return Err(AppError::Llm(format_openai_http_error(
             status,
@@ -1227,6 +1350,7 @@ async fn stream_openai_chat_compatible(
             model,
             OpenAiApi::ChatCompletions,
             &body,
+            retry_after,
         )));
     }
 
@@ -1331,6 +1455,7 @@ async fn stream_openai_responses(
 
     if !response.status().is_success() {
         let status = response.status();
+        let retry_after = response_retry_after_hint(response.headers());
         let body = response.text().await.unwrap_or_default();
         return Err(AppError::Llm(format_openai_http_error(
             status,
@@ -1338,6 +1463,7 @@ async fn stream_openai_responses(
             model,
             OpenAiApi::Responses,
             &body,
+            retry_after,
         )));
     }
 
@@ -1345,6 +1471,8 @@ async fn stream_openai_responses(
     let mut parser = ThinkingParser::new();
     let mut line_buffer = String::new();
     let mut pending_tool_calls = BTreeMap::<usize, PendingOpenAiResponsesToolCall>::new();
+    let mut tool_call_indices = HashMap::<String, usize>::new();
+    let mut emitted_tool_call_ids = HashSet::<String>::new();
     let mut fallback_index = 0usize;
 
     while let Some(chunk_result) = stream.next().await {
@@ -1361,8 +1489,13 @@ async fn stream_openai_responses(
                         continue;
                     };
                     if data == "[DONE]" {
-                        emit_ready_openai_responses_tool_calls(&tx, &mut pending_tool_calls, true)
-                            .await;
+                        emit_ready_openai_responses_tool_calls(
+                            &tx,
+                            &mut pending_tool_calls,
+                            &mut emitted_tool_call_ids,
+                            true,
+                        )
+                        .await;
                         let _ = tx.send(StreamChunk::Done(None)).await;
                         return Ok(());
                     }
@@ -1385,12 +1518,14 @@ async fn stream_openai_responses(
                             if json["item"]["type"].as_str() == Some("function_call") {
                                 merge_openai_responses_tool_item(
                                     &mut pending_tool_calls,
+                                    &mut tool_call_indices,
                                     &json,
                                     fallback_index,
                                 );
                                 emit_ready_openai_responses_tool_calls(
                                     &tx,
                                     &mut pending_tool_calls,
+                                    &mut emitted_tool_call_ids,
                                     false,
                                 )
                                 .await;
@@ -1399,6 +1534,7 @@ async fn stream_openai_responses(
                         "response.function_call_arguments.delta" => {
                             merge_openai_responses_tool_argument_delta(
                                 &mut pending_tool_calls,
+                                &mut tool_call_indices,
                                 &json,
                                 fallback_index,
                             );
@@ -1406,12 +1542,14 @@ async fn stream_openai_responses(
                         "response.function_call_arguments.done" => {
                             complete_openai_responses_tool_arguments(
                                 &mut pending_tool_calls,
+                                &mut tool_call_indices,
                                 &json,
                                 fallback_index,
                             );
                             emit_ready_openai_responses_tool_calls(
                                 &tx,
                                 &mut pending_tool_calls,
+                                &mut emitted_tool_call_ids,
                                 false,
                             )
                             .await;
@@ -1420,6 +1558,7 @@ async fn stream_openai_responses(
                             emit_ready_openai_responses_tool_calls(
                                 &tx,
                                 &mut pending_tool_calls,
+                                &mut emitted_tool_call_ids,
                                 true,
                             )
                             .await;
@@ -1449,7 +1588,13 @@ async fn stream_openai_responses(
         }
     }
 
-    emit_ready_openai_responses_tool_calls(&tx, &mut pending_tool_calls, true).await;
+    emit_ready_openai_responses_tool_calls(
+        &tx,
+        &mut pending_tool_calls,
+        &mut emitted_tool_call_ids,
+        true,
+    )
+    .await;
     let _ = tx.send(StreamChunk::Done(None)).await;
     Ok(())
 }
@@ -2181,7 +2326,7 @@ pub async fn start_streaming(
 }
 
 /// Start streaming with fallback to secondary provider on failure
-/// Implements exponential backoff retry (1s, 2s, 4s) before falling back
+/// Implements jittered exponential backoff with rate-limit-aware delay selection before falling back.
 pub async fn start_streaming_with_fallback(
     config: &StreamingConfig,
     prompt: &str,
@@ -2190,11 +2335,12 @@ pub async fn start_streaming_with_fallback(
     cancel_token: CancellationToken,
 ) -> Result<(), AppError> {
     // Try primary provider with retries
-    let retry_delays = [1, 2, 4]; // seconds
+    let retry_policy = RetryPolicy::for_streaming();
+    let total_attempts = retry_policy.max_attempts.max(1) as usize;
     let mut last_error: Option<AppError> = None;
     let mut skipped_retries_due_to_unconfigured = false;
 
-    for (attempt, delay) in retry_delays.iter().enumerate() {
+    for attempt in 0..total_attempts {
         if cancel_token.is_cancelled() {
             let _ = tx.send(cancel_token.interruption_chunk()).await;
             return Ok(());
@@ -2212,7 +2358,7 @@ pub async fn start_streaming_with_fallback(
         let attempt_span = tracing::info_span!(
             "agent.streaming.fallback_attempt",
             attempt = attempt + 1,
-            delay_seconds = *delay
+            total_attempts = total_attempts
         );
         let handle = tokio::spawn(
             async move {
@@ -2291,32 +2437,33 @@ pub async fn start_streaming_with_fallback(
         }
 
         // Only back off if we will actually perform another attempt.
-        if attempt + 1 < retry_delays.len() {
+        if attempt + 1 < total_attempts {
             // Log retry attempt and notify frontend
             let error_msg = last_error
                 .as_ref()
                 .map(|e| e.to_string())
                 .unwrap_or_else(|| "Unknown error".to_string());
+            let retry_delay =
+                select_streaming_retry_delay(&retry_policy, attempt as u32 + 1, &error_msg);
 
             tracing::warn!(
                 attempt = attempt + 1,
-                delay = delay,
+                delay_ms = retry_delay.as_millis(),
                 error = %error_msg,
-                "Primary LLM failed, retrying in {}s",
-                delay
+                "Primary LLM failed, retrying after backoff"
             );
 
             // Emit retry notification to frontend
             let _ = tx
                 .send(StreamChunk::RetryAttempt {
                     attempt: attempt as u32 + 1,
-                    max_attempts: retry_delays.len() as u32,
-                    delay_ms: *delay * 1000,
+                    max_attempts: total_attempts as u32,
+                    delay_ms: retry_delay.as_millis() as u64,
                     error_message: error_msg,
                 })
                 .await;
 
-            tokio::time::sleep(tokio::time::Duration::from_secs(*delay)).await;
+            tokio::time::sleep(retry_delay).await;
         }
     }
 
@@ -2369,6 +2516,59 @@ pub async fn start_streaming_with_fallback(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn openai_http_error_includes_retry_after_hint_when_present() {
+        let message = format_openai_http_error(
+            reqwest::StatusCode::TOO_MANY_REQUESTS,
+            "OpenAI",
+            "gpt-5.4",
+            OpenAiApi::Responses,
+            "rate limit reached",
+            Some(Duration::from_secs(12)),
+        );
+
+        assert!(message.contains("HTTP 429"));
+        assert!(message.contains("retrying after 12 seconds"));
+    }
+
+    #[test]
+    fn retry_delay_prefers_provider_retry_after_hint() {
+        let policy = RetryPolicy {
+            max_attempts: 3,
+            initial_delay_ms: 1_000,
+            max_delay_ms: 8_000,
+            backoff_multiplier: 2.0,
+            jitter_factor: 0.0,
+        };
+
+        let delay = select_streaming_retry_delay(
+            &policy,
+            1,
+            "OpenAI /v1/responses HTTP 429: rate limit reached. Provider suggested retrying after 12 seconds.",
+        );
+
+        assert_eq!(delay, Duration::from_secs(12));
+    }
+
+    #[test]
+    fn retry_delay_uses_rate_limit_floor_without_retry_after_hint() {
+        let policy = RetryPolicy {
+            max_attempts: 3,
+            initial_delay_ms: 1_000,
+            max_delay_ms: 8_000,
+            backoff_multiplier: 2.0,
+            jitter_factor: 0.0,
+        };
+
+        let delay = select_streaming_retry_delay(
+            &policy,
+            1,
+            "OpenAI /v1/responses HTTP 429: Too many requests",
+        );
+
+        assert_eq!(delay, Duration::from_secs(5));
+    }
 
     #[test]
     fn test_cancellation_token() {
@@ -2521,6 +2721,7 @@ mod tests {
             "gpt-5.3-codex",
             OpenAiApi::ChatCompletions,
             "This is not a chat model",
+            None,
         );
         assert!(message.contains("/v1/responses"));
         assert!(message.contains("/v1/chat/completions"));
@@ -2631,9 +2832,11 @@ mod tests {
     #[test]
     fn openai_responses_tool_calls_are_buffered_by_output_index() {
         let mut pending = BTreeMap::new();
+        let mut tool_indices = HashMap::new();
 
         merge_openai_responses_tool_item(
             &mut pending,
+            &mut tool_indices,
             &serde_json::json!({
                 "type": "response.output_item.added",
                 "output_index": 0,
@@ -2648,6 +2851,7 @@ mod tests {
         );
         merge_openai_responses_tool_argument_delta(
             &mut pending,
+            &mut tool_indices,
             &serde_json::json!({
                 "type": "response.function_call_arguments.delta",
                 "output_index": 0,
@@ -2658,6 +2862,7 @@ mod tests {
         );
         complete_openai_responses_tool_arguments(
             &mut pending,
+            &mut tool_indices,
             &serde_json::json!({
                 "type": "response.function_call_arguments.done",
                 "output_index": 0,
@@ -2674,10 +2879,57 @@ mod tests {
         assert!(pending[&0].finished);
     }
 
+    #[test]
+    fn openai_responses_tool_calls_reuse_stable_aliases_when_output_index_is_missing() {
+        let mut pending = BTreeMap::new();
+        let mut tool_indices = HashMap::new();
+
+        merge_openai_responses_tool_item(
+            &mut pending,
+            &mut tool_indices,
+            &serde_json::json!({
+                "type": "response.output_item.added",
+                "item": {
+                    "type": "function_call",
+                    "id": "fc_0",
+                    "call_id": "call_0",
+                    "name": "file"
+                }
+            }),
+            3,
+        );
+        merge_openai_responses_tool_argument_delta(
+            &mut pending,
+            &mut tool_indices,
+            &serde_json::json!({
+                "type": "response.function_call_arguments.delta",
+                "item_id": "fc_0",
+                "delta": "{\"operation\":\"list\"}"
+            }),
+            8,
+        );
+        complete_openai_responses_tool_arguments(
+            &mut pending,
+            &mut tool_indices,
+            &serde_json::json!({
+                "type": "response.function_call_arguments.done",
+                "call_id": "call_0",
+                "arguments": "{\"operation\":\"list\"}"
+            }),
+            13,
+        );
+
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[&3].id, "call_0");
+        assert_eq!(pending[&3].arguments, "{\"operation\":\"list\"}");
+        assert!(pending[&3].finished);
+    }
+
     #[tokio::test]
     async fn emit_openai_responses_tool_calls_waits_for_lowest_ready_index() {
         let (tx, mut rx) = mpsc::channel(10);
         let mut pending = BTreeMap::new();
+        let mut emitted_ids = HashSet::new();
         pending.insert(
             0,
             PendingOpenAiResponsesToolCall {
@@ -2697,7 +2949,7 @@ mod tests {
             },
         );
 
-        emit_ready_openai_responses_tool_calls(&tx, &mut pending, false).await;
+        emit_ready_openai_responses_tool_calls(&tx, &mut pending, &mut emitted_ids, false).await;
 
         assert!(matches!(
             rx.recv().await,
@@ -2717,6 +2969,45 @@ mod tests {
             Some(StreamChunk::ToolCallArgs(args)) if args == "{\"command\":\"pwd\"}"
         ));
         assert!(matches!(rx.recv().await, Some(StreamChunk::ToolCallEnd)));
+        assert!(pending.is_empty());
+    }
+
+    #[tokio::test]
+    async fn emit_openai_responses_tool_calls_skips_duplicate_call_ids() {
+        let (tx, mut rx) = mpsc::channel(10);
+        let mut pending = BTreeMap::new();
+        let mut emitted_ids = HashSet::new();
+        pending.insert(
+            0,
+            PendingOpenAiResponsesToolCall {
+                id: "call_dup".to_string(),
+                name: "file".to_string(),
+                arguments: "{\"operation\":\"list\"}".to_string(),
+                finished: true,
+            },
+        );
+        pending.insert(
+            1,
+            PendingOpenAiResponsesToolCall {
+                id: "call_dup".to_string(),
+                name: "file".to_string(),
+                arguments: "{\"operation\":\"list\"}".to_string(),
+                finished: true,
+            },
+        );
+
+        emit_ready_openai_responses_tool_calls(&tx, &mut pending, &mut emitted_ids, false).await;
+
+        assert!(matches!(
+            rx.recv().await,
+            Some(StreamChunk::ToolCallStart { id, name }) if id == "call_dup" && name == "file"
+        ));
+        assert!(matches!(
+            rx.recv().await,
+            Some(StreamChunk::ToolCallArgs(args)) if args == "{\"operation\":\"list\"}"
+        ));
+        assert!(matches!(rx.recv().await, Some(StreamChunk::ToolCallEnd)));
+        assert!(rx.try_recv().is_err());
         assert!(pending.is_empty());
     }
 
