@@ -1,23 +1,28 @@
 name: Publish Rustdoc
 
 on:
-  # Deploy docs when a GitHub Release is published.
+  # Deploy docs on every push to main.
   #
-  # Why `release` instead of `workflow_run`:
-  #   workflow_run resolves head_branch from the commit's *associated branch*,
-  #   not from the tag name.  Every release commit is a merge from the dev PR
-  #   into main, so GitHub consistently labels it head_branch="dev" in the
-  #   workflow_run context — regardless of which tag triggered the Release
-  #   workflow.  The github-pages environment protection rules then reject the
-  #   deploy with "Branch 'dev' is not allowed to deploy to github-pages".
-  #   A branches filter on the trigger cannot fix this because the filter also
-  #   matches against head_branch, so "dev" never passes and docs never deploy.
+  # Trigger history and why push:branches:main is the right answer:
   #
-  #   The `release` event runs in the context of the tag / target-commitish
-  #   directly, which the github-pages environment accepts without any branch
-  #   restriction gymnastics.
-  release:
-    types: [published]
+  #   1. workflow_run — rejected because GitHub resolves head_branch from the
+  #      commit's associated branch, not the tag name.  Release commits are
+  #      merges from the dev PR, so head_branch is always "dev" and the
+  #      github-pages environment rejects the deploy.
+  #
+  #   2. release:published — rejected because the github-pages environment
+  #      only allows deployments from "main" (branch), and the release event
+  #      runs in tag context ("v0.9.2 is not allowed to deploy").  Adding a
+  #      tag policy requires admin rights we cannot grant via API.
+  #
+  #   3. push:branches:main — works.  The github-pages environment allows
+  #      "main", and every release already merges to main before the tag is
+  #      pushed, so docs always deploy from the correct release commit.
+  #      Deploying on every main push is acceptable: rustdoc reflects the
+  #      current public API, and the build is idempotent.
+  push:
+    branches:
+      - main
   # Allow manual re-deploys (e.g. after a Pages outage).
   workflow_dispatch:
 
