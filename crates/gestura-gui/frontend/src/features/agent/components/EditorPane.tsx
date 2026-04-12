@@ -14,7 +14,7 @@ import React, { useEffect, useRef } from 'react';
 import { EditorState, Transaction } from '@codemirror/state';
 import { EditorView, keymap, lineNumbers, highlightActiveLine, drawSelection } from '@codemirror/view';
 import { defaultKeymap, history, historyKeymap, indentWithTab } from '@codemirror/commands';
-import { syntaxHighlighting, defaultHighlightStyle, bracketMatching, foldGutter } from '@codemirror/language';
+import { syntaxHighlighting, defaultHighlightStyle, bracketMatching, foldGutter, codeFolding } from '@codemirror/language';
 import { searchKeymap, search } from '@codemirror/search';
 import { javascript } from '@codemirror/lang-javascript';
 import { css } from '@codemirror/lang-css';
@@ -133,6 +133,7 @@ export const EditorPane: React.FC<EditorPaneProps> = ({
         drawSelection(),
         bracketMatching(),
         foldGutter(),
+        codeFolding(),
         syntaxHighlighting(defaultHighlightStyle),
         search({ top: true }),
         keymap.of([...defaultKeymap, ...historyKeymap, ...searchKeymap, indentWithTab]),

@@ -14,13 +14,64 @@
   /* CodeMirror mounts its own .cm-editor root here */
 }
 
+/*
+ * ── CodeMirror base-layout guard ─────────────────────────────────────────────
+ *
+ * CodeMirror 6 injects ALL of its structural CSS at JavaScript runtime via its
+ * StyleModule system — there is no @codemirror/view CSS file to import or
+ * bundle.  The styles for .cm-editor (flex column), .cm-scroller (flex row),
+ * .cm-gutters, and .cm-content are appended as <style> tags to document.head
+ * only when the first EditorView constructor runs (inside useEffect).
+ *
+ * In a packaged Tauri release on macOS the static CSS bundle loads before JS
+ * executes.  WKWebView (especially on Apple Silicon) can commit intermediate
+ * frames aggressively: if it paints between React's render commit and the
+ * useEffect call that creates the EditorView, the .cm-editor DOM is present
+ * but has no flex layout — causing .cm-gutters to stack ABOVE .cm-content
+ * (block flow) instead of beside it.  This is the "content below line
+ * numbers" flash seen in GitHub release builds but not in `cargo tauri dev`
+ * (where React StrictMode double-mounts effects and styles land on the first
+ * mount before any frame is committed).
+ *
+ * These declarations mirror CodeMirror's own base-theme values and anchor the
+ * correct flex layout in the static bundle from the very first painted frame.
+ * They use two-class specificity (.editor-pane--text .cm-*) so that
+ * CodeMirror's per-instance hash-prefixed theme overrides (which have higher
+ * specificity and are inserted later in the DOM) continue to control colours,
+ * fonts, borders, and overflow without conflict.
+ */
 .editor-pane--text .cm-editor {
+  display: flex;
+  flex-direction: column;
+  position: relative;
   height: 100%;
   font-feature-settings: 'liga' 1, 'calt' 1;
 }
 
 .editor-pane--text .cm-scroller {
+  display: flex;
+  flex-direction: row;
+  align-items: flex-start;
   overflow: auto;
+  height: 100%;
+  position: relative;
+}
+
+.editor-pane--text .cm-gutters {
+  display: flex;
+  flex-shrink: 0;
+  height: 100%;
+  position: sticky;
+  left: 0;
+  z-index: 200;
+  box-sizing: border-box;
+}
+
+.editor-pane--text .cm-content {
+  display: block;
+  flex-grow: 2;
+  flex-shrink: 0;
+  min-height: 100%;
 }
 
 .editor-pane--markdown-preview {
