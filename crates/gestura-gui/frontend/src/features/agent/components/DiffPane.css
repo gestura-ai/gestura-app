@@ -19,6 +19,40 @@
   overflow: hidden;
 }
 
+/*
+ * ── CodeMirror base-layout guard (MergeView) ─────────────────────────────────
+ *
+ * Mirrors the same guard applied in EditorPane.css.  MergeView creates two
+ * CodeMirror EditorView instances side by side; each has its own .cm-scroller
+ * that needs display:flex/flex-direction:row from the very first frame.
+ * See the detailed comment in EditorPane.css for the full rationale.
+ */
+.diff-pane .cm-scroller {
+  display: flex;
+  flex-direction: row;
+  align-items: flex-start;
+  overflow: auto;
+  height: 100%;
+  position: relative;
+}
+
+.diff-pane .cm-gutters {
+  display: flex;
+  flex-shrink: 0;
+  height: 100%;
+  position: sticky;
+  left: 0;
+  z-index: 200;
+  box-sizing: border-box;
+}
+
+.diff-pane .cm-content {
+  display: block;
+  flex-grow: 2;
+  flex-shrink: 0;
+  min-height: 100%;
+}
+
 /* Gutter showing chunk indicators */
 .diff-pane .cm-mergeViewGutter {
   width: 24px;
@@ -55,4 +89,3 @@
   background: rgba(34, 197, 94, 0.3);
   border-radius: 2px;
 }
-
