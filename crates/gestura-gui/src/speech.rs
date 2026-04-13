@@ -311,8 +311,8 @@ impl SpeechProcessor {
             .with_streaming(false)
             .with_source(RequestSource::GuiVoice);
 
-        // Create the pipeline and process the request
-        let pipeline = AgentPipeline::new(app_config);
+        // Create the pipeline with model-optimized configuration
+        let pipeline = AgentPipeline::with_provider_optimized_config(app_config);
         let response = pipeline
             .process_blocking(request)
             .await

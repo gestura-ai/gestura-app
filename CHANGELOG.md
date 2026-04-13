@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- New documentation for installation and release consumption, including full GUI+CLI versus CLI-only install flows, canonical installer artifact naming/selection rules, manual testing guidance, prompt-enhancer design/examples, task/knowledge workflows, and tool-response display behavior.
+- Canonical repository agent guidance via `AGENTS.md`, a redirecting `AGENT.md`, and a checked-in multi-repo VS Code workspace for Gestura development.
+
+### Fixed
+
+- Business assessment LLM requests now omit explicit `temperature` overrides for both area analysis and assessment-report generation, improving compatibility with OpenAI-compatible providers that only accept the model default temperature.
+
+## [0.9.2] - 2026-04-11
+
 ### Fixed
 
 - Editor text content no longer renders below line numbers on macOS in packaged release builds. CodeMirror's structural layout CSS (`display:flex` on `.cm-scroller`, sticky positioning on `.cm-gutters`) is now anchored in the static Vite CSS bundle so the correct layout is present from the first painted frame, eliminating the race between WKWebView's aggressive frame commits and JavaScript runtime style injection.

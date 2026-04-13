@@ -48,9 +48,7 @@ pub async fn discover_model_capabilities(
         "ollama" => discover_ollama(model_id, base_url).await,
         // OpenAI doesn't expose context length in API - use error-driven learning
         "openai" => {
-            tracing::debug!(
-                "OpenAI doesn't expose context length in API - using heuristics"
-            );
+            tracing::debug!("OpenAI doesn't expose context length in API - using heuristics");
             return None;
         }
         _ => {
@@ -106,7 +104,12 @@ async fn discover_gemini(
         format!("models/{}", model_id)
     };
 
-    let url = format!("{}/v1beta/{}?key={}", base.trim_end_matches('/'), model_path, key);
+    let url = format!(
+        "{}/v1beta/{}?key={}",
+        base.trim_end_matches('/'),
+        model_path,
+        key
+    );
 
     let resp = discovery_client()
         .get(&url)
@@ -139,7 +142,8 @@ async fn discover_gemini(
         input_limit,
         output_limit,
         CapabilitySource::ApiDiscovery,
-    ).with_vision(true))
+    )
+    .with_vision(true))
 }
 
 /// Discover capabilities for an Anthropic model via their API.
@@ -190,7 +194,8 @@ async fn discover_anthropic(
         input_limit,
         output_limit,
         CapabilitySource::ApiDiscovery,
-    ).with_vision(true))
+    )
+    .with_vision(true))
 }
 
 /// Discover capabilities for a Grok (xAI) model via their API.
@@ -346,17 +351,14 @@ mod tests {
             }
         });
 
-        let context = json
-            .get("model_info")
-            .and_then(|info| {
-                info.as_object().and_then(|obj| {
-                    obj.iter()
-                        .find(|(k, _)| k.ends_with(".context_length"))
-                        .and_then(|(_, v)| v.as_u64())
-                })
-            });
+        let context = json.get("model_info").and_then(|info| {
+            info.as_object().and_then(|obj| {
+                obj.iter()
+                    .find(|(k, _)| k.ends_with(".context_length"))
+                    .and_then(|(_, v)| v.as_u64())
+            })
+        });
 
         assert_eq!(context, Some(8192));
     }
 }
-

@@ -318,20 +318,25 @@ mod tests {
     #[test]
     fn test_error_classification_context_overflow() {
         // From error message
-        let overflow_err = AppError::Llm(
-            "maximum context length is 16385 tokens".to_string()
+        let overflow_err = AppError::Llm("maximum context length is 16385 tokens".to_string());
+        assert_eq!(
+            ErrorClass::classify(&overflow_err),
+            ErrorClass::ContextOverflow
         );
-        assert_eq!(ErrorClass::classify(&overflow_err), ErrorClass::ContextOverflow);
 
         // From explicit variant
         let explicit_err = AppError::ContextOverflow("context too large".to_string());
-        assert_eq!(ErrorClass::classify(&explicit_err), ErrorClass::ContextOverflow);
+        assert_eq!(
+            ErrorClass::classify(&explicit_err),
+            ErrorClass::ContextOverflow
+        );
 
         // From different message format
-        let token_err = AppError::Llm(
-            "Request tokens exceeds limit".to_string()
+        let token_err = AppError::Llm("Request tokens exceeds limit".to_string());
+        assert_eq!(
+            ErrorClass::classify(&token_err),
+            ErrorClass::ContextOverflow
         );
-        assert_eq!(ErrorClass::classify(&token_err), ErrorClass::ContextOverflow);
     }
 
     #[test]

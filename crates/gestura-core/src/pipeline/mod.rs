@@ -1259,14 +1259,21 @@ Respond ONLY with the JSON array, no additional text."#,
 
     /// Extract the model ID from config for the given provider.
     fn extract_model_id<'a>(config: &'a AppConfig, provider: &str) -> Option<&'a str> {
-        match provider {
+        let model = match provider {
             "openai" => config.llm.openai.as_ref().map(|c| c.model.as_str()),
             "anthropic" => config.llm.anthropic.as_ref().map(|c| c.model.as_str()),
             "grok" => config.llm.grok.as_ref().map(|c| c.model.as_str()),
             "gemini" => config.llm.gemini.as_ref().map(|c| c.model.as_str()),
             "ollama" => config.llm.ollama.as_ref().map(|c| c.model.as_str()),
             _ => None,
-        }
+        };
+        tracing::debug!(
+            provider = provider,
+            model = ?model,
+            has_openai_config = config.llm.openai.is_some(),
+            "[extract_model_id] Extracted model ID from config"
+        );
+        model
     }
 
     /// Get a reference to the capabilities cache for learning model limits.
@@ -1532,6 +1539,7 @@ Respond ONLY with the JSON array, no additional text."#,
         // 3.1+3.2. Enrich context with memory bank and enabled knowledge items.
         self.enrich_resolved_context(
             &mut resolved_context,
+            &request,
             request.metadata.workspace_dir.as_deref(),
             &request.input,
             &request.metadata,
@@ -1579,6 +1587,7 @@ Respond ONLY with the JSON array, no additional text."#,
             });
             self.enrich_resolved_context(
                 &mut resolved_context,
+                &request,
                 request.metadata.workspace_dir.as_deref(),
                 &request.input,
                 &request.metadata,
@@ -1652,16 +1661,19 @@ Respond ONLY with the JSON array, no additional text."#,
                 "Agent request seeded requires_build_and_test=true from requirement-detection input"
             );
         }
-        let mut response = self
+
+        // Execute with context overflow recovery: if we get a ContextOverflow error,
+        // learn the actual model limit, force compaction, and retry once.
+        let mut response = match self
             .execute_agentic_loop_streaming(
-                prompt,
+                prompt.clone(),
                 requires_build_and_test,
                 requires_mutating_file_tool_success,
-                relevant_tools,
+                relevant_tools.clone(),
                 include_mcp_tool_schemas,
-                resolved_context,
-                tx,
-                cancel_token,
+                resolved_context.clone(),
+                tx.clone(),
+                cancel_token.clone(),
                 workspace.as_ref(),
                 request.metadata.session_id.clone(),
                 request.metadata.task_id.clone(),
@@ -1675,7 +1687,98 @@ Respond ONLY with the JSON array, no additional text."#,
                 tools = relevant_tool_count,
                 max_iterations = ?effective_max_iterations
             ))
-            .await?;
+            .await
+        {
+            Ok(resp) => resp,
+            Err(AppError::ContextOverflow(ref error_msg)) => {
+                // Learn the actual limit from the error message
+                let provider = self.config.llm.primary.as_str();
+                let model_id = Self::extract_model_id(&self.config, provider)
+                    .unwrap_or("unknown");
+
+                if let Some(learned_caps) = self.capabilities_cache.learn_from_error(
+                    provider,
+                    model_id,
+                    error_msg,
+                ) {
+                    tracing::info!(
+                        provider = provider,
+                        model = model_id,
+                        learned_context_length = learned_caps.context_length,
+                        "Learned model context limit from overflow error"
+                    );
+                }
+
+                // Notify user about recovery attempt
+                let _ = tx.send(StreamChunk::Status {
+                    message: format!(
+                        "Context overflow detected. Compacting conversation history and retrying..."
+                    ),
+                }).await;
+
+                // Force aggressive compaction on the history
+                let compacted_history = self.force_context_compaction(
+                    &request.history,
+                    &request.metadata,
+                ).await;
+
+                // Re-resolve context with compacted history
+                let mut compacted_request = request.clone();
+                compacted_request.history = compacted_history;
+
+                let compacted_analysis = self.analyzer.analyze(&compacted_request.input);
+                let mut compacted_context = self.context_manager.resolve_context(
+                    &compacted_request.input,
+                    &compacted_analysis,
+                    &compacted_request.history,
+                    compacted_request.metadata.workspace_dir.as_deref(),
+                );
+                self.enrich_resolved_context(
+                    &mut compacted_context,
+                    &compacted_request,
+                    compacted_request.metadata.workspace_dir.as_deref(),
+                    &compacted_request.input,
+                    &compacted_request.metadata,
+                ).await;
+
+                // Rebuild prompt with compacted context
+                let (compacted_prompt, _) = self.truncate_prompt_if_needed(
+                    &compacted_request,
+                    &mut compacted_context,
+                );
+
+                // Retry with compacted context
+                tracing::info!(
+                    original_history_len = request.history.len(),
+                    compacted_history_len = compacted_request.history.len(),
+                    "Retrying agent loop with compacted context"
+                );
+
+                self.execute_agentic_loop_streaming(
+                    compacted_prompt,
+                    requires_build_and_test,
+                    requires_mutating_file_tool_success,
+                    relevant_tools,
+                    include_mcp_tool_schemas,
+                    compacted_context,
+                    tx,
+                    cancel_token,
+                    workspace.as_ref(),
+                    compacted_request.metadata.session_id.clone(),
+                    compacted_request.metadata.task_id.clone(),
+                    effective_max_iterations,
+                    compacted_request.metadata.permission_level,
+                    &telemetry,
+                )
+                .instrument(tracing::info_span!(
+                    "agent.pipeline.execute_agent_loop",
+                    mode = "streaming_retry_after_compaction",
+                    tools = relevant_tool_count,
+                ))
+                .await?
+            }
+            Err(e) => return Err(e),
+        };
 
         response.truncated = truncated;
 
@@ -2281,6 +2384,7 @@ Respond ONLY with the JSON array, no additional text."#,
         // 3.1+3.2. Enrich context with memory bank and enabled knowledge items.
         self.enrich_resolved_context(
             &mut resolved_context,
+            &request,
             request.metadata.workspace_dir.as_deref(),
             &request.input,
             &request.metadata,
@@ -2353,6 +2457,7 @@ Respond ONLY with the JSON array, no additional text."#,
             });
             self.enrich_resolved_context(
                 &mut resolved_context,
+                &request,
                 request.metadata.workspace_dir.as_deref(),
                 &request.input,
                 &request.metadata,
@@ -2829,6 +2934,7 @@ Respond ONLY with the JSON array, no additional text."#,
     async fn enrich_resolved_context(
         &self,
         resolved_context: &mut crate::context::ResolvedContext,
+        request: &AgentRequest,
         workspace_dir: Option<&std::path::Path>,
         query: &str,
         metadata: &RequestMetadata,
@@ -2890,13 +2996,24 @@ Respond ONLY with the JSON array, no additional text."#,
 
         // 3.3 Knowledge items — only available when the pipeline was wired with
         //     `with_knowledge()` *and* the session has items enabled.
-        if let Some(knowledge_context) = self.load_enabled_knowledge(metadata.session_id.as_deref())
-        {
+        let knowledge_budget_tokens =
+            self.remaining_knowledge_budget_tokens(request, resolved_context);
+        if let Some(knowledge_context) = self.load_enabled_knowledge(
+            metadata.session_id.as_deref(),
+            query,
+            knowledge_budget_tokens,
+        ) {
             tracing::debug!(
                 knowledge_context_len = knowledge_context.len(),
+                knowledge_budget_tokens = knowledge_budget_tokens,
                 "Added enabled knowledge to request"
             );
             resolved_context.knowledge.push(knowledge_context);
+        } else {
+            tracing::debug!(
+                knowledge_budget_tokens = knowledge_budget_tokens,
+                "No enabled knowledge added after applying prompt budget"
+            );
         }
     }
 }

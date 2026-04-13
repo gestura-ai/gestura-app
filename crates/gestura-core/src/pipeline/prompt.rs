@@ -1,10 +1,106 @@
 use super::*;
 
 impl AgentPipeline {
+    const KNOWLEDGE_BUDGET_MIN_HEADROOM_TOKENS: usize = 64;
+    const KNOWLEDGE_BUDGET_MAX_HEADROOM_TOKENS: usize = 256;
+    const SMALL_CONTEXT_INPUT_TOKENS: usize = 2_048;
+
+    fn max_input_tokens(&self) -> usize {
+        self.pipeline_config
+            .max_context_tokens
+            .saturating_sub(self.pipeline_config.max_output_tokens)
+    }
+
+    fn use_compact_prompt_sections(&self) -> bool {
+        self.max_input_tokens() <= Self::SMALL_CONTEXT_INPUT_TOKENS
+    }
+
+    fn tool_discipline_text(&self) -> &'static str {
+        if self.use_compact_prompt_sections() {
+            "Tool usage discipline:\n- For `task_create`, send `name` (and preferably `description`); do not send `task_id`.\n- For `task_update`, send the exact `task_id` and at least one of `name` or `description`.\n- For `task_update_status`, always send both `task_id` and explicit `status`.\n- Prefer `edit_file` for targeted edits to existing files and `read_file` for one exact file. Use `write_file` only for full-file replacement content.\n- `code.batch_edit` must include an `edits` array, and each edit needs `path`, `old_str`, and `new_str`.\n- For long-running install/build/test commands, set an appropriate `timeout_secs` (and `allow_long_running=true` when needed).\n- Do not manually scaffold projects with ad-hoc shell file creation when an official scaffold/init command exists.\n\n"
+        } else {
+            "Tool usage discipline:\n- For `task_create`, provide `name` (and preferably `description`); do not send `task_id` because the runtime assigns it.\n- For `task_update`, provide `task_id` plus at least one of `name` or `description`; do not use it when the only intended change is state.\n- For `task_update_status`, always include both `task_id` and `status`; do not omit `status` and expect the runtime to infer it.\n- Use `read_file` to read one exact file. After reading an existing file, prefer `edit_file` for targeted changes. Use `write_file` only when you provide the full replacement `content`. Reserve the generic `file` tool for list/tree/search-style inspection.\n- `code.batch_edit` requires `edits`, and `edits` must be an array even for a single change. Each entry needs `path`, `old_str`, and `new_str`.\n- For install/build/test/scaffold shell commands, include non-interactive flags when needed and set a generous `timeout_secs` (for example 300). When the command is expected to run long but should keep going while showing shell activity, set `allow_long_running=true` and optionally `stall_timeout_secs`. Do not wrap commands with shell `timeout`; use the tool's own timeout fields instead.\n- Do not manually synthesize a project scaffold with shell heredocs, bulk `mkdir`/`touch` scripts, or ad-hoc file creation when an official scaffold or init tool is still the right tool. If a scaffold tool is non-interactive-sensitive, inspect `--help` and then use one documented non-interactive scaffold/init command.\nCanonical JSON tool call shapes:\n- `task_create`: {\"name\":\"Apply requested project changes\",\"description\":\"Inspect the relevant files, implement the request, and run the appropriate verification\"}\n- `task_update`: {\"task_id\":\"abc123\",\"description\":\"Rename or clarify the task text\"}\n- `task_update_status`: {\"task_id\":\"abc123\",\"status\":\"inprogress\"}\n- `read_file`: {\"path\":\"README.md\"}\n- `write_file`: {\"path\":\"README.md\",\"content\":\"# Project notes\\n\"}\n- `edit_file`: {\"path\":\"app/main.py\",\"old\":\"print(\\\"Hello\\\")\",\"new\":\"print(\\\"Hello, world!\\\")\"}\n- `code.batch_edit`: {\"operation\":\"batch_edit\",\"edits\":[{\"path\":\"src/lib.rs\",\"old_str\":\"fn greet() {}\",\"new_str\":\"fn greet() { println!(\\\"hello\\\"); }\"}]}\n\n"
+        }
+    }
+
+    fn memory_prompt_limits(&self) -> (usize, usize) {
+        if self.use_compact_prompt_sections() {
+            (2, 700)
+        } else {
+            (4, 2_400)
+        }
+    }
+
+    fn compact_section_to_chars(section: &str, max_chars: usize, omitted_label: &str) -> String {
+        if section.chars().count() <= max_chars {
+            return section.to_string();
+        }
+
+        if omitted_label.chars().count() >= max_chars {
+            return omitted_label.chars().take(max_chars).collect();
+        }
+
+        let available = max_chars.saturating_sub(omitted_label.chars().count() + 1);
+        let mut compacted = section.chars().take(available).collect::<String>();
+        compacted.truncate(compacted.trim_end().len());
+        compacted.push('\n');
+        compacted.push_str(omitted_label);
+        compacted
+    }
+
+    fn tracked_task_context_char_limit(&self) -> Option<usize> {
+        self.use_compact_prompt_sections().then_some(420)
+    }
+
     fn append_tool_discipline(&self, prompt: &mut String) {
-        prompt.push_str(
-            "Tool usage discipline:\n- For `task_create`, provide `name` (and preferably `description`); do not send `task_id` because the runtime assigns it.\n- For `task_update`, provide `task_id` plus at least one of `name` or `description`; do not use it when the only intended change is state.\n- For `task_update_status`, always include both `task_id` and `status`; do not omit `status` and expect the runtime to infer it.\n- Use `read_file` to read one exact file. After reading an existing file, prefer `edit_file` for targeted changes. Use `write_file` only when you provide the full replacement `content`. Reserve the generic `file` tool for list/tree/search-style inspection.\n- `code.batch_edit` requires `edits`, and `edits` must be an array even for a single change. Each entry needs `path`, `old_str`, and `new_str`.\n- For install/build/test/scaffold shell commands, include non-interactive flags when needed and set a generous `timeout_secs` (for example 300). When the command is expected to run long but should keep going while showing shell activity, set `allow_long_running=true` and optionally `stall_timeout_secs`. Do not wrap commands with shell `timeout`; use the tool's own timeout fields instead.\n- Do not manually synthesize a project scaffold with shell heredocs, bulk `mkdir`/`touch` scripts, or ad-hoc file creation when an official scaffold or init tool is still the right tool. If a scaffold tool is non-interactive-sensitive, inspect `--help` and then use one documented non-interactive scaffold/init command.\nCanonical JSON tool call shapes:\n- `task_create`: {\"name\":\"Apply requested project changes\",\"description\":\"Inspect the relevant files, implement the request, and run the appropriate verification\"}\n- `task_update`: {\"task_id\":\"abc123\",\"description\":\"Rename or clarify the task text\"}\n- `task_update_status`: {\"task_id\":\"abc123\",\"status\":\"inprogress\"}\n- `read_file`: {\"path\":\"README.md\"}\n- `write_file`: {\"path\":\"README.md\",\"content\":\"# Project notes\\n\"}\n- `edit_file`: {\"path\":\"app/main.py\",\"old\":\"print(\\\"Hello\\\")\",\"new\":\"print(\\\"Hello, world!\\\")\"}\n- `code.batch_edit`: {\"operation\":\"batch_edit\",\"edits\":[{\"path\":\"src/lib.rs\",\"old_str\":\"fn greet() {}\",\"new_str\":\"fn greet() { println!(\\\"hello\\\"); }\"}]}\n\n",
+        prompt.push_str(self.tool_discipline_text());
+    }
+
+    pub(super) fn remaining_knowledge_budget_tokens(
+        &self,
+        request: &AgentRequest,
+        context: &crate::context::ResolvedContext,
+    ) -> usize {
+        let max_input = self.max_input_tokens();
+        let reserve = (max_input / 20).clamp(
+            Self::KNOWLEDGE_BUDGET_MIN_HEADROOM_TOKENS,
+            Self::KNOWLEDGE_BUDGET_MAX_HEADROOM_TOKENS,
         );
+        let baseline_prompt = self.build_prompt(request, context);
+        let baseline_tokens = Self::estimate_tokens(&baseline_prompt);
+
+        max_input.saturating_sub(baseline_tokens.saturating_add(reserve))
+    }
+
+    fn format_knowledge_item_section(item: &crate::knowledge::KnowledgeItem) -> String {
+        format!(
+            "### {}\n\n**Category**: {}\n\n{}\n\n---\n\n",
+            item.name, item.category, item.core_content
+        )
+    }
+
+    fn format_knowledge_omission_note(
+        omitted_names: &[String],
+        omitted_count: usize,
+        remaining_budget_tokens: usize,
+    ) -> String {
+        let preview_names = omitted_names
+            .iter()
+            .take(3)
+            .cloned()
+            .collect::<Vec<_>>()
+            .join(", ");
+        let extra_count = omitted_count.saturating_sub(omitted_names.len().min(3));
+        let extra_suffix = if extra_count > 0 {
+            format!(" (+{extra_count} more)")
+        } else {
+            String::new()
+        };
+
+        format!(
+            "_Additional enabled knowledge omitted to fit the remaining prompt budget (~{} tokens left): {}{}._\n\n",
+            remaining_budget_tokens, preview_names, extra_suffix,
+        )
     }
 
     /// Build an optimized prompt from request and context
@@ -43,17 +139,16 @@ impl AgentPipeline {
         }
 
         if !context.memory_sections.is_empty() {
-            const MAX_MEMORY_SECTIONS: usize = 4;
-            const MAX_MEMORY_CHARS: usize = 2_400;
+            let (max_memory_sections, max_memory_chars) = self.memory_prompt_limits();
 
             prompt.push_str("Relevant memory:\n");
             let mut used_chars = 0usize;
-            for section in context.memory_sections.iter().take(MAX_MEMORY_SECTIONS) {
-                if used_chars >= MAX_MEMORY_CHARS {
+            for section in context.memory_sections.iter().take(max_memory_sections) {
+                if used_chars >= max_memory_chars {
                     break;
                 }
 
-                let remaining = MAX_MEMORY_CHARS.saturating_sub(used_chars);
+                let remaining = max_memory_chars.saturating_sub(used_chars);
                 let rendered = if section.chars().count() > remaining {
                     format!(
                         "{}…",
@@ -175,18 +270,87 @@ impl AgentPipeline {
 
     /// Append tracked task guidance with IDs for tool calls and names for user-visible prose.
     fn append_tracked_task_context(&self, prompt: &mut String, metadata: &RequestMetadata) {
-        let Some(section) = Self::build_tracked_task_context_with_manager(
-            crate::get_global_task_manager(),
-            metadata,
-        ) else {
+        let section_builder = if self.use_compact_prompt_sections() {
+            Self::build_compact_tracked_task_context_with_manager
+        } else {
+            Self::build_tracked_task_context_with_manager
+        };
+
+        let Some(mut section) = section_builder(crate::get_global_task_manager(), metadata) else {
             return;
         };
+
+        if let Some(max_chars) = self.tracked_task_context_char_limit() {
+            section = Self::compact_section_to_chars(
+                &section,
+                max_chars,
+                "… additional tracked task details omitted to fit the model context budget",
+            );
+        }
 
         prompt.push_str(&section);
         if !section.ends_with('\n') {
             prompt.push('\n');
         }
         prompt.push('\n');
+    }
+
+    fn build_compact_tracked_task_context_with_manager(
+        manager: &crate::TaskManager,
+        metadata: &RequestMetadata,
+    ) -> Option<String> {
+        let session_id = metadata.session_id.as_deref()?;
+        let task_id = metadata.task_id.as_deref()?;
+        let tracked_task = manager.get_task(session_id, task_id).ok().flatten()?;
+        let tracked_root =
+            Self::resolve_tracked_task_root_with_manager(manager, session_id, &tracked_task);
+
+        let mut section = String::from("Tracked task context:\n");
+        section.push_str(
+            "Use exact task IDs in task tool calls. In user-facing text, use task names instead of raw IDs.\n",
+        );
+
+        if tracked_root.id == tracked_task.id {
+            section.push_str(&format!(
+                "Tracked root: {} (ID: {}, Status: {:?}).\n",
+                tracked_root.name, tracked_root.id, tracked_root.status
+            ));
+        } else {
+            section.push_str(&format!(
+                "Current task: {} (ID: {}, Status: {:?}).\nTracked root: {} (ID: {}, Status: {:?}).\n",
+                tracked_task.name,
+                tracked_task.id,
+                tracked_task.status,
+                tracked_root.name,
+                tracked_root.id,
+                tracked_root.status,
+            ));
+        }
+
+        if let Some(node) = manager
+            .get_task_tree(session_id)
+            .ok()
+            .and_then(|nodes| Self::find_task_tree_node(&nodes, &tracked_root.id).cloned())
+        {
+            let mut listed = 0usize;
+            for child in node.children.iter().take(3) {
+                if listed == 0 {
+                    section.push_str("Top subtasks:\n");
+                }
+                section.push_str(&format!(
+                    "- {} (ID: {}, Status: {:?})\n",
+                    child.task.name, child.task.id, child.task.status
+                ));
+                listed += 1;
+            }
+
+            if node.children.len() > listed {
+                section
+                    .push_str("- … additional subtasks omitted to fit the model context budget\n");
+            }
+        }
+
+        Some(section)
     }
 
     fn build_tracked_task_context_with_manager(
@@ -477,13 +641,26 @@ impl AgentPipeline {
         }
     }
 
-    /// Load enabled knowledge items for the session and format them as context
-    /// Returns additional context string to include in the prompt
-    pub(super) fn load_enabled_knowledge(&self, session_id: Option<&str>) -> Option<String> {
+    /// Load enabled knowledge items for the session, ranking them by relevance and
+    /// fitting only the subset that can be included within the remaining prompt budget.
+    pub(super) fn load_enabled_knowledge(
+        &self,
+        session_id: Option<&str>,
+        query: &str,
+        remaining_budget_tokens: usize,
+    ) -> Option<String> {
         // Check if knowledge system is configured
         let store = self.knowledge_store?;
         let settings = self.knowledge_settings?;
         let session_id = session_id?;
+
+        if remaining_budget_tokens == 0 {
+            tracing::info!(
+                session_id = session_id,
+                "Skipping enabled knowledge because no prompt budget remains"
+            );
+            return None;
+        }
 
         // Get enabled knowledge IDs for this session
         let enabled_ids = match settings.get_enabled_knowledge(session_id) {
@@ -501,40 +678,138 @@ impl AgentPipeline {
         tracing::info!(
             session_id = session_id,
             enabled_count = enabled_ids.len(),
+            remaining_budget_tokens = remaining_budget_tokens,
             "Loading enabled knowledge items"
         );
 
-        // Build context from enabled knowledge items
-        let mut context = String::from("## Specialized Knowledge\n\n");
-        context.push_str("The following specialized knowledge is available for this session:\n\n");
-        let mut added_any = false;
+        let enabled_lookup = enabled_ids
+            .iter()
+            .cloned()
+            .collect::<std::collections::HashSet<_>>();
+        let mut ranked_items = Vec::new();
+        let mut seen_ids = std::collections::HashSet::new();
 
-        for knowledge_id in enabled_ids {
-            if let Some(item) = store.get(&knowledge_id) {
-                added_any = true;
-                context.push_str(&format!("### {}\n\n", item.name));
-
-                // Add category
-                context.push_str(&format!("**Category**: {}\n\n", item.category));
-
-                // Add core content
-                context.push_str(&item.core_content);
-                context.push_str("\n\n---\n\n");
-
-                tracing::debug!(
-                    knowledge_id = %knowledge_id,
-                    content_len = item.core_content.len(),
-                    "Added knowledge item to context"
-                );
-            } else {
-                tracing::warn!(
-                    knowledge_id = %knowledge_id,
-                    "Enabled knowledge item not found in store"
-                );
+        for matched in store.find(&crate::knowledge::KnowledgeQuery {
+            query: query.to_string(),
+            categories: None,
+            limit: Some(enabled_lookup.len()),
+            min_score: Some(0.0),
+        }) {
+            if enabled_lookup.contains(&matched.item.id) && seen_ids.insert(matched.item.id.clone())
+            {
+                ranked_items.push((matched.item, Some(matched.score)));
             }
         }
 
-        added_any.then_some(context)
+        let mut unmatched_enabled = enabled_ids
+            .iter()
+            .filter(|id| !seen_ids.contains(*id))
+            .filter_map(|knowledge_id| {
+                let item = store.get(knowledge_id)?;
+                Some((item, None))
+            })
+            .collect::<Vec<_>>();
+        unmatched_enabled.sort_by(|(left, _), (right, _)| {
+            right
+                .priority
+                .cmp(&left.priority)
+                .then_with(|| left.name.cmp(&right.name))
+        });
+        ranked_items.extend(unmatched_enabled);
+
+        let header = String::from(
+            "## Specialized Knowledge\n\nThe following specialized knowledge was selected for this session based on relevance and available prompt budget:\n\n",
+        );
+        let header_tokens = Self::estimate_tokens(&header);
+        if header_tokens > remaining_budget_tokens {
+            tracing::info!(
+                session_id = session_id,
+                remaining_budget_tokens = remaining_budget_tokens,
+                header_tokens = header_tokens,
+                "Skipping enabled knowledge because header alone exceeds remaining budget"
+            );
+            return None;
+        }
+
+        let mut context = header;
+        let mut used_tokens = header_tokens;
+        let mut included_names = Vec::new();
+        let mut omitted_names = Vec::new();
+
+        for (item, match_score) in ranked_items {
+            let section = Self::format_knowledge_item_section(&item);
+            let section_tokens = Self::estimate_tokens(&section);
+            if used_tokens.saturating_add(section_tokens) > remaining_budget_tokens {
+                omitted_names.push(item.name.clone());
+                tracing::debug!(
+                    knowledge_id = %item.id,
+                    knowledge_name = %item.name,
+                    section_tokens = section_tokens,
+                    used_tokens = used_tokens,
+                    remaining_budget_tokens = remaining_budget_tokens,
+                    match_score = match_score.unwrap_or(0.0),
+                    "Skipped enabled knowledge item due to prompt budget"
+                );
+                continue;
+            }
+
+            context.push_str(&section);
+            used_tokens += section_tokens;
+            included_names.push(item.name.clone());
+
+            tracing::debug!(
+                knowledge_id = %item.id,
+                knowledge_name = %item.name,
+                content_len = item.core_content.len(),
+                used_tokens = used_tokens,
+                remaining_budget_tokens = remaining_budget_tokens,
+                match_score = match_score.unwrap_or(0.0),
+                "Added knowledge item to context"
+            );
+        }
+
+        if included_names.is_empty() {
+            let note = Self::format_knowledge_omission_note(
+                &omitted_names,
+                omitted_names.len(),
+                remaining_budget_tokens,
+            );
+            if Self::estimate_tokens(&context) + Self::estimate_tokens(&note)
+                <= remaining_budget_tokens
+            {
+                context.push_str(&note);
+                tracing::info!(
+                    session_id = session_id,
+                    omitted_count = omitted_names.len(),
+                    remaining_budget_tokens = remaining_budget_tokens,
+                    "Knowledge budget only allowed an omission note"
+                );
+                return Some(context);
+            }
+            return None;
+        }
+
+        if !omitted_names.is_empty() {
+            let note = Self::format_knowledge_omission_note(
+                &omitted_names,
+                omitted_names.len(),
+                remaining_budget_tokens.saturating_sub(used_tokens),
+            );
+            if used_tokens.saturating_add(Self::estimate_tokens(&note)) <= remaining_budget_tokens {
+                context.push_str(&note);
+            }
+        }
+
+        tracing::info!(
+            session_id = session_id,
+            included_count = included_names.len(),
+            omitted_count = omitted_names.len(),
+            used_tokens = used_tokens,
+            remaining_budget_tokens = remaining_budget_tokens,
+            "Selected enabled knowledge within prompt budget"
+        );
+
+        Some(context)
     }
 }
 
@@ -568,6 +843,58 @@ mod tests {
         assert!(prompt.contains("Do not manually synthesize a project scaffold"));
         assert!(prompt.contains("Canonical JSON tool call shapes:"));
         assert!(prompt.contains("\"operation\":\"batch_edit\""));
+    }
+
+    #[test]
+    fn build_prompt_uses_compact_tool_discipline_for_small_context_models() {
+        let pipeline = AgentPipeline::with_config(
+            AppConfig::default(),
+            PipelineConfig {
+                max_context_tokens: 4096,
+                max_output_tokens: 2048,
+                ..Default::default()
+            },
+        );
+        let request = AgentRequest::new("Apply the requested project changes and verify them");
+        let context = crate::context::ResolvedContext::default();
+
+        let prompt = pipeline.build_prompt(&request, &context);
+
+        assert!(prompt.contains("Tool usage discipline:"));
+        assert!(prompt.contains("do not send `task_id`"));
+        assert!(!prompt.contains("Canonical JSON tool call shapes:"));
+        assert!(!prompt.contains("\"operation\":\"batch_edit\""));
+    }
+
+    #[test]
+    fn build_prompt_scales_memory_budget_for_small_context_models() {
+        let default_pipeline = AgentPipeline::new(AppConfig::default());
+        let pipeline = AgentPipeline::with_config(
+            AppConfig::default(),
+            PipelineConfig {
+                max_context_tokens: 4096,
+                max_output_tokens: 2048,
+                ..Default::default()
+            },
+        );
+        let request = AgentRequest::new("continue the implementation");
+
+        let context = crate::context::ResolvedContext {
+            memory_sections: vec![
+                "### Session Working Memory\n".to_string() + &"A".repeat(900),
+                "### Long-Term Memory\n".to_string() + &"B".repeat(900),
+                "### Shared Coordination Memory\n".to_string() + &"C".repeat(900),
+            ],
+            ..Default::default()
+        };
+
+        let full_prompt = default_pipeline.build_prompt(&request, &context);
+        let prompt = pipeline.build_prompt(&request, &context);
+
+        assert!(prompt.contains("Relevant memory:"));
+        assert!(prompt.contains("### Session Working Memory"));
+        assert!(!prompt.contains("### Shared Coordination Memory"));
+        assert!(prompt.chars().count() < full_prompt.chars().count());
     }
 
     #[test]
@@ -677,5 +1004,19 @@ mod tests {
         ));
         assert!(section.contains("Carry out the requested work"));
         assert!(section.contains(sibling.id.as_str()));
+    }
+
+    #[test]
+    fn compact_section_to_chars_appends_omission_note() {
+        let section = "Tracked task context:\n".to_string() + &"x".repeat(200);
+        let compacted = AgentPipeline::compact_section_to_chars(
+            &section,
+            120,
+            "… additional tracked task details omitted to fit the model context budget",
+        );
+
+        assert!(compacted.contains("Tracked task context:"));
+        assert!(compacted.contains("omitted to fit the model context budget"));
+        assert!(compacted.chars().count() <= 120);
     }
 }

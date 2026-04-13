@@ -300,7 +300,7 @@ async fn execute_pipeline_contract(
     if let Some(workspace) = plan.workspace.clone() {
         request = request.with_workspace(workspace);
     }
-    AgentPipeline::new(config)
+    AgentPipeline::with_provider_optimized_config(config)
         .process_blocking(request)
         .await
         .map(|response| response.content)

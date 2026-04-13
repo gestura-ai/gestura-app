@@ -539,6 +539,56 @@ impl AgentPipeline {
             // Rebuild prompt with truncated context
             prompt = self.build_prompt(request, context);
 
+            // Strategy 2: Shrink memory sections and summaries when prompt boilerplate,
+            // working memory, or tracked context are the primary source of overage.
+            if matches!(
+                self.check_token_limit(&prompt),
+                TokenLimitStatus::Exceeded { .. }
+            ) {
+                if !context.memory_sections.is_empty() {
+                    for section in context.memory_sections.iter_mut() {
+                        let section_chars = section.chars().count();
+                        if section_chars > 320 {
+                            let truncated_section = section.chars().take(300).collect::<String>();
+                            *section = format!(
+                                "{}\n… memory compacted to fit the model context budget",
+                                truncated_section.trim_end()
+                            );
+                        }
+                    }
+
+                    prompt = self.build_prompt(request, context);
+
+                    while context.memory_sections.len() > 1
+                        && matches!(
+                            self.check_token_limit(&prompt),
+                            TokenLimitStatus::Exceeded { .. }
+                        )
+                    {
+                        context.memory_sections.pop();
+                        prompt = self.build_prompt(request, context);
+                    }
+                }
+
+                if matches!(
+                    self.check_token_limit(&prompt),
+                    TokenLimitStatus::Exceeded { .. }
+                ) && context.history_summary.is_some()
+                {
+                    context.history_summary = None;
+                    prompt = self.build_prompt(request, context);
+                }
+
+                if matches!(
+                    self.check_token_limit(&prompt),
+                    TokenLimitStatus::Exceeded { .. }
+                ) && !context.knowledge.is_empty()
+                {
+                    context.knowledge.clear();
+                    prompt = self.build_prompt(request, context);
+                }
+            }
+
             // Log token usage after optimization
             let final_tokens = Self::estimate_tokens(&prompt);
             if self.pipeline_config.log_token_usage {
@@ -564,5 +614,75 @@ impl AgentPipeline {
         }
 
         (prompt, truncated)
+    }
+
+    /// Force aggressive context compaction after a ContextOverflow error.
+    ///
+    /// This is called when the LLM API returns a context_length_exceeded error,
+    /// indicating that our pre-flight estimates were wrong. We aggressively
+    /// compact the history and retry.
+    pub(super) async fn force_context_compaction(
+        &self,
+        history: &[gestura_core_pipeline::Message],
+        metadata: &RequestMetadata,
+    ) -> Vec<gestura_core_pipeline::Message> {
+        use gestura_core_pipeline::Message;
+
+        let messages_before = history.len();
+
+        if messages_before == 0 {
+            tracing::warn!("Cannot compact empty history");
+            return Vec::new();
+        }
+
+        // Calculate how much to remove - aim to get well under the limit
+        // Remove at least 50% of messages, keeping only the most recent ones
+        let keep_count = std::cmp::max(2, messages_before / 3); // Keep ~33%
+        let remove_count = messages_before.saturating_sub(keep_count);
+
+        tracing::info!(
+            messages_before = messages_before,
+            messages_to_remove = remove_count,
+            messages_to_keep = keep_count,
+            strategy = "aggressive_truncation",
+            "Force-compacting context after overflow error"
+        );
+
+        // Estimate tokens being removed for logging
+        let removed_content: String = history
+            .iter()
+            .take(remove_count)
+            .map(|m| m.content.as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
+        let tokens_saved_estimate = Self::estimate_tokens(&removed_content);
+
+        // Create a summary message to prepend
+        let summary_content = format!(
+            "[Context compacted: {} earlier messages removed to fit model limit. \
+            Approximately {} tokens freed.]",
+            remove_count, tokens_saved_estimate
+        );
+        let summary_message = Message {
+            role: "system".to_string(),
+            content: summary_content,
+            tool_call_id: None,
+            thinking: None,
+        };
+
+        // Keep the most recent messages and prepend the summary
+        let mut compacted: Vec<Message> = Vec::with_capacity(keep_count + 1);
+        compacted.push(summary_message);
+        compacted.extend(history.iter().skip(remove_count).cloned());
+
+        tracing::info!(
+            messages_before = messages_before,
+            messages_after = compacted.len(),
+            tokens_saved_estimate = tokens_saved_estimate,
+            session_id = ?metadata.session_id,
+            "Force-compaction complete"
+        );
+
+        compacted
     }
 }

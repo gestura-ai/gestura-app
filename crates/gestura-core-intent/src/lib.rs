@@ -187,8 +187,18 @@ fn extract_primary_action(text: &str) -> String {
 
 /// Filler words commonly produced by STT engines that carry no semantic value.
 const VOICE_FILLER_WORDS: &[&str] = &[
-    "um", "uh", "er", "ah", "like", "you know", "so basically", "basically",
-    "I mean", "well", "okay so", "right so",
+    "um",
+    "uh",
+    "er",
+    "ah",
+    "like",
+    "you know",
+    "so basically",
+    "basically",
+    "I mean",
+    "well",
+    "okay so",
+    "right so",
 ];
 
 fn strip_fillers(text: &str) -> String {
@@ -331,16 +341,10 @@ fn normalize_gesture(raw: RawInput) -> Intent {
 
     if let Some(ref gesture) = raw.gesture_data {
         if let Some(accel) = gesture.acceleration {
-            parameters.insert(
-                "acceleration".to_string(),
-                serde_json::json!(accel),
-            );
+            parameters.insert("acceleration".to_string(), serde_json::json!(accel));
         }
         if let Some(gyro) = gesture.gyroscope {
-            parameters.insert(
-                "gyroscope".to_string(),
-                serde_json::json!(gyro),
-            );
+            parameters.insert("gyroscope".to_string(), serde_json::json!(gyro));
         }
     }
 
@@ -406,7 +410,11 @@ mod tests {
             "Filler 'um' should be stripped"
         );
         assert!(intent.confidence > 0.0 && intent.confidence <= 1.0);
-        assert!(intent.context_hints.contains(&"source:voice_transcript".to_string()));
+        assert!(
+            intent
+                .context_hints
+                .contains(&"source:voice_transcript".to_string())
+        );
         assert!(intent.raw_source.contains("Um")); // raw preserved
     }
 
@@ -431,7 +439,11 @@ mod tests {
             (intent.confidence - 0.95).abs() < f32::EPSILON,
             "Chat confidence should be 0.95"
         );
-        assert!(intent.context_hints.contains(&"source:chat_text".to_string()));
+        assert!(
+            intent
+                .context_hints
+                .contains(&"source:chat_text".to_string())
+        );
     }
 
     #[test]
@@ -455,7 +467,11 @@ mod tests {
         assert!(intent.confidence > 0.8);
         assert!(intent.parameters.contains_key("gesture_type"));
         assert!(intent.parameters.contains_key("acceleration"));
-        assert!(intent.context_hints.contains(&"source:gesture_ring".to_string()));
+        assert!(
+            intent
+                .context_hints
+                .contains(&"source:gesture_ring".to_string())
+        );
     }
 
     #[test]
@@ -488,7 +504,11 @@ mod tests {
         let intent = normalize_input_to_intent(raw);
         assert_eq!(intent.primary_action, "unknown_gesture");
         assert!(intent.confidence < 0.6);
-        assert!(intent.context_hints.contains(&"unmapped_gesture".to_string()));
+        assert!(
+            intent
+                .context_hints
+                .contains(&"unmapped_gesture".to_string())
+        );
     }
 
     #[test]

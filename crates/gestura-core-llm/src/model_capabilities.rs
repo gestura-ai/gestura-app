@@ -374,7 +374,8 @@ fn get_anthropic_capabilities(model_lower: &str, model_id: &str) -> ModelCapabil
         || model_lower.contains("claude-sonnet-4")
         || model_lower.contains("claude-opus-4")
     {
-        return ModelCapabilities::new("anthropic", model_id, 200_000, 8_192, src).with_vision(true);
+        return ModelCapabilities::new("anthropic", model_id, 200_000, 8_192, src)
+            .with_vision(true);
     }
 
     // Claude 2.x (100K context)
@@ -567,9 +568,12 @@ mod tests {
 
     #[test]
     fn test_capability_source_reliability() {
-        let api_caps = ModelCapabilities::new("test", "test", 1000, 100, CapabilitySource::ApiDiscovery);
-        let error_caps = ModelCapabilities::new("test", "test", 1000, 100, CapabilitySource::ErrorLearned);
-        let static_caps = ModelCapabilities::new("test", "test", 1000, 100, CapabilitySource::StaticFallback);
+        let api_caps =
+            ModelCapabilities::new("test", "test", 1000, 100, CapabilitySource::ApiDiscovery);
+        let error_caps =
+            ModelCapabilities::new("test", "test", 1000, 100, CapabilitySource::ErrorLearned);
+        let static_caps =
+            ModelCapabilities::new("test", "test", 1000, 100, CapabilitySource::StaticFallback);
 
         assert!(api_caps.is_reliable());
         assert!(!error_caps.is_reliable()); // Learned is useful but not "reliable"
