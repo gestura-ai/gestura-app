@@ -1,0 +1,12 @@
+[package]
+name = "gestura-core-ble"
+version = "0.10.0"
+edition = "2024"
+license = "LicenseRef-Gestura-Prosperity-1.0"
+
+[dependencies]
+tokio = { workspace = true }
+tracing = { workspace = true }
+btleplug = "0.11"
+uuid = "1.0"
+futures = { workspace = true }

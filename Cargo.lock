@@ -2955,6 +2955,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "gestura-core-ble"
+version = "0.10.0"
+dependencies = [
+ "btleplug 0.11.8",
+ "futures",
+ "tokio",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
 name = "gestura-core-config"
 version = "0.10.0"
 dependencies = [
@@ -2982,6 +2993,13 @@ dependencies = [
  "serde",
  "serde_json",
  "tracing",
+]
+
+[[package]]
+name = "gestura-core-devices"
+version = "0.10.0"
+dependencies = [
+ "serde",
 ]
 
 [[package]]
@@ -3176,6 +3194,8 @@ dependencies = [
  "async-trait",
  "btleplug 0.11.8",
  "futures",
+ "gestura-core-ble",
+ "gestura-core-devices",
  "gestura-core-gestures",
  "gestura-core-haptics",
  "serde",

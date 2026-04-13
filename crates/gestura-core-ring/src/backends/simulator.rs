@@ -1,10 +1,8 @@
-use crate::{RingBackend, RingStatus};
+use crate::{RingBackend, DeviceStatus};
 use gestura_core_gestures::Gesture;
 use async_trait::async_trait;
-use btleplug::api::{
-    Central, Characteristic, Manager as _, Peripheral as _, ScanFilter, CharPropFlags,
-};
-use btleplug::platform::{Adapter, Manager, Peripheral};
+use btleplug::api::{Characteristic, Peripheral as _, CharPropFlags};
+use btleplug::platform::{Adapter, Peripheral};
 use futures::stream::StreamExt;
 use gestura_core_haptics::HapticPattern;
 use serde::{Deserialize, Serialize};
@@ -87,47 +85,14 @@ impl SimulatorBackend {
     }
 
     async fn find_simulator(&self) -> Result<Peripheral, String> {
-        let manager = Manager::new()
-            .await
-            .map_err(|e| format!("Failed to initialize BLE Manager: {}", e))?;
+        let (adapter, peripheral) = gestura_core_ble::scanner::find_device_by_service_uuid(
+            SIMULATOR_SERVICE_UUID,
+            10,
+            std::time::Duration::from_millis(500)
+        ).await?;
         
-        let adapters = manager
-            .adapters()
-            .await
-            .map_err(|e| format!("Failed to get BLE adapters: {}", e))?;
-            
-        let adapter = adapters
-            .into_iter()
-            .next()
-            .ok_or("No Bluetooth adapters found")?;
-
-        adapter
-            .start_scan(ScanFilter {
-                services: vec![SIMULATOR_SERVICE_UUID],
-            })
-            .await
-            .map_err(|e| format!("Failed to start scan: {}", e))?;
-
-        tracing::info!("Scanning for Simulator bounds on service UUID...");
-        
-        // Polling loop to find the peripheral
-        for _ in 0..10 {
-            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-            for p in adapter.peripherals().await.unwrap_or_default() {
-                if p.properties()
-                    .await
-                    .unwrap_or_default()
-                    .unwrap_or_default()
-                    .services
-                    .contains(&SIMULATOR_SERVICE_UUID)
-                {
-                    *self.adapter.lock().await = Some(adapter);
-                    return Ok(p);
-                }
-            }
-        }
-
-        Err("Simulator BLE peripheral not found".to_string())
+        *self.adapter.lock().await = Some(adapter);
+        Ok(peripheral)
     }
     
     /// Spawns a background task monitoring notifications from the peripheral
@@ -218,11 +183,11 @@ impl RingBackend for SimulatorBackend {
         }
     }
     
-    async fn get_status(&self) -> RingStatus {
+    async fn get_status(&self) -> DeviceStatus {
         let is_connected = self.peripheral.lock().await.is_some();
-        RingStatus {
+        DeviceStatus {
             battery: 100,
-            cpt_charging: false,
+            is_charging: false,
             connection_state: if is_connected { "simulator_ble_connected".to_string() } else { "simulator_disconnected".to_string() },
         }
     }
