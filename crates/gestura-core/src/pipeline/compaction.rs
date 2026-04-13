@@ -48,32 +48,47 @@ impl AgentPipeline {
         word_based.max(char_based).max(1)
     }
 
-    /// Check if prompt exceeds token limit and needs truncation
-    pub(super) fn check_token_limit(&self, prompt: &str) -> TokenLimitStatus {
+    /// Core token-limit check against an **explicit** `effective_max_input` budget.
+    ///
+    /// This is the implementation that all token-limit checks funnel through.
+    /// [`check_token_limit`] is a convenience wrapper that derives the budget
+    /// from `self.pipeline_config`; call this method directly when an explicit
+    /// override is needed (e.g. the context-overflow retry path).
+    fn check_token_limit_for(&self, prompt: &str, effective_max_input: usize) -> TokenLimitStatus {
         let estimated_tokens = Self::estimate_tokens(prompt);
-        let max_input = self
-            .pipeline_config
-            .max_context_tokens
-            .saturating_sub(self.pipeline_config.max_output_tokens);
 
-        if estimated_tokens > max_input {
+        if estimated_tokens > effective_max_input {
             TokenLimitStatus::Exceeded {
                 estimated: estimated_tokens,
-                limit: max_input,
-                overage: estimated_tokens - max_input,
+                limit: effective_max_input,
+                overage: estimated_tokens - effective_max_input,
             }
-        } else if estimated_tokens > (max_input * 90 / 100) {
+        } else if estimated_tokens > (effective_max_input * 90 / 100) {
             TokenLimitStatus::Warning {
                 estimated: estimated_tokens,
-                limit: max_input,
-                percentage: ((estimated_tokens * 100) / max_input.max(1)) as u8,
+                limit: effective_max_input,
+                percentage: ((estimated_tokens * 100) / effective_max_input.max(1)) as u8,
             }
         } else {
             TokenLimitStatus::Ok {
                 estimated: estimated_tokens,
-                limit: max_input,
+                limit: effective_max_input,
             }
         }
+    }
+
+    /// Check if prompt exceeds token limit and needs truncation.
+    ///
+    /// Derives the prompt budget from `self.pipeline_config`.  In the
+    /// context-overflow retry path use [`truncate_prompt_with_budget`] with
+    /// the budget learned from [`ModelCapabilitiesCache::learn_from_error`]
+    /// instead.
+    pub(super) fn check_token_limit(&self, prompt: &str) -> TokenLimitStatus {
+        let max_input = self
+            .pipeline_config
+            .max_context_tokens
+            .saturating_sub(self.pipeline_config.max_output_tokens);
+        self.check_token_limit_for(prompt, max_input)
     }
 
     /// Check if auto-compaction should be triggered based on estimated token usage
@@ -481,12 +496,44 @@ impl AgentPipeline {
         }
     }
 
-    /// Truncate prompt to fit within token limit
-    /// Strategy: Remove oldest history messages first, then truncate file content
+    /// Truncate prompt to fit within token limit.
+    ///
+    /// Derives the prompt budget from `self.pipeline_config`.
+    ///
+    /// **In the context-overflow retry path**, call [`truncate_prompt_with_budget`]
+    /// instead and pass the budget obtained from
+    /// `capabilities_cache.learn_from_error(...).max_input_tokens()`.  Using this
+    /// wrapper in the retry path means the rebuilt prompt is still evaluated
+    /// against the stale configured limit, which may be higher than the model's
+    /// real limit — causing the retry to overflow immediately again.
     pub(super) fn truncate_prompt_if_needed(
         &self,
         request: &AgentRequest,
         context: &mut crate::context::ResolvedContext,
+    ) -> (String, bool) {
+        let effective_max_input = self
+            .pipeline_config
+            .max_context_tokens
+            .saturating_sub(self.pipeline_config.max_output_tokens);
+        self.truncate_prompt_with_budget(request, context, effective_max_input)
+    }
+
+    /// Truncate prompt to fit within an **explicit** `effective_max_input` token budget.
+    ///
+    /// This is the core implementation.  Unlike [`truncate_prompt_if_needed`], it does
+    /// not derive the budget from `self.pipeline_config`, so it can be used in the
+    /// context-overflow retry path where the *learned* model limit (from
+    /// `capabilities_cache.learn_from_error`) should be honoured instead of the
+    /// (potentially too-large) configured value.
+    ///
+    /// # Strategy
+    /// 1. Truncate file contents to recover the most tokens.
+    /// 2. Shrink / drop memory sections, history summary, and knowledge if still over.
+    pub(super) fn truncate_prompt_with_budget(
+        &self,
+        request: &AgentRequest,
+        context: &mut crate::context::ResolvedContext,
+        effective_max_input: usize,
     ) -> (String, bool) {
         let mut prompt = self.build_prompt(request, context);
         let mut truncated = false;
@@ -494,13 +541,9 @@ impl AgentPipeline {
         // Log initial token estimate if enabled
         let initial_tokens = Self::estimate_tokens(&prompt);
         if self.pipeline_config.log_token_usage {
-            let max_input = self
-                .pipeline_config
-                .max_context_tokens
-                .saturating_sub(self.pipeline_config.max_output_tokens);
             tracing::info!(
                 estimated_tokens = initial_tokens,
-                max_input_tokens = max_input,
+                max_input_tokens = effective_max_input,
                 max_context_tokens = self.pipeline_config.max_context_tokens,
                 history_messages = request.history.len(),
                 file_contexts = context.files.len(),
@@ -509,9 +552,15 @@ impl AgentPipeline {
         }
 
         // Check if we need to truncate
-        if let TokenLimitStatus::Exceeded { overage, .. } = self.check_token_limit(&prompt) {
+        if let TokenLimitStatus::Exceeded { overage, .. } =
+            self.check_token_limit_for(&prompt, effective_max_input)
+        {
             truncated = true;
-            tracing::warn!(overage = overage, "Prompt exceeds token limit, truncating");
+            tracing::warn!(
+                overage = overage,
+                effective_max_input = effective_max_input,
+                "Prompt exceeds token limit, truncating"
+            );
 
             // Strategy 1: Truncate file contents
             let chars_to_remove = overage * 4; // Approximate chars per token
@@ -542,7 +591,7 @@ impl AgentPipeline {
             // Strategy 2: Shrink memory sections and summaries when prompt boilerplate,
             // working memory, or tracked context are the primary source of overage.
             if matches!(
-                self.check_token_limit(&prompt),
+                self.check_token_limit_for(&prompt, effective_max_input),
                 TokenLimitStatus::Exceeded { .. }
             ) {
                 if !context.memory_sections.is_empty() {
@@ -561,7 +610,7 @@ impl AgentPipeline {
 
                     while context.memory_sections.len() > 1
                         && matches!(
-                            self.check_token_limit(&prompt),
+                            self.check_token_limit_for(&prompt, effective_max_input),
                             TokenLimitStatus::Exceeded { .. }
                         )
                     {
@@ -571,7 +620,7 @@ impl AgentPipeline {
                 }
 
                 if matches!(
-                    self.check_token_limit(&prompt),
+                    self.check_token_limit_for(&prompt, effective_max_input),
                     TokenLimitStatus::Exceeded { .. }
                 ) && context.history_summary.is_some()
                 {
@@ -580,7 +629,7 @@ impl AgentPipeline {
                 }
 
                 if matches!(
-                    self.check_token_limit(&prompt),
+                    self.check_token_limit_for(&prompt, effective_max_input),
                     TokenLimitStatus::Exceeded { .. }
                 ) && !context.knowledge.is_empty()
                 {
@@ -603,7 +652,7 @@ impl AgentPipeline {
             // If still over, log a warning (we've done what we can)
             if let TokenLimitStatus::Exceeded {
                 estimated, limit, ..
-            } = self.check_token_limit(&prompt)
+            } = self.check_token_limit_for(&prompt, effective_max_input)
             {
                 tracing::error!(
                     estimated = estimated,
@@ -635,17 +684,27 @@ impl AgentPipeline {
             return Vec::new();
         }
 
-        // Calculate how much to remove - aim to get well under the limit
-        // Remove at least 50% of messages, keeping only the most recent ones
-        let keep_count = std::cmp::max(2, messages_before / 3); // Keep ~33%
-        let remove_count = messages_before.saturating_sub(keep_count);
+        // Calculate how much to remove - aim to get well under the limit.
+        //
+        // Target: keep the most-recent ~33% of messages.
+        // Invariant: always remove at least 1 message, even for very short
+        // histories (1-2 messages).  The original `max(2, …)` floor caused
+        // `remove_count` to be 0 for histories of 1-2 messages, making the
+        // "compact and retry once" recovery a no-op for large single messages
+        // that independently overflow the context window.
+        //
+        // When all history messages are dropped we still prepend a compact
+        // summary placeholder, so the retry is never sent a completely empty
+        // context — it just loses the raw prior turns.
+        let keep_count = (messages_before / 3).min(messages_before.saturating_sub(1));
+        let remove_count = messages_before - keep_count; // always >= 1
 
         tracing::info!(
             messages_before = messages_before,
             messages_to_remove = remove_count,
             messages_to_keep = keep_count,
             strategy = "aggressive_truncation",
-            "Force-compacting context after overflow error"
+            "Force-compacting context after overflow error (keeps ≤33%, always removes ≥1)"
         );
 
         // Estimate tokens being removed for logging

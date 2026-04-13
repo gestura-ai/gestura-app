@@ -15,6 +15,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - Business assessment LLM requests now omit explicit `temperature` overrides for both area analysis and assessment-report generation, improving compatibility with OpenAI-compatible providers that only accept the model default temperature.
+- `extract_primary_action` no longer truncates `Intent.primary_action` on non-sentence dots. A new `find_sentence_boundary` helper treats a `.` as a sentence terminator only when followed by ASCII whitespace or end-of-string, correctly preserving filenames (`foo.rs`, `Cargo.toml`), version numbers (`1.5`, `2.0.1`), URLs (`example.com`), and method calls (`vec.push()`).
+- `strip_fillers` is now Unicode-safe and will not panic or produce corrupted output when the input contains multi-byte UTF-8 characters (e.g. `İ`, `Ñ`). A naïve `haystack.to_lowercase().find(needle)` previously returned byte offsets from the lowercased copy that were invalid in the original string; the implementation now scans the original string directly via `char_indices`.
+- Context overflow recovery now correctly applies the learned model limit when retrying after a `ContextLengthExceeded` error. Previously, `capabilities_cache.learn_from_error` was invoked but its result was immediately dropped, so the retry still used the stale configured limit and overflowed again; the learned limit is now forwarded to `truncate_prompt_with_budget`.
+- `ModelCapabilities` now reports correct input-token budgets for Anthropic, Gemini, and Grok models. A double-subtraction bug in discovery and heuristics caused `max_input_tokens()` to subtract output tokens from an already-output-reduced limit, yielding a budget roughly half the correct size and triggering premature context compaction.
+- Aggressive context compaction now correctly handles short conversation histories (1–2 messages). The previous implementation enforced a hard floor of 2 messages to retain, making compaction a silent no-op for the shortest histories; the fix guarantees that at least one message is always removed.
 
 ## [0.9.2] - 2026-04-11
 

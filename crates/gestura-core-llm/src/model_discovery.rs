@@ -6,13 +6,18 @@
 //!
 //! ## Supported Providers
 //!
-//! | Provider | Endpoint | Context Length Field |
-//! |----------|----------|---------------------|
-//! | Gemini | `GET /v1beta/models` | `inputTokenLimit` |
-//! | Anthropic | `GET /v1/models` | `max_input_tokens` |
-//! | Grok (xAI) | `GET /v1/language-models` | `context` field |
-//! | Ollama | `POST /api/show` | `model_info.*.context_length` |
-//! | OpenAI | N/A | Uses error-driven learning |
+//! | Provider | Endpoint | API field(s) used | Stored as `context_length` |
+//! |----------|----------|-------------------|---------------------------|
+//! | Gemini | `GET /v1beta/models` | `inputTokenLimit` + `outputTokenLimit` | `input + output` |
+//! | Anthropic | `GET /v1/models` | `max_input_tokens` + `max_output_tokens` | `input + output` |
+//! | Grok (xAI) | `GET /v1/language-models` | `input_modalities.text.token_limit` + output | `input + output` |
+//! | Ollama | `POST /api/show` | `model_info.*.context_length` (combined) | as-is (already combined) |
+//! | OpenAI | N/A | Uses error-driven learning | N/A |
+//!
+//! For providers that expose separate input and output limits, discovery stores
+//! `input_limit + output_limit` as `context_length` so that
+//! `ModelCapabilities::max_input_tokens()` (which subtracts `max_output_tokens`)
+//! recovers the correct prompt budget without double-subtracting.
 
 use crate::model_capabilities::{CapabilitySource, ModelCapabilities, ModelCapabilitiesCache};
 use gestura_core_foundation::AppError;
@@ -136,10 +141,14 @@ async fn discover_gemini(
         .and_then(|v| v.as_u64())
         .unwrap_or(8_192) as usize;
 
+    // Gemini reports input and output limits independently.  Store their sum
+    // as `context_length` (the "combined window" invariant) so that
+    // `max_input_tokens() = context_length - max_output_tokens` correctly
+    // returns `input_limit` without double-subtracting.
     Ok(ModelCapabilities::new(
         "gemini",
         model_id,
-        input_limit,
+        input_limit + output_limit,
         output_limit,
         CapabilitySource::ApiDiscovery,
     )
@@ -177,7 +186,10 @@ async fn discover_anthropic(
 
     let data: serde_json::Value = resp.json().await?;
 
-    // Anthropic returns max_input_tokens directly
+    // Anthropic returns max_input_tokens and max_output_tokens as independent
+    // limits (not a shared combined window).  Store their sum as
+    // `context_length` so that `max_input_tokens() = context_length -
+    // max_output_tokens` correctly recovers `input_limit`.
     let input_limit = data
         .get("max_input_tokens")
         .and_then(|v| v.as_u64())
@@ -191,7 +203,7 @@ async fn discover_anthropic(
     Ok(ModelCapabilities::new(
         "anthropic",
         model_id,
-        input_limit,
+        input_limit + output_limit,
         output_limit,
         CapabilitySource::ApiDiscovery,
     )
@@ -260,10 +272,12 @@ async fn discover_grok(
         (32_000, 4_096)
     };
 
+    // Grok reports input and output limits independently.  Store their sum
+    // as `context_length` so that `max_input_tokens()` returns `input_limit`.
     Ok(ModelCapabilities::new(
         "grok",
         model_id,
-        input_limit,
+        input_limit + output_limit,
         output_limit,
         CapabilitySource::ApiDiscovery,
     ))

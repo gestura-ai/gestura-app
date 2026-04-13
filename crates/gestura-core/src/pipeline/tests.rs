@@ -407,6 +407,108 @@ fn truncate_prompt_if_needed_compacts_memory_when_no_history_or_files_exist() {
     ));
 }
 
+// ---------------------------------------------------------------------------
+// truncate_prompt_with_budget — regression for the context-overflow retry bug
+// ---------------------------------------------------------------------------
+
+/// `truncate_prompt_with_budget` must use the *explicit* budget, not
+/// `pipeline_config.max_context_tokens`, even when the configured value is
+/// large enough that `truncate_prompt_if_needed` would not truncate at all.
+///
+/// This simulates the context-overflow retry path: the pipeline was configured
+/// with a limit higher than the model actually supports. After learning the real
+/// limit from the error, `truncate_prompt_with_budget` is called with the
+/// learned budget so the retry prompt is guaranteed to fit.
+#[test]
+fn truncate_prompt_with_budget_truncates_to_explicit_limit_not_pipeline_config() {
+    // Pipeline configured with a generous limit (e.g., from a static heuristic).
+    let pipeline = AgentPipeline::with_config(
+        AppConfig::default(),
+        PipelineConfig {
+            max_context_tokens: 200_000,
+            max_output_tokens: 8_192,
+            ..Default::default()
+        },
+    );
+
+    // Build a context with enough memory to clearly exceed the learned budget
+    // but comfortably fit inside the large configured limit.
+    let request = AgentRequest::new("continue the refactor")
+        .with_system_prompt("You are a concise coding assistant.");
+    let large_memory = "M".repeat(20_000); // ~5 000 estimated tokens
+    let mut context = crate::context::ResolvedContext {
+        memory_sections: vec![large_memory.clone(), large_memory.clone()],
+        history_summary: Some("H".repeat(10_000)),
+        ..Default::default()
+    };
+
+    // Verify precondition: the default wrapper would NOT truncate.
+    let initial_prompt = pipeline.build_prompt(&request, &context);
+    let initial_tokens = AgentPipeline::estimate_tokens(&initial_prompt);
+    let configured_budget = 200_000_usize.saturating_sub(8_192);
+    assert!(
+        initial_tokens < configured_budget,
+        "precondition: prompt ({initial_tokens} tokens) should fit in configured limit \
+         ({configured_budget}) so that truncate_prompt_if_needed would be a no-op"
+    );
+
+    // Simulate what learn_from_error returns: the model really only accepts
+    // a small context window.  Choose a budget smaller than the initial prompt.
+    let learned_max_input = initial_tokens / 2;
+    assert!(
+        learned_max_input < initial_tokens,
+        "precondition: learned budget must be smaller than the current prompt"
+    );
+
+    let (result_prompt, truncated) =
+        pipeline.truncate_prompt_with_budget(&request, &mut context, learned_max_input);
+
+    assert!(
+        truncated,
+        "truncate_prompt_with_budget should have truncated to fit the explicit budget"
+    );
+
+    let result_tokens = AgentPipeline::estimate_tokens(&result_prompt);
+    assert!(
+        result_tokens <= learned_max_input,
+        "result prompt ({result_tokens} tokens) must fit within the learned budget \
+         ({learned_max_input} tokens)"
+    );
+}
+
+/// `truncate_prompt_if_needed` (the wrapper) must continue to work correctly
+/// — it should truncate when the prompt exceeds the configured limit.
+#[test]
+fn truncate_prompt_if_needed_still_uses_pipeline_config_limit() {
+    let pipeline = AgentPipeline::with_config(
+        AppConfig::default(),
+        PipelineConfig {
+            max_context_tokens: 2_200,
+            max_output_tokens: 1_300,
+            ..Default::default()
+        },
+    );
+    let request = AgentRequest::new("fix the bug")
+        .with_system_prompt("You are a concise coding assistant.");
+    let mut context = crate::context::ResolvedContext {
+        memory_sections: vec!["### Memory\n".to_string() + &"Z".repeat(3_000)],
+        history_summary: Some("summary ".repeat(500)),
+        ..Default::default()
+    };
+
+    let initial_prompt = pipeline.build_prompt(&request, &context);
+    assert!(
+        matches!(
+            pipeline.check_token_limit(&initial_prompt),
+            TokenLimitStatus::Exceeded { .. }
+        ),
+        "precondition: initial prompt must exceed the small configured limit"
+    );
+
+    let (_, truncated) = pipeline.truncate_prompt_if_needed(&request, &mut context);
+    assert!(truncated, "truncate_prompt_if_needed should have truncated");
+}
+
 #[tokio::test]
 async fn enrich_resolved_context_includes_shared_coordination_memory() {
     let temp = tempdir().unwrap();

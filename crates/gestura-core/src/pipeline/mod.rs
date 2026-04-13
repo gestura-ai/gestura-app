@@ -1691,23 +1691,55 @@ Respond ONLY with the JSON array, no additional text."#,
         {
             Ok(resp) => resp,
             Err(AppError::ContextOverflow(ref error_msg)) => {
-                // Learn the actual limit from the error message
+                // Learn the actual limit from the error message and persist it in
+                // the cache for future requests.  We keep the result here so we
+                // can derive a correct prompt budget for this retry attempt.
                 let provider = self.config.llm.primary.as_str();
                 let model_id = Self::extract_model_id(&self.config, provider)
                     .unwrap_or("unknown");
 
-                if let Some(learned_caps) = self.capabilities_cache.learn_from_error(
+                let learned_caps = self.capabilities_cache.learn_from_error(
                     provider,
                     model_id,
                     error_msg,
-                ) {
+                );
+
+                if let Some(ref caps) = learned_caps {
                     tracing::info!(
                         provider = provider,
                         model = model_id,
-                        learned_context_length = learned_caps.context_length,
-                        "Learned model context limit from overflow error"
+                        learned_context_length = caps.context_length,
+                        learned_max_input_tokens = caps.max_input_tokens(),
+                        "Learned model context limit from overflow error; \
+                         will re-budget retry prompt to avoid immediate re-overflow"
+                    );
+                } else {
+                    tracing::warn!(
+                        provider = provider,
+                        model = model_id,
+                        error_msg = %error_msg,
+                        "Could not parse context limit from overflow error; \
+                         retry prompt will use the configured pipeline limits"
                     );
                 }
+
+                // Compute the effective prompt budget for the retry.
+                //
+                // Using the learned limit (when available) prevents the retry from
+                // building a prompt that still exceeds the model's *actual* context
+                // window.  Before this fix, `truncate_prompt_if_needed` was called
+                // here, which always reads from `self.pipeline_config` — a stale
+                // value that may be larger than what the model really accepts.  If
+                // the overflow happened because our configured limit was too high,
+                // the retry would immediately overflow again.
+                let retry_max_input_tokens = learned_caps
+                    .as_ref()
+                    .map(|c| c.max_input_tokens())
+                    .unwrap_or_else(|| {
+                        self.pipeline_config
+                            .max_context_tokens
+                            .saturating_sub(self.pipeline_config.max_output_tokens)
+                    });
 
                 // Notify user about recovery attempt
                 let _ = tx.send(StreamChunk::Status {
@@ -1740,17 +1772,21 @@ Respond ONLY with the JSON array, no additional text."#,
                     &compacted_request.metadata,
                 ).await;
 
-                // Rebuild prompt with compacted context
-                let (compacted_prompt, _) = self.truncate_prompt_if_needed(
+                // Rebuild prompt using the learned limit so the retry prompt is
+                // guaranteed to fit within the model's real context window.
+                let (compacted_prompt, _) = self.truncate_prompt_with_budget(
                     &compacted_request,
                     &mut compacted_context,
+                    retry_max_input_tokens,
                 );
 
                 // Retry with compacted context
                 tracing::info!(
+                    retry_max_input_tokens = retry_max_input_tokens,
+                    learned_from_error = learned_caps.is_some(),
                     original_history_len = request.history.len(),
                     compacted_history_len = compacted_request.history.len(),
-                    "Retrying agent loop with compacted context"
+                    "Retrying agent loop with compacted context and re-budgeted prompt"
                 );
 
                 self.execute_agentic_loop_streaming(

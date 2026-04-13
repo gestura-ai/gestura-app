@@ -43,7 +43,21 @@ use std::sync::{Arc, RwLock};
 /// Model capabilities describing limits and supported features.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ModelCapabilities {
-    /// Maximum context window in tokens (input + output combined for most models)
+    /// Maximum context window in tokens, always stored as **input + output
+    /// combined** regardless of whether the provider exposes a single combined
+    /// limit (e.g. OpenAI) or separate per-modality limits (e.g. Anthropic
+    /// `max_input_tokens`, Gemini `inputTokenLimit`).
+    ///
+    /// **Do not use this field directly for prompt-budget decisions.**  Always
+    /// call [`Self::max_input_tokens()`] instead, which subtracts
+    /// `max_output_tokens` to yield the tokens available for the prompt.
+    ///
+    /// ### Invariant
+    /// `context_length = max_input_tokens() + max_output_tokens`
+    ///
+    /// Discovery code for providers with separate input/output limits must
+    /// store `input_limit + output_limit` here so that `max_input_tokens()`
+    /// correctly recovers `input_limit` without double-subtracting.
     pub context_length: usize,
     /// Maximum output/completion tokens the model can generate
     pub max_output_tokens: usize,
@@ -369,61 +383,68 @@ fn get_openai_capabilities(model_lower: &str, model_id: &str) -> ModelCapabiliti
 fn get_anthropic_capabilities(model_lower: &str, model_id: &str) -> ModelCapabilities {
     let src = CapabilitySource::StaticFallback;
 
-    // Claude 3.5/4 Sonnet and Opus (200K context)
+    // Claude 3.x / 4.x (200 K input, 8 K output — independent limits).
+    // context_length = input + output so that max_input_tokens() = 200 000.
     if model_lower.contains("claude-3")
         || model_lower.contains("claude-sonnet-4")
         || model_lower.contains("claude-opus-4")
     {
-        return ModelCapabilities::new("anthropic", model_id, 200_000, 8_192, src)
+        return ModelCapabilities::new("anthropic", model_id, 200_000 + 8_192, 8_192, src)
             .with_vision(true);
     }
 
-    // Claude 2.x (100K context)
+    // Claude 2.x (100 K input, 4 K output — independent limits).
     if model_lower.contains("claude-2") {
-        return ModelCapabilities::new("anthropic", model_id, 100_000, 4_096, src);
+        return ModelCapabilities::new("anthropic", model_id, 100_000 + 4_096, 4_096, src);
     }
 
-    // Unknown Anthropic model - conservative
-    ModelCapabilities::new("anthropic", model_id, 32_000, 4_096, src)
+    // Unknown Anthropic model — conservative (32 K input, 4 K output).
+    ModelCapabilities::new("anthropic", model_id, 32_000 + 4_096, 4_096, src)
 }
 
 fn get_gemini_capabilities(model_lower: &str, model_id: &str) -> ModelCapabilities {
     let src = CapabilitySource::StaticFallback;
 
-    // Gemini 2.0 (1M context)
+    // Gemini 2.0 (1 M input, 8 K output — independent limits).
+    // context_length = input + output so that max_input_tokens() = 1 000 000.
     if model_lower.contains("gemini-2") {
-        return ModelCapabilities::new("gemini", model_id, 1_000_000, 8_192, src).with_vision(true);
+        return ModelCapabilities::new("gemini", model_id, 1_000_000 + 8_192, 8_192, src)
+            .with_vision(true);
     }
 
-    // Gemini 1.5 Pro (1M context)
+    // Gemini 1.5 Pro (1 M input, 8 K output).
     if model_lower.contains("1.5-pro") || model_lower.contains("1.5pro") {
-        return ModelCapabilities::new("gemini", model_id, 1_000_000, 8_192, src).with_vision(true);
+        return ModelCapabilities::new("gemini", model_id, 1_000_000 + 8_192, 8_192, src)
+            .with_vision(true);
     }
 
-    // Gemini 1.5 Flash (1M context)
+    // Gemini 1.5 Flash (1 M input, 8 K output).
     if model_lower.contains("1.5-flash") || model_lower.contains("flash") {
-        return ModelCapabilities::new("gemini", model_id, 1_000_000, 8_192, src).with_vision(true);
+        return ModelCapabilities::new("gemini", model_id, 1_000_000 + 8_192, 8_192, src)
+            .with_vision(true);
     }
 
-    // Unknown Gemini model - conservative
-    ModelCapabilities::new("gemini", model_id, 32_000, 8_192, src)
+    // Unknown Gemini model — conservative (32 K input, 8 K output).
+    ModelCapabilities::new("gemini", model_id, 32_000 + 8_192, 8_192, src)
 }
 
 fn get_grok_capabilities(model_lower: &str, model_id: &str) -> ModelCapabilities {
     let src = CapabilitySource::StaticFallback;
 
-    // Grok-2 and Grok-3 (131K context)
+    // Grok-2 and Grok-3 (131 072 input, 8 192 output — independent limits).
+    // context_length = input + output so that max_input_tokens() = 131 072.
     if model_lower.contains("grok-2") || model_lower.contains("grok-3") {
-        return ModelCapabilities::new("grok", model_id, 131_072, 8_192, src).with_vision(true);
+        return ModelCapabilities::new("grok", model_id, 131_072 + 8_192, 8_192, src)
+            .with_vision(true);
     }
 
-    // Grok-1 (8K context)
+    // Grok-1 (8 K input, 4 K output).
     if model_lower.contains("grok-1") || model_lower.contains("grok-beta") {
-        return ModelCapabilities::new("grok", model_id, 8_192, 4_096, src);
+        return ModelCapabilities::new("grok", model_id, 8_192 + 4_096, 4_096, src);
     }
 
-    // Unknown Grok model - conservative
-    ModelCapabilities::new("grok", model_id, 32_000, 4_096, src)
+    // Unknown Grok model — conservative (32 K input, 4 K output).
+    ModelCapabilities::new("grok", model_id, 32_000 + 4_096, 4_096, src)
 }
 
 fn get_ollama_capabilities(model_lower: &str, model_id: &str) -> ModelCapabilities {
@@ -496,27 +517,110 @@ mod tests {
     #[test]
     fn test_claude_capabilities() {
         let caps = get_model_capabilities("anthropic", "claude-sonnet-4-20250514");
-        assert_eq!(caps.context_length, 200_000);
+        // context_length = 200 000 (input) + 8 192 (output) per the combined invariant.
+        assert_eq!(caps.context_length, 200_000 + 8_192);
         assert!(caps.supports_vision);
     }
 
     #[test]
     fn test_gemini_capabilities() {
         let caps = get_model_capabilities("gemini", "gemini-2.0-flash");
-        assert_eq!(caps.context_length, 1_000_000);
+        // context_length = 1 000 000 (input) + 8 192 (output).
+        assert_eq!(caps.context_length, 1_000_000 + 8_192);
     }
 
     #[test]
     fn test_unknown_model_conservative_defaults() {
         let caps = get_model_capabilities("openai", "unknown-model-xyz");
+        // OpenAI static fallback is a combined window, so context_length is
+        // used directly without further adjustment.
         assert_eq!(caps.context_length, 8_192); // Very conservative default
     }
 
     #[test]
     fn test_max_input_tokens() {
         let caps = get_model_capabilities("openai", "gpt-4o");
-        // 128K - 16K = 112K
+        // OpenAI uses a combined window: 128 K total − 16 K output = 112 K input.
         assert_eq!(caps.max_input_tokens(), 128_000 - 16_384);
+    }
+
+    // -----------------------------------------------------------------------
+    // Invariant: max_input_tokens() must equal the provider's stated input
+    // limit for every heuristic entry, without double-subtracting output.
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_anthropic_max_input_tokens_equals_stated_input_limit() {
+        // Claude 3/4 — API states 200 000 input tokens.
+        let caps = get_model_capabilities("anthropic", "claude-sonnet-4-20250514");
+        assert_eq!(caps.max_input_tokens(), 200_000);
+
+        // Claude 2 — API states 100 000 input tokens.
+        let caps2 = get_model_capabilities("anthropic", "claude-2.1");
+        assert_eq!(caps2.max_input_tokens(), 100_000);
+    }
+
+    #[test]
+    fn test_gemini_max_input_tokens_equals_stated_input_limit() {
+        // Gemini 2.0 — API states 1 000 000 input tokens.
+        let caps = get_model_capabilities("gemini", "gemini-2.0-flash");
+        assert_eq!(caps.max_input_tokens(), 1_000_000);
+
+        // Gemini 1.5 Pro — API states 1 000 000 input tokens.
+        let caps2 = get_model_capabilities("gemini", "gemini-1.5-pro");
+        assert_eq!(caps2.max_input_tokens(), 1_000_000);
+    }
+
+    #[test]
+    fn test_grok_max_input_tokens_equals_stated_input_limit() {
+        // Grok-2/3 — API states 131 072 input tokens.
+        let caps = get_model_capabilities("grok", "grok-2");
+        assert_eq!(caps.max_input_tokens(), 131_072);
+
+        // Grok-1 — API states 8 192 input tokens.
+        let caps2 = get_model_capabilities("grok", "grok-1");
+        assert_eq!(caps2.max_input_tokens(), 8_192);
+    }
+
+    #[test]
+    fn test_openai_combined_window_is_not_double_subtracted() {
+        // OpenAI uses a true combined window — context_length IS input+output
+        // already, so subtraction in max_input_tokens() is correct and must
+        // NOT be applied a second time.
+        let caps = get_model_capabilities("openai", "gpt-4o");
+        assert_eq!(caps.context_length, 128_000);
+        assert_eq!(caps.max_output_tokens, 16_384);
+        assert_eq!(caps.max_input_tokens(), 128_000 - 16_384);
+    }
+
+    #[test]
+    fn test_context_length_invariant_holds_for_all_static_providers() {
+        // For every static heuristic:
+        //   context_length == max_input_tokens() + max_output_tokens
+        let models = [
+            ("openai", "gpt-4o"),
+            ("openai", "gpt-3.5-turbo"),
+            ("anthropic", "claude-sonnet-4-20250514"),
+            ("anthropic", "claude-2.1"),
+            ("gemini", "gemini-2.0-flash"),
+            ("gemini", "gemini-1.5-pro"),
+            ("grok", "grok-2"),
+            ("grok", "grok-1"),
+            ("ollama", "llama3.1"),
+            ("ollama", "mistral"),
+        ];
+        for (provider, model) in models {
+            let caps = get_model_capabilities(provider, model);
+            assert_eq!(
+                caps.context_length,
+                caps.max_input_tokens() + caps.max_output_tokens,
+                "{provider}/{model}: context_length invariant violated \
+                 (context_length={}, max_input_tokens()={}, max_output_tokens={})",
+                caps.context_length,
+                caps.max_input_tokens(),
+                caps.max_output_tokens,
+            );
+        }
     }
 
     #[test]
