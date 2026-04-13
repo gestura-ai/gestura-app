@@ -125,11 +125,7 @@ pub async fn process_ring_stream(
 
         // Example: Route haptic output through OrchestratorObserver so BOS1921 waveforms work
         observer
-            .on_haptic_feedback(
-                gestura_core_haptics::HapticPattern::Confirm,
-                1.0,
-                200,
-            )
+            .on_haptic_feedback(gestura_core_haptics::HapticPattern::Confirm, 1.0, 200)
             .await;
     }
 }

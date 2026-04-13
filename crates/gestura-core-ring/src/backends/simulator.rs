@@ -1,13 +1,13 @@
-use crate::{RingBackend, DeviceStatus};
-use gestura_core_gestures::Gesture;
+use crate::{DeviceStatus, RingBackend};
 use async_trait::async_trait;
-use btleplug::api::{Characteristic, Peripheral as _, CharPropFlags};
+use btleplug::api::{CharPropFlags, Characteristic, Peripheral as _};
 use btleplug::platform::{Adapter, Peripheral};
 use futures::stream::StreamExt;
+use gestura_core_gestures::Gesture;
 use gestura_core_haptics::HapticPattern;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
-use tokio::sync::{broadcast, Mutex};
+use tokio::sync::{Mutex, broadcast};
 use uuid::Uuid;
 
 const SIMULATOR_SERVICE_UUID: Uuid = Uuid::from_u128(0x12345678_1234_5678_9abc_123456789abc);
@@ -16,11 +16,20 @@ const SIMULATOR_SERVICE_UUID: Uuid = Uuid::from_u128(0x12345678_1234_5678_9abc_1
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
 pub enum SimulatorRawGesture {
-    Tap { intensity: f32 },
+    Tap {
+        intensity: f32,
+    },
     DoubleTap,
-    Hold { start_time: u64 },
-    Slide { direction: SlideDirection, distance: u32 },
-    Tilt { angle: f32 },
+    Hold {
+        start_time: u64,
+    },
+    Slide {
+        direction: SlideDirection,
+        distance: u32,
+    },
+    Tilt {
+        angle: f32,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -32,14 +41,17 @@ pub enum SlideDirection {
 }
 
 impl SimulatorRawGesture {
-    /// Safely normalize the proprietary BLE enum into the generic `Gesture` struct 
+    /// Safely normalize the proprietary BLE enum into the generic `Gesture` struct
     /// explicitly isolating intent parsing to the `gestura-core-intent` crate layer.
     pub fn into_gesture(self) -> Gesture {
         let (gesture_type, confidence) = match self {
             Self::Tap { intensity } => (format!("tap_{}", intensity), 1.0),
             Self::DoubleTap => ("double_tap".to_string(), 1.0),
             Self::Hold { .. } => ("hold".to_string(), 1.0),
-            Self::Slide { direction, distance } => {
+            Self::Slide {
+                direction,
+                distance,
+            } => {
                 let dir_str = match direction {
                     SlideDirection::Up => "up",
                     SlideDirection::Down => "down",
@@ -88,13 +100,14 @@ impl SimulatorBackend {
         let (adapter, peripheral) = gestura_core_ble::scanner::find_device_by_service_uuid(
             SIMULATOR_SERVICE_UUID,
             10,
-            std::time::Duration::from_millis(500)
-        ).await?;
-        
+            std::time::Duration::from_millis(500),
+        )
+        .await?;
+
         *self.adapter.lock().await = Some(adapter);
         Ok(peripheral)
     }
-    
+
     /// Spawns a background task monitoring notifications from the peripheral
     fn spawn_event_listener(&self, peripheral: Peripheral, characteristic: Characteristic) {
         let tx = self.tx.clone();
@@ -103,7 +116,7 @@ impl SimulatorBackend {
                 tracing::error!("Failed to subscribe to gesture characteristics: {}", e);
                 return;
             }
-            
+
             let mut notification_stream = match peripheral.notifications().await {
                 Ok(stream) => stream,
                 Err(e) => {
@@ -111,15 +124,15 @@ impl SimulatorBackend {
                     return;
                 }
             };
-            
+
             tracing::info!("Started listening for Simulator raw gestures");
-            
+
             while let Some(data) = notification_stream.next().await {
-                if let Ok(raw_str) = String::from_utf8(data.value) {
-                    if let Ok(raw_gest) = serde_json::from_str::<SimulatorRawGesture>(&raw_str) {
-                        let gesture = raw_gest.into_gesture();
-                        let _ = tx.send(gesture);
-                    }
+                if let Ok(raw_str) = String::from_utf8(data.value)
+                    && let Ok(raw_gest) = serde_json::from_str::<SimulatorRawGesture>(&raw_str)
+                {
+                    let gesture = raw_gest.into_gesture();
+                    let _ = tx.send(gesture);
                 }
             }
         });
@@ -136,15 +149,29 @@ impl RingBackend for SimulatorBackend {
     async fn connect(&self) -> Result<(), String> {
         tracing::info!("SimulatorBackend initializing connection sequence");
         let peripheral = self.find_simulator().await?;
-        
-        peripheral.connect().await.map_err(|e| format!("Connection failed: {}", e))?;
-        peripheral.discover_services().await.map_err(|e| format!("Service discovery failed: {}", e))?;
-        
+
+        peripheral
+            .connect()
+            .await
+            .map_err(|e| format!("Connection failed: {}", e))?;
+        peripheral
+            .discover_services()
+            .await
+            .map_err(|e| format!("Service discovery failed: {}", e))?;
+
         let chars = peripheral.characteristics();
         // Just find a characteristic we can subscribe to/write to for gestures
-        // In a real device we explicitly target a rx/tx uuid pair. 
-        let notify_char = chars.iter().find(|c| c.properties.contains(CharPropFlags::NOTIFY));
-        let write_char = chars.iter().find(|c| c.properties.contains(CharPropFlags::WRITE) || c.properties.contains(CharPropFlags::WRITE_WITHOUT_RESPONSE)).cloned();
+        // In a real device we explicitly target a rx/tx uuid pair.
+        let notify_char = chars
+            .iter()
+            .find(|c| c.properties.contains(CharPropFlags::NOTIFY));
+        let write_char = chars
+            .iter()
+            .find(|c| {
+                c.properties.contains(CharPropFlags::WRITE)
+                    || c.properties.contains(CharPropFlags::WRITE_WITHOUT_RESPONSE)
+            })
+            .cloned();
 
         *self.peripheral.lock().await = Some(peripheral.clone());
         *self.tx_char.lock().await = write_char;
@@ -156,39 +183,52 @@ impl RingBackend for SimulatorBackend {
         tracing::info!("SimulatorBackend successfully fully bound BLE channel");
         Ok(())
     }
-    
+
     async fn subscribe_to_gestures(&self) -> tokio::sync::broadcast::Receiver<Gesture> {
         self.tx.subscribe()
     }
-    
+
     async fn send_haptic(&self, pattern: HapticPattern, intensity: f32, duration_ms: u32) {
         tracing::debug!(
             "SimulatorBackend sending haptic: {:?} (int: {}, dur: {}ms)",
-            pattern, intensity, duration_ms
+            pattern,
+            intensity,
+            duration_ms
         );
-        
+
         let p_lock = self.peripheral.lock().await;
         let c_lock = self.tx_char.lock().await;
-        
+
         if let (Some(peripheral), Some(char)) = (&*p_lock, &*c_lock) {
             let command_json = serde_json::json!({
                 "command": "trigger_haptic",
                 "pattern": pattern,
                 "intensity": intensity,
                 "duration_ms": duration_ms
-            }).to_string();
-            
+            })
+            .to_string();
+
             // Using WriteWithoutResponse primarily since usually it's faster for haptics.
-            let _ = peripheral.write(char, command_json.as_bytes(), btleplug::api::WriteType::WithoutResponse).await;
+            let _ = peripheral
+                .write(
+                    char,
+                    command_json.as_bytes(),
+                    btleplug::api::WriteType::WithoutResponse,
+                )
+                .await;
         }
     }
-    
+
     async fn get_status(&self) -> DeviceStatus {
         let is_connected = self.peripheral.lock().await.is_some();
         DeviceStatus {
             battery: 100,
             is_charging: false,
-            connection_state: if is_connected { "simulator_ble_connected".to_string() } else { "simulator_disconnected".to_string() },
+            connection_state: if is_connected {
+                "simulator_ble_connected".to_string()
+            } else {
+                "simulator_disconnected".to_string()
+            },
         }
     }
 }
