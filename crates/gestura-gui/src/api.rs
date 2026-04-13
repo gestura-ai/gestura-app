@@ -4351,6 +4351,7 @@ pub async fn process_agent_message_streaming(
                     StreamChunk::ShellOutput { .. } => "ShellOutput",
                     StreamChunk::ShellLifecycle { .. } => "ShellLifecycle",
                     StreamChunk::ShellSessionLifecycle { .. } => "ShellSessionLifecycle",
+                    StreamChunk::ContextOverflow { .. } => "ContextOverflow",
                 };
                 tracing::debug!(
                     chunk = chunk_kind,
@@ -4836,6 +4837,19 @@ pub async fn process_agent_message_streaming(
 
                 emit("agent-stream-error", serde_json::json!(err));
                 break;
+            }
+            StreamChunk::ContextOverflow { error_message } => {
+                // Context overflow is recoverable - the pipeline should compact and retry
+                // But if we get here, it means recovery failed
+                tracing::warn!(
+                    error = %error_message,
+                    "Context overflow reached GUI - recovery may have failed"
+                );
+                emit("agent-stream-status", serde_json::json!({
+                    "text": "Context too large - compacting history...",
+                    "kind": "busy"
+                }));
+                // Don't break - let the pipeline handle recovery
             }
                 }
             }

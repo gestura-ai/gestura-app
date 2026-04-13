@@ -653,6 +653,7 @@ fn error_tag(error: &AppError) -> &'static str {
         AppError::Nats(_) => "nats",
         AppError::Ble(_) => "ble",
         AppError::Llm(_) => "llm",
+        AppError::ContextOverflow(_) => "context_overflow",
         AppError::Http(_) => "http",
         AppError::Voice(_) => "voice",
         AppError::Audio(_) => "audio",

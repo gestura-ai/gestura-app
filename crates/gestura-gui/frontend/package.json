@@ -1,6 +1,6 @@
 {
   "name": "gestura-frontend",
-  "version": "0.9.2",
+  "version": "0.10.0",
   "description": "Gestura desktop app frontend (React + TypeScript)",
   "type": "module",
   "scripts": {

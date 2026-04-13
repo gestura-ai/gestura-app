@@ -65,6 +65,7 @@ gestura-core-plugins.workspace = true
 gestura-core-retry.workspace = true
 gestura-core-agents.workspace = true
 gestura-core-context.workspace = true
+gestura-core-intent.workspace = true
 
 # Audio processing
 cpal.workspace = true

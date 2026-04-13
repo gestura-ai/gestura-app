@@ -46,6 +46,8 @@
 //! the workspace easier to reason about in `cargo doc` and CI.
 
 pub mod default_models;
+pub mod model_capabilities;
+pub mod model_discovery;
 pub mod model_listing;
 pub mod openai;
 pub mod token_tracker;

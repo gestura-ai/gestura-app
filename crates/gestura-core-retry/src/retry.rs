@@ -17,6 +17,8 @@ pub enum ErrorClass {
     Transient,
     /// Permanent error that will not succeed on retry (auth failure, invalid input)
     Permanent,
+    /// Context overflow error that requires compaction before retry
+    ContextOverflow,
     /// Unknown error classification - treat as transient with limited retries
     Unknown,
 }
@@ -44,7 +46,15 @@ impl ErrorClass {
             }
             AppError::Llm(msg) => {
                 let msg_lower = msg.to_lowercase();
-                if msg_lower.contains("rate limit")
+                // Context overflow errors - need compaction, not blind retry
+                if msg_lower.contains("context_length_exceeded")
+                    || msg_lower.contains("context length")
+                    || msg_lower.contains("maximum context")
+                    || msg_lower.contains("token limit")
+                    || (msg_lower.contains("tokens") && msg_lower.contains("exceeds"))
+                {
+                    Self::ContextOverflow
+                } else if msg_lower.contains("rate limit")
                     || msg_lower.contains("429")
                     || msg_lower.contains("timeout")
                     || msg_lower.contains("connection")
@@ -62,6 +72,8 @@ impl ErrorClass {
                     Self::Unknown
                 }
             }
+            // Context overflow - needs compaction, not retry
+            AppError::ContextOverflow(_) => Self::ContextOverflow,
             // Permanent errors - don't retry
             AppError::Config(_) => Self::Permanent,
             AppError::PermissionDenied(_) => Self::Permanent,
@@ -72,9 +84,19 @@ impl ErrorClass {
         }
     }
 
-    /// Whether this error class should be retried
+    /// Whether this error class should be retried with standard backoff
     pub fn should_retry(&self) -> bool {
         matches!(self, Self::Transient | Self::Unknown)
+    }
+
+    /// Whether this error requires context compaction before retry
+    pub fn needs_compaction(&self) -> bool {
+        matches!(self, Self::ContextOverflow)
+    }
+
+    /// Whether this error is recoverable (either by retry or compaction)
+    pub fn is_recoverable(&self) -> bool {
+        !matches!(self, Self::Permanent)
     }
 }
 
@@ -291,6 +313,37 @@ mod tests {
 
         let auth_err = AppError::Llm("401 unauthorized".to_string());
         assert_eq!(ErrorClass::classify(&auth_err), ErrorClass::Permanent);
+    }
+
+    #[test]
+    fn test_error_classification_context_overflow() {
+        // From error message
+        let overflow_err = AppError::Llm("maximum context length is 16385 tokens".to_string());
+        assert_eq!(
+            ErrorClass::classify(&overflow_err),
+            ErrorClass::ContextOverflow
+        );
+
+        // From explicit variant
+        let explicit_err = AppError::ContextOverflow("context too large".to_string());
+        assert_eq!(
+            ErrorClass::classify(&explicit_err),
+            ErrorClass::ContextOverflow
+        );
+
+        // From different message format
+        let token_err = AppError::Llm("Request tokens exceeds limit".to_string());
+        assert_eq!(
+            ErrorClass::classify(&token_err),
+            ErrorClass::ContextOverflow
+        );
+    }
+
+    #[test]
+    fn test_context_overflow_needs_compaction() {
+        assert!(ErrorClass::ContextOverflow.needs_compaction());
+        assert!(!ErrorClass::Transient.needs_compaction());
+        assert!(!ErrorClass::Permanent.needs_compaction());
     }
 
     #[test]

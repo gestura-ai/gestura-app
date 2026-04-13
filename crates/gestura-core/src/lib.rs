@@ -346,6 +346,12 @@ pub mod retry {
     pub use gestura_core_retry::*;
 }
 
+// -- gestura-core-intent --
+/// Unified intent normalization layer re-exported from `gestura-core-intent`.
+pub mod intent {
+    pub use gestura_core_intent::*;
+}
+
 // -- tool_confirmation (merged into gestura-core-tools) --
 /// Tool-confirmation flows re-exported from `gestura-core-tools`.
 pub mod tool_confirmation {
