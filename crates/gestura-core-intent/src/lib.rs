@@ -704,8 +704,14 @@ mod tests {
         // All-ASCII path: basic case-insensitive removal.
         // Note: only the exact filler token is removed; adjacent punctuation
         // (commas, etc.) is preserved by design.
-        assert_eq!(strip_fillers("Um please open the file"), "please open the file");
-        assert_eq!(strip_fillers("like please open the file"), "please open the file");
+        assert_eq!(
+            strip_fillers("Um please open the file"),
+            "please open the file"
+        );
+        assert_eq!(
+            strip_fillers("like please open the file"),
+            "please open the file"
+        );
         assert_eq!(strip_fillers("UM like uh do it"), "do it");
     }
 
@@ -726,8 +732,14 @@ mod tests {
         let input = "İ um please do this";
         let result = strip_fillers(input);
         // The filler "um" must be removed; the non-ASCII prefix must survive.
-        assert!(!result.contains("um"), "filler 'um' should be removed, got: {result:?}");
-        assert!(result.contains('İ'), "non-ASCII prefix should be preserved, got: {result:?}");
+        assert!(
+            !result.contains("um"),
+            "filler 'um' should be removed, got: {result:?}"
+        );
+        assert!(
+            result.contains('İ'),
+            "non-ASCII prefix should be preserved, got: {result:?}"
+        );
     }
 
     #[test]
@@ -738,8 +750,14 @@ mod tests {
         // "er", which IS in VOICE_FILLER_WORDS and would also be removed.)
         let input = "Ñoño um test";
         let result = strip_fillers(input);
-        assert!(!result.contains("um"), "filler 'um' should be removed, got: {result:?}");
-        assert!(result.contains("Ñoño"), "non-ASCII word should survive, got: {result:?}");
+        assert!(
+            !result.contains("um"),
+            "filler 'um' should be removed, got: {result:?}"
+        );
+        assert!(
+            result.contains("Ñoño"),
+            "non-ASCII word should survive, got: {result:?}"
+        );
     }
 
     #[test]
@@ -748,8 +766,7 @@ mod tests {
         // of the original haystack, even with a non-ASCII prefix.
         let haystack = "İ um test"; // İ = 2 bytes
         let needle = "um";
-        let (start, end) = find_filler_in_original(haystack, needle)
-            .expect("should find 'um'");
+        let (start, end) = find_filler_in_original(haystack, needle).expect("should find 'um'");
         // Slicing at these offsets must not panic.
         let before = &haystack[..start];
         let after = &haystack[end..];
@@ -829,10 +846,7 @@ mod tests {
     fn extract_primary_action_splits_on_dot_at_end_of_string() {
         // A dot at the very end of the string (no following char) is a sentence end.
         // The result preserves the filename inside the sentence up to the final dot.
-        assert_eq!(
-            extract_primary_action("Check file.rs."),
-            "Check file.rs",
-        );
+        assert_eq!(extract_primary_action("Check file.rs."), "Check file.rs",);
     }
 
     #[test]
@@ -872,9 +886,6 @@ mod tests {
     fn find_sentence_boundary_dot_before_non_ascii_is_not_a_boundary() {
         // A multi-byte UTF-8 char after '.' (e.g. 'ü' = 0xC3 0xBC) must not
         // be mistaken for whitespace; the continuation byte 0xBF is > 0x7F.
-        assert_eq!(
-            extract_primary_action("foo.über alles"),
-            "foo.über alles",
-        );
+        assert_eq!(extract_primary_action("foo.über alles"), "foo.über alles",);
     }
 }

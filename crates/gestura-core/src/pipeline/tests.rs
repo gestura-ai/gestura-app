@@ -488,8 +488,8 @@ fn truncate_prompt_if_needed_still_uses_pipeline_config_limit() {
             ..Default::default()
         },
     );
-    let request = AgentRequest::new("fix the bug")
-        .with_system_prompt("You are a concise coding assistant.");
+    let request =
+        AgentRequest::new("fix the bug").with_system_prompt("You are a concise coding assistant.");
     let mut context = crate::context::ResolvedContext {
         memory_sections: vec!["### Memory\n".to_string() + &"Z".repeat(3_000)],
         history_summary: Some("summary ".repeat(500)),
