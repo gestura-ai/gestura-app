@@ -98,21 +98,36 @@ pub(super) async fn send_token_usage_chunk_best_effort(
     }
 }
 
-/// Process a stream of Gestures from the ring backend and feed them into the agentic loop.
+/// Process a stream of gestures from the ring backend and route each one
+/// through the agentic pipeline.
+///
+/// Each gesture is normalized into a unified [`gestura_core_intent::Intent`]
+/// and then submitted to an [`AgentPipeline`] via [`AgentPipeline::process_blocking`].
+/// Haptic feedback is emitted through `observer` only once the pipeline result
+/// is known:
+///
+/// - **Success** → [`gestura_core_haptics::HapticPattern::Confirm`] (gesture handled)
+/// - **Failure** → [`gestura_core_haptics::HapticPattern::Error`] (gesture received
+///   but pipeline could not route it)
+///
+/// The pipeline is built once from `config` and shared across gesture tasks via
+/// an [`std::sync::Arc`] so construction cost is paid only at startup.
 #[cfg(feature = "ring-integration")]
 pub async fn process_ring_stream(
     backend: std::sync::Arc<dyn gestura_core_ring::RingBackend>,
     observer: std::sync::Arc<dyn crate::orchestrator::OrchestratorObserver>,
+    config: AppConfig,
 ) {
+    let pipeline = std::sync::Arc::new(AgentPipeline::new(config));
     let mut rx = backend.subscribe_to_gestures().await;
+
     loop {
         match rx.recv().await {
             Ok(gesture) => {
-                // Integrate with gestura-core-intent
                 let raw_input = gestura_core_intent::RawInput {
                     text: gesture.gesture_type.clone(),
                     modality: gestura_core_intent::InputModality::Gesture,
-                    session_id: None, // Or associate with an active session if needed
+                    session_id: None,
                     gesture_data: Some(gestura_core_intent::GestureData {
                         gesture_type: gesture.gesture_type,
                         acceleration: gesture.acceleration,
@@ -121,14 +136,47 @@ pub async fn process_ring_stream(
                     }),
                 };
 
-                let _intent = gestura_core_intent::normalize_input_to_intent(raw_input);
+                let intent = gestura_core_intent::normalize_input_to_intent(raw_input);
 
-                // ... Here we would submit the intent to the pipeline ...
+                tracing::debug!(
+                    intent_id = %intent.id,
+                    primary_action = %intent.primary_action,
+                    confidence = intent.confidence,
+                    "Ring gesture normalized to intent; routing to agentic pipeline"
+                );
 
-                // Example: Route haptic output through OrchestratorObserver so BOS1921 waveforms work
-                observer
-                    .on_haptic_feedback(gestura_core_haptics::HapticPattern::Confirm, 1.0, 200)
-                    .await;
+                let request =
+                    AgentRequest::new(intent.primary_action.clone()).with_streaming(false);
+
+                let pipeline = pipeline.clone();
+                let observer = observer.clone();
+                tokio::spawn(async move {
+                    match pipeline.process_blocking(request).await {
+                        Ok(_) => {
+                            observer
+                                .on_haptic_feedback(
+                                    gestura_core_haptics::HapticPattern::Confirm,
+                                    1.0,
+                                    200,
+                                )
+                                .await;
+                        }
+                        Err(e) => {
+                            tracing::warn!(
+                                error = %e,
+                                primary_action = %intent.primary_action,
+                                "Ring gesture failed to route through agentic pipeline"
+                            );
+                            observer
+                                .on_haptic_feedback(
+                                    gestura_core_haptics::HapticPattern::Error,
+                                    0.5,
+                                    150,
+                                )
+                                .await;
+                        }
+                    }
+                });
             }
             Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
                 tracing::warn!(

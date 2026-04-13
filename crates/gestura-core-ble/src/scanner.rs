@@ -33,14 +33,31 @@ pub async fn find_device_by_service_uuid(
 
     for _ in 0..polling_attempts {
         tokio::time::sleep(polling_interval).await;
-        for p in adapter.peripherals().await.unwrap_or_default() {
-            if p.properties()
-                .await
-                .unwrap_or_default()
-                .unwrap_or_default()
-                .services
-                .contains(&service_uuid)
-            {
+
+        let peripherals = match adapter.peripherals().await {
+            Ok(ps) => ps,
+            Err(e) => {
+                tracing::warn!(
+                    "Failed to list peripherals during BLE scan (will retry): {}",
+                    e
+                );
+                continue;
+            }
+        };
+
+        for p in peripherals {
+            let properties = match p.properties().await {
+                Ok(Some(props)) => props,
+                Ok(None) => continue,
+                Err(e) => {
+                    tracing::warn!(
+                        "Failed to read peripheral properties (skipping peripheral): {}",
+                        e
+                    );
+                    continue;
+                }
+            };
+            if properties.services.contains(&service_uuid) {
                 let _ = adapter.stop_scan().await;
                 return Ok((adapter, p));
             }
