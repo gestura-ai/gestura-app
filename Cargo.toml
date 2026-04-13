@@ -36,6 +36,11 @@ members = [
     "crates/gestura-core-agents",
     "crates/gestura-core-context",
     "crates/gestura-core-intent",
+    "crates/gestura-core-ring",
+    "crates/gestura-core-haptics",
+    "crates/gestura-core-gestures",
+    "crates/gestura-core-devices",
+    "crates/gestura-core-ble",
 ]
 
 # Default members for `cargo build` without specifying a package
@@ -45,7 +50,7 @@ default-members = [
 ]
 
 [workspace.package]
-version = "0.10.0"
+version = "0.11.0"
 edition = "2024"
 license = "LicenseRef-Gestura-Prosperity-1.0"
 authors = ["Gestura LLC <dev@gestura.ai>"]

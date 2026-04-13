@@ -1,0 +1,8 @@
+[package]
+name = "gestura-core-haptics"
+version.workspace = true
+edition = "2024"
+license = "LicenseRef-Gestura-Prosperity-1.0"
+
+[dependencies]
+serde = { workspace = true }

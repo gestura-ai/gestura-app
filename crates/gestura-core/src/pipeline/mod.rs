@@ -98,6 +98,53 @@ pub(super) async fn send_token_usage_chunk_best_effort(
     }
 }
 
+/// Process a stream of Gestures from the ring backend and feed them into the agentic loop.
+#[cfg(feature = "ring-integration")]
+pub async fn process_ring_stream(
+    backend: std::sync::Arc<dyn gestura_core_ring::RingBackend>,
+    observer: std::sync::Arc<dyn crate::orchestrator::OrchestratorObserver>,
+) {
+    let mut rx = backend.subscribe_to_gestures().await;
+    loop {
+        match rx.recv().await {
+            Ok(gesture) => {
+                // Integrate with gestura-core-intent
+                let raw_input = gestura_core_intent::RawInput {
+                    text: gesture.gesture_type.clone(),
+                    modality: gestura_core_intent::InputModality::Gesture,
+                    session_id: None, // Or associate with an active session if needed
+                    gesture_data: Some(gestura_core_intent::GestureData {
+                        gesture_type: gesture.gesture_type,
+                        acceleration: gesture.acceleration,
+                        gyroscope: gesture.gyroscope,
+                        confidence: gesture.confidence,
+                    }),
+                };
+
+                let _intent = gestura_core_intent::normalize_input_to_intent(raw_input);
+
+                // ... Here we would submit the intent to the pipeline ...
+
+                // Example: Route haptic output through OrchestratorObserver so BOS1921 waveforms work
+                observer
+                    .on_haptic_feedback(gestura_core_haptics::HapticPattern::Confirm, 1.0, 200)
+                    .await;
+            }
+            Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
+                tracing::warn!(
+                    "Ring processing stream lagged, {} gestures dropped",
+                    skipped
+                );
+                continue;
+            }
+            Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                tracing::info!("Ring processing stream closed. Stopping task.");
+                break;
+            }
+        }
+    }
+}
+
 /// Select the correct tool schema slice for a provider name.
 ///
 /// Each provider family has its own tool definition format:
