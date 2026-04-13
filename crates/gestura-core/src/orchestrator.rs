@@ -1367,6 +1367,16 @@ pub trait OrchestratorObserver: Send + Sync {
 
     /// Called when environment cleanup completes.
     async fn on_environment_cleanup(&self, _environment_id: String, _result: CleanupResult) {}
+
+    /// Emits haptic feedback instruction (BOS1921 waveforms etc.)
+    #[cfg(feature = "ring-integration")]
+    async fn on_haptic_feedback(
+        &self,
+        _pattern: gestura_core_haptics::HapticPattern,
+        _intensity: f32,
+        _duration_ms: u32,
+    ) {
+    }
 }
 
 #[derive(Clone, Debug)]

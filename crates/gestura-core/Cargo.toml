@@ -8,6 +8,8 @@ description = "Shared core library for Gestura voice-first AI assistant"
 
 [features]
 default = ["voice-local"]
+# Ring integration
+ring-integration = ["dep:gestura-core-ring", "dep:gestura-core-haptics"]
 # Local voice via whisper.cpp bindings
 voice-local = ["dep:whisper-rs", "gestura-core-audio/voice-local"]
 # NATS messaging integration
@@ -66,6 +68,8 @@ gestura-core-retry.workspace = true
 gestura-core-agents.workspace = true
 gestura-core-context.workspace = true
 gestura-core-intent.workspace = true
+gestura-core-ring = { path = "../gestura-core-ring", optional = true }
+gestura-core-haptics = { path = "../gestura-core-haptics", optional = true }
 
 # Audio processing
 cpal.workspace = true

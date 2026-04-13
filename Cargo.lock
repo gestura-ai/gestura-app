@@ -879,6 +879,34 @@ dependencies = [
 
 [[package]]
 name = "btleplug"
+version = "0.11.8"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c9a11621cb2c8c024e444734292482b1ad86fb50ded066cf46252e46643c8748"
+dependencies = [
+ "async-trait",
+ "bitflags 2.11.0",
+ "bluez-async",
+ "dashmap 6.1.0",
+ "dbus",
+ "futures",
+ "jni 0.19.0",
+ "jni-utils",
+ "log",
+ "objc2 0.5.2",
+ "objc2-core-bluetooth",
+ "objc2-foundation 0.2.2",
+ "once_cell",
+ "static_assertions",
+ "thiserror 2.0.18",
+ "tokio",
+ "tokio-stream",
+ "uuid",
+ "windows 0.61.3",
+ "windows-future 0.2.1",
+]
+
+[[package]]
+name = "btleplug"
 version = "0.12.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "52c3264dbe2c8e29381e4e95aa2d2783ad0b9192b511240f3755b7e5e3cee87e"
@@ -886,7 +914,7 @@ dependencies = [
  "async-trait",
  "bitflags 2.11.0",
  "bluez-async",
- "dashmap",
+ "dashmap 6.1.0",
  "dbus",
  "futures",
  "jni 0.19.0",
@@ -1769,6 +1797,19 @@ dependencies = [
  "darling_core 0.23.0",
  "quote",
  "syn 2.0.114",
+]
+
+[[package]]
+name = "dashmap"
+version = "5.5.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "978747c1d849a7d2ee5e8adc0159961c48fb7e5db2f06af6723b80123bb53856"
+dependencies = [
+ "cfg-if",
+ "hashbrown 0.14.5",
+ "lock_api",
+ "once_cell",
+ "parking_lot_core",
 ]
 
 [[package]]
@@ -2740,7 +2781,7 @@ dependencies = [
 
 [[package]]
 name = "gestura-cli"
-version = "0.9.2"
+version = "0.10.0"
 dependencies = [
  "arboard",
  "assert_cmd",
@@ -2777,7 +2818,7 @@ dependencies = [
 
 [[package]]
 name = "gestura-core"
-version = "0.9.2"
+version = "0.10.0"
 dependencies = [
  "ashpd",
  "async-trait",
@@ -2788,7 +2829,7 @@ dependencies = [
  "chrono",
  "cocoa",
  "cpal",
- "dashmap",
+ "dashmap 6.1.0",
  "dirs",
  "futures",
  "futures-util",
@@ -2800,6 +2841,7 @@ dependencies = [
  "gestura-core-context",
  "gestura-core-explorer",
  "gestura-core-foundation",
+ "gestura-core-haptics",
  "gestura-core-hooks",
  "gestura-core-intent",
  "gestura-core-ipc",
@@ -2811,6 +2853,7 @@ dependencies = [
  "gestura-core-pipeline",
  "gestura-core-plugins",
  "gestura-core-retry",
+ "gestura-core-ring",
  "gestura-core-scripting",
  "gestura-core-security",
  "gestura-core-sessions",
@@ -2849,7 +2892,7 @@ dependencies = [
 
 [[package]]
 name = "gestura-core-a2a"
-version = "0.9.2"
+version = "0.10.0"
 dependencies = [
  "chrono",
  "gestura-core-foundation",
@@ -2864,7 +2907,7 @@ dependencies = [
 
 [[package]]
 name = "gestura-core-agents"
-version = "0.9.2"
+version = "0.10.0"
 dependencies = [
  "async-trait",
  "chrono",
@@ -2877,7 +2920,7 @@ dependencies = [
 
 [[package]]
 name = "gestura-core-analytics"
-version = "0.9.2"
+version = "0.10.0"
 dependencies = [
  "chrono",
  "gestura-core-foundation",
@@ -2890,7 +2933,7 @@ dependencies = [
 
 [[package]]
 name = "gestura-core-audio"
-version = "0.9.2"
+version = "0.10.0"
 dependencies = [
  "async-trait",
  "chrono",
@@ -2912,7 +2955,7 @@ dependencies = [
 
 [[package]]
 name = "gestura-core-config"
-version = "0.9.2"
+version = "0.10.0"
 dependencies = [
  "dirs",
  "gestura-core-foundation",
@@ -2931,7 +2974,7 @@ dependencies = [
 
 [[package]]
 name = "gestura-core-context"
-version = "0.9.2"
+version = "0.10.0"
 dependencies = [
  "gestura-core-foundation",
  "regex",
@@ -2942,7 +2985,7 @@ dependencies = [
 
 [[package]]
 name = "gestura-core-explorer"
-version = "0.9.2"
+version = "0.10.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -2953,7 +2996,7 @@ dependencies = [
 
 [[package]]
 name = "gestura-core-foundation"
-version = "0.9.2"
+version = "0.10.0"
 dependencies = [
  "async-trait",
  "chrono",
@@ -2972,8 +3015,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "gestura-core-haptics"
+version = "0.10.0"
+dependencies = [
+ "serde",
+]
+
+[[package]]
 name = "gestura-core-hooks"
-version = "0.9.2"
+version = "0.10.0"
 dependencies = [
  "async-trait",
  "gestura-core-config",
@@ -2983,7 +3033,7 @@ dependencies = [
 
 [[package]]
 name = "gestura-core-intent"
-version = "0.9.2"
+version = "0.10.0"
 dependencies = [
  "chrono",
  "gestura-core-pipeline",
@@ -2995,7 +3045,7 @@ dependencies = [
 
 [[package]]
 name = "gestura-core-ipc"
-version = "0.9.2"
+version = "0.10.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -3006,7 +3056,7 @@ dependencies = [
 
 [[package]]
 name = "gestura-core-knowledge"
-version = "0.9.2"
+version = "0.10.0"
 dependencies = [
  "dirs",
  "serde",
@@ -3018,7 +3068,7 @@ dependencies = [
 
 [[package]]
 name = "gestura-core-llm"
-version = "0.9.2"
+version = "0.10.0"
 dependencies = [
  "async-trait",
  "chrono",
@@ -3033,7 +3083,7 @@ dependencies = [
 
 [[package]]
 name = "gestura-core-mcp"
-version = "0.9.2"
+version = "0.10.0"
 dependencies = [
  "async-trait",
  "chrono",
@@ -3051,7 +3101,7 @@ dependencies = [
 
 [[package]]
 name = "gestura-core-memory-bank"
-version = "0.9.2"
+version = "0.10.0"
 dependencies = [
  "chrono",
  "serde",
@@ -3064,7 +3114,7 @@ dependencies = [
 
 [[package]]
 name = "gestura-core-nats"
-version = "0.9.2"
+version = "0.10.0"
 dependencies = [
  "async-nats",
  "bytes",
@@ -3078,7 +3128,7 @@ dependencies = [
 
 [[package]]
 name = "gestura-core-pipeline"
-version = "0.9.2"
+version = "0.10.0"
 dependencies = [
  "chrono",
  "gestura-core-foundation",
@@ -3089,7 +3139,7 @@ dependencies = [
 
 [[package]]
 name = "gestura-core-plugins"
-version = "0.9.2"
+version = "0.10.0"
 dependencies = [
  "chrono",
  "gestura-core-foundation",
@@ -3102,7 +3152,7 @@ dependencies = [
 
 [[package]]
 name = "gestura-core-retry"
-version = "0.9.2"
+version = "0.10.0"
 dependencies = [
  "gestura-core-foundation",
  "rand 0.8.5",
@@ -3112,8 +3162,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "gestura-core-ring"
+version = "0.10.0"
+dependencies = [
+ "async-trait",
+ "btleplug 0.11.8",
+ "futures",
+ "gestura-core-haptics",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
 name = "gestura-core-scripting"
-version = "0.9.2"
+version = "0.10.0"
 dependencies = [
  "chrono",
  "gestura-core-foundation",
@@ -3127,7 +3192,7 @@ dependencies = [
 
 [[package]]
 name = "gestura-core-security"
-version = "0.9.2"
+version = "0.10.0"
 dependencies = [
  "async-trait",
  "chrono",
@@ -3146,7 +3211,7 @@ dependencies = [
 
 [[package]]
 name = "gestura-core-sessions"
-version = "0.9.2"
+version = "0.10.0"
 dependencies = [
  "chrono",
  "dirs",
@@ -3163,7 +3228,7 @@ dependencies = [
 
 [[package]]
 name = "gestura-core-streaming"
-version = "0.9.2"
+version = "0.10.0"
 dependencies = [
  "futures-util",
  "gestura-core-foundation",
@@ -3180,7 +3245,7 @@ dependencies = [
 
 [[package]]
 name = "gestura-core-tasks"
-version = "0.9.2"
+version = "0.10.0"
 dependencies = [
  "chrono",
  "dirs",
@@ -3198,7 +3263,7 @@ dependencies = [
 
 [[package]]
 name = "gestura-core-tools"
-version = "0.9.2"
+version = "0.10.0"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -3225,14 +3290,14 @@ dependencies = [
 
 [[package]]
 name = "gestura-gui"
-version = "0.9.2"
+version = "0.10.0"
 dependencies = [
  "ashpd",
  "async-nats",
  "async-trait",
  "axum",
  "base64 0.22.1",
- "btleplug",
+ "btleplug 0.12.0",
  "bytemuck",
  "bytes",
  "chrono",
@@ -4300,6 +4365,21 @@ name = "jni-sys"
 version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8eaf4bc02d17cbdd7ff4c7438cafcdf7fb9a4613313ad11b4f8fefe7d3fa0130"
+
+[[package]]
+name = "jni-utils"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "259e9f2c3ead61de911f147000660511f07ab00adeed1d84f5ac4d0386e7a6c4"
+dependencies = [
+ "dashmap 5.5.3",
+ "futures",
+ "jni 0.19.0",
+ "log",
+ "once_cell",
+ "static_assertions",
+ "uuid",
+]
 
 [[package]]
 name = "jobserver"

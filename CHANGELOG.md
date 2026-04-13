@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Core Ring Abstraction** (`gestura-core-ring`): new crate defining standard hardware abstractions for the ring (`RingBackend`, `Gesture`, `RingStatus`) alongside a `SimulatorBackend`. Easily integratable via an optional `ring-integration` feature toggle.
+- **Haptic Feedback Library** (`gestura-core-haptics`): separated primitive semantic haptic patterns out of the ring module so different devices can easily share and issue the same generic `HapticPattern`s (e.g. `Confirm`, `Tick`, `Waveform(Vec<u8>)`) independently.
+- **Agentic Loop Ring Streaming**: newly integrated `process_ring_stream` binds to ring streams via `subscribe_to_gestures()`, normalizing raw ring emissions into unified intents on the fly and wiring BOS1921 waveforms backward explicitly via `OrchestratorObserver::on_haptic_feedback()`.
+
+## [0.10.0] - 2026-04-13
+
+### Added
+
 - **Unified intent normalization layer** (`gestura-core-intent`): new crate that converts every input modality — voice transcripts, typed chat, and Haptic Harmony ring gesture events — into a single, modality-agnostic `Intent` struct (`id`, `timestamp`, `modality`, `primary_action`, `confidence`, `context_hints`, `parameters`) before any agentic processing. The pipeline's `maybe_attach_normalized_intent` middleware attaches intent metadata as request hints for downstream routing and telemetry. Feature-gated behind `advanced-primitives`; when the feature is disabled the constant `INTENT_NORMALIZATION_ENABLED` is `false` and the middleware branch constant-folds away with zero runtime cost.
 - **Dynamic model capabilities discovery** (`gestura-core-llm`): new `model_discovery` module queries provider APIs at runtime to discover model-specific context limits and output budgets rather than relying on static provider-level defaults. Supported: Gemini (`GET /v1beta/models/{id}` → `inputTokenLimit`), Anthropic (`GET /v1/models/{id}` → `max_input_tokens`), Grok/xAI (`GET /v1/language-models` → per-model context), and Ollama (`POST /api/show` → `model_info.*.context_length`). For providers without a discovery endpoint (OpenAI), limits are learned from `context_length_exceeded` error responses. All discovered limits are stored in `ModelCapabilitiesCache` (thread-safe, application-lifetime) and shared across pipeline instances.
 - **Provider-optimized pipeline configuration**: `PipelineConfig::for_model` and `for_model_with_cache` produce pipeline configs sized to the specific model in use. `AgentPipeline::with_provider_optimized_config` and `with_shared_capabilities_cache` select these dynamically, and the voice processing path (`SpeechProcessor`) now uses `with_provider_optimized_config` instead of the unconfigured `AgentPipeline::new`, ensuring voice-triggered requests respect the active model's context window from the first token.
