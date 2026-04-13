@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **System tray "Start Listening" locks up the app** — tray menu and icon click handlers are dispatched on the macOS main thread; `toggle_listening_mode` and `is_app_configured` both call `try_get_api_key_from_keychain_sync` which uses `std::thread::spawn().join()` to block while reading the keychain, stalling the entire UI event loop. All three tray event entry points ("listen" menu item, single-click, double-click) now dispatch this work via `tauri::async_runtime::spawn` + `tokio::task::spawn_blocking` so the main thread is never blocked.
+
+## [0.9.2] - 2026-04-12
+
+### Fixed
+
 - Editor text content no longer renders below line numbers on macOS in packaged release builds. CodeMirror's structural layout CSS (`display:flex` on `.cm-scroller`, sticky positioning on `.cm-gutters`) is now anchored in the static Vite CSS bundle so the correct layout is present from the first painted frame, eliminating the race between WKWebView's aggressive frame commits and JavaScript runtime style injection.
 - Code folding keyboard shortcuts now function correctly in the text editor. The `codeFolding()` extension was missing alongside `foldGutter()`, causing fold actions wired into the default keymap to silently no-op.
 
