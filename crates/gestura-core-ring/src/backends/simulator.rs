@@ -41,33 +41,86 @@ pub enum SlideDirection {
 }
 
 impl SimulatorRawGesture {
-    /// Safely normalize the proprietary BLE enum into the generic `Gesture` struct
+    /// Safely normalize the proprietary BLE enum into the generic `Gesture` struct,
     /// explicitly isolating intent parsing to the `gestura-core-intent` crate layer.
+    ///
+    /// `gesture_type` is always one of a bounded closed set that aligns exactly
+    /// with the strings recognised by `gestura-core-intent::gesture_to_action`:
+    /// `tap`, `double_tap`, `hold`, `tilt_up`, `tilt_down`, `tilt_left`,
+    /// `tilt_right`.
+    ///
+    /// `Slide` directions are mapped to the corresponding `tilt_*` string so
+    /// they route to meaningful actions (`scroll_up`, `scroll_down`, `previous`,
+    /// `next`) instead of falling through to `unknown_gesture`.
+    ///
+    /// Physical `Tilt` direction is derived from the sign of the `angle` field:
+    /// non-negative → `tilt_right`, negative → `tilt_left`.
+    ///
+    /// Numeric values (intensity, distance, angle) are carried in the
+    /// `acceleration`/`gyroscope` sensor fields so downstream normalisation
+    /// never needs to parse the type string.
     pub fn into_gesture(self) -> Gesture {
-        let (gesture_type, confidence) = match self {
-            Self::Tap { intensity } => (format!("tap_{}", intensity), 1.0),
-            Self::DoubleTap => ("double_tap".to_string(), 1.0),
-            Self::Hold { .. } => ("hold".to_string(), 1.0),
+        match self {
+            Self::Tap { intensity } => Gesture {
+                gesture_type: "tap".to_string(),
+                // Map tap intensity directly to gesture confidence so
+                // downstream intent normalization can weight the signal.
+                confidence: intensity.clamp(0.0, 1.0),
+                acceleration: None,
+                gyroscope: None,
+            },
+            Self::DoubleTap => Gesture {
+                gesture_type: "double_tap".to_string(),
+                confidence: 1.0,
+                acceleration: None,
+                gyroscope: None,
+            },
+            Self::Hold { .. } => Gesture {
+                gesture_type: "hold".to_string(),
+                confidence: 1.0,
+                acceleration: None,
+                gyroscope: None,
+            },
             Self::Slide {
                 direction,
                 distance,
             } => {
-                let dir_str = match direction {
-                    SlideDirection::Up => "up",
-                    SlideDirection::Down => "down",
-                    SlideDirection::Left => "left",
-                    SlideDirection::Right => "right",
+                // Map slide directions to the tilt_* strings that
+                // gesture_to_action recognises so slides route to meaningful
+                // primary actions (scroll_up / scroll_down / previous / next)
+                // rather than falling through to "unknown_gesture".
+                let tilt_type = match direction {
+                    SlideDirection::Up => "tilt_up",
+                    SlideDirection::Down => "tilt_down",
+                    SlideDirection::Left => "tilt_left",
+                    SlideDirection::Right => "tilt_right",
                 };
-                (format!("slide_{}_{}", dir_str, distance), 1.0)
+                Gesture {
+                    gesture_type: tilt_type.to_string(),
+                    confidence: 1.0,
+                    // Carry slide distance as the x-axis acceleration component
+                    // so downstream can read it without parsing the type string.
+                    acceleration: Some([distance as f32, 0.0, 0.0]),
+                    gyroscope: None,
+                }
             }
-            Self::Tilt { angle } => (format!("tilt_{}", angle), 1.0),
-        };
-
-        Gesture {
-            gesture_type,
-            confidence,
-            acceleration: None,
-            gyroscope: None,
+            Self::Tilt { angle } => {
+                // Derive direction from the sign of the angle so the emitted
+                // string is in the recognised set (tilt_right / tilt_left).
+                let tilt_type = if angle >= 0.0 {
+                    "tilt_right"
+                } else {
+                    "tilt_left"
+                };
+                Gesture {
+                    gesture_type: tilt_type.to_string(),
+                    confidence: 1.0,
+                    acceleration: None,
+                    // Carry the raw angle in the x-axis gyroscope component so
+                    // downstream can read it without parsing the type string.
+                    gyroscope: Some([angle, 0.0, 0.0]),
+                }
+            }
         }
     }
 }
@@ -210,14 +263,28 @@ impl RingBackend for SimulatorBackend {
             })
             .to_string();
 
-            // Using WriteWithoutResponse primarily since usually it's faster for haptics.
-            let _ = peripheral
-                .write(
-                    char,
-                    command_json.as_bytes(),
-                    btleplug::api::WriteType::WithoutResponse,
-                )
-                .await;
+            // Choose the write type the characteristic actually supports.
+            // Blindly using WithoutResponse on a WRITE-only characteristic
+            // produces a silent failure; inspect the flags first.
+            let write_type = if char
+                .properties
+                .contains(CharPropFlags::WRITE_WITHOUT_RESPONSE)
+            {
+                btleplug::api::WriteType::WithoutResponse
+            } else {
+                btleplug::api::WriteType::WithResponse
+            };
+
+            if let Err(e) = peripheral
+                .write(char, command_json.as_bytes(), write_type)
+                .await
+            {
+                tracing::warn!(
+                    pattern = ?pattern,
+                    "Failed to send haptic feedback via BLE write: {}",
+                    e
+                );
+            }
         }
     }
 
