@@ -44,14 +44,21 @@ impl SimulatorRawGesture {
     /// Safely normalize the proprietary BLE enum into the generic `Gesture` struct,
     /// explicitly isolating intent parsing to the `gestura-core-intent` crate layer.
     ///
-    /// `gesture_type` is always one of a bounded closed set:
-    /// `tap`, `double_tap`, `hold`, `slide_up`, `slide_down`, `slide_left`,
-    /// `slide_right`, `tilt`.
+    /// `gesture_type` is always one of a bounded closed set that aligns exactly
+    /// with the strings recognised by `gestura-core-intent::gesture_to_action`:
+    /// `tap`, `double_tap`, `hold`, `tilt_up`, `tilt_down`, `tilt_left`,
+    /// `tilt_right`.
+    ///
+    /// `Slide` directions are mapped to the corresponding `tilt_*` string so
+    /// they route to meaningful actions (`scroll_up`, `scroll_down`, `previous`,
+    /// `next`) instead of falling through to `unknown_gesture`.
+    ///
+    /// Physical `Tilt` direction is derived from the sign of the `angle` field:
+    /// non-negative → `tilt_right`, negative → `tilt_left`.
     ///
     /// Numeric values (intensity, distance, angle) are carried in the
-    /// `acceleration`/`gyroscope` sensor fields rather than encoded into the
-    /// type string, so downstream normalization only needs to match a fixed set
-    /// of discriminants.
+    /// `acceleration`/`gyroscope` sensor fields so downstream normalisation
+    /// never needs to parse the type string.
     pub fn into_gesture(self) -> Gesture {
         match self {
             Self::Tap { intensity } => Gesture {
@@ -78,14 +85,18 @@ impl SimulatorRawGesture {
                 direction,
                 distance,
             } => {
-                let dir_str = match direction {
-                    SlideDirection::Up => "up",
-                    SlideDirection::Down => "down",
-                    SlideDirection::Left => "left",
-                    SlideDirection::Right => "right",
+                // Map slide directions to the tilt_* strings that
+                // gesture_to_action recognises so slides route to meaningful
+                // primary actions (scroll_up / scroll_down / previous / next)
+                // rather than falling through to "unknown_gesture".
+                let tilt_type = match direction {
+                    SlideDirection::Up => "tilt_up",
+                    SlideDirection::Down => "tilt_down",
+                    SlideDirection::Left => "tilt_left",
+                    SlideDirection::Right => "tilt_right",
                 };
                 Gesture {
-                    gesture_type: format!("slide_{}", dir_str),
+                    gesture_type: tilt_type.to_string(),
                     confidence: 1.0,
                     // Carry slide distance as the x-axis acceleration component
                     // so downstream can read it without parsing the type string.
@@ -93,14 +104,23 @@ impl SimulatorRawGesture {
                     gyroscope: None,
                 }
             }
-            Self::Tilt { angle } => Gesture {
-                gesture_type: "tilt".to_string(),
-                confidence: 1.0,
-                acceleration: None,
-                // Carry tilt angle as the x-axis gyroscope component so
-                // downstream can read it without parsing the type string.
-                gyroscope: Some([angle, 0.0, 0.0]),
-            },
+            Self::Tilt { angle } => {
+                // Derive direction from the sign of the angle so the emitted
+                // string is in the recognised set (tilt_right / tilt_left).
+                let tilt_type = if angle >= 0.0 {
+                    "tilt_right"
+                } else {
+                    "tilt_left"
+                };
+                Gesture {
+                    gesture_type: tilt_type.to_string(),
+                    confidence: 1.0,
+                    acceleration: None,
+                    // Carry the raw angle in the x-axis gyroscope component so
+                    // downstream can read it without parsing the type string.
+                    gyroscope: Some([angle, 0.0, 0.0]),
+                }
+            }
         }
     }
 }

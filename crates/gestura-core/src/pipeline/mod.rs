@@ -98,29 +98,94 @@ pub(super) async fn send_token_usage_chunk_best_effort(
     }
 }
 
+/// Minimum combined gesture confidence required to route a gesture through the
+/// agentic pipeline.
+///
+/// Combined confidence = device-classifier confidence × intent-mapping confidence.
+/// Examples at this threshold:
+/// - `tap` with device confidence 0.78 → `0.78 × 0.9 = 0.702` — just above gate ✓
+/// - `tilt_left` with device confidence 1.0 → `1.0 × 0.85 = 0.85` — well above ✓
+/// - any `unknown_gesture` → mapping confidence 0.5, always below gate ✗
+///
+/// Gestures below the threshold are logged at `DEBUG` level and discarded to
+/// prevent accidental or misclassified inputs from triggering LLM/tool activity.
+#[cfg(feature = "ring-integration")]
+const MIN_GESTURE_CONFIDENCE: f32 = 0.7;
+
+/// Capacity of the bounded mpsc channel between the gesture receiver loop and
+/// the single background pipeline processor. When full, incoming gestures are
+/// dropped with a `WARN` log rather than blocking the receiver (which would
+/// delay haptic acknowledgement and stall the BLE notification path).
+#[cfg(feature = "ring-integration")]
+const GESTURE_QUEUE_CAPACITY: usize = 32;
+
 /// Process a stream of gestures from the ring backend and route each one
 /// through the agentic pipeline.
 ///
-/// Each gesture is normalized into a unified [`gestura_core_intent::Intent`]
+/// Each gesture is normalised into a unified [`gestura_core_intent::Intent`]
 /// and then submitted to an [`AgentPipeline`] via [`AgentPipeline::process_blocking`].
-/// Haptic feedback is emitted through `observer` only once the pipeline result
-/// is known:
 ///
-/// - **Success** → [`gestura_core_haptics::HapticPattern::Confirm`] (gesture handled)
-/// - **Failure** → [`gestura_core_haptics::HapticPattern::Error`] (gesture received
-///   but pipeline could not route it)
+/// ## Confidence gating
 ///
-/// The pipeline is built once from `config` and shared across gesture tasks via
-/// an [`std::sync::Arc`] so construction cost is paid only at startup.
+/// Gestures with combined confidence below [`MIN_GESTURE_CONFIDENCE`] or with
+/// `primary_action == "unknown_gesture"` are discarded before reaching the
+/// pipeline, preventing accidental inputs from triggering LLM or tool activity.
+///
+/// ## Ordered, bounded processing
+///
+/// A single background task drains a bounded [`tokio::sync::mpsc`] channel
+/// (capacity [`GESTURE_QUEUE_CAPACITY`]) so that:
+/// - Pipeline executions are **sequential** — haptic feedback is emitted in
+///   gesture arrival order.
+/// - **At most one** `process_blocking` call is in flight at any time.
+/// - The receiver loop is **never blocked** by a slow pipeline run; excess
+///   gestures are dropped with a warning instead of building an unbounded queue.
+///
+/// ## Haptic feedback
+///
+/// - **Success** → [`gestura_core_haptics::HapticPattern::Confirm`]
+/// - **Pipeline error** → [`gestura_core_haptics::HapticPattern::Error`]
 #[cfg(feature = "ring-integration")]
 pub async fn process_ring_stream(
     backend: std::sync::Arc<dyn gestura_core_ring::RingBackend>,
     observer: std::sync::Arc<dyn crate::orchestrator::OrchestratorObserver>,
     config: AppConfig,
 ) {
-    let pipeline = std::sync::Arc::new(AgentPipeline::new(config));
-    let mut rx = backend.subscribe_to_gestures().await;
+    type Work = (
+        gestura_core_intent::Intent,
+        std::sync::Arc<dyn crate::orchestrator::OrchestratorObserver>,
+    );
 
+    let pipeline = std::sync::Arc::new(AgentPipeline::new(config));
+
+    // Bounded channel: receiver loop enqueues, single worker drains.
+    let (work_tx, mut work_rx) = tokio::sync::mpsc::channel::<Work>(GESTURE_QUEUE_CAPACITY);
+
+    // Spawn the single sequential processor. Dropping `work_tx` (when the
+    // receiver loop exits) closes the channel and cleanly terminates this task.
+    let pipeline_worker = pipeline.clone();
+    tokio::spawn(async move {
+        while let Some((intent, obs)) = work_rx.recv().await {
+            let request = AgentRequest::new(intent.primary_action.clone()).with_streaming(false);
+            match pipeline_worker.process_blocking(request).await {
+                Ok(_) => {
+                    obs.on_haptic_feedback(gestura_core_haptics::HapticPattern::Confirm, 1.0, 200)
+                        .await;
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        error = %e,
+                        primary_action = %intent.primary_action,
+                        "Ring gesture failed to route through agentic pipeline"
+                    );
+                    obs.on_haptic_feedback(gestura_core_haptics::HapticPattern::Error, 0.5, 150)
+                        .await;
+                }
+            }
+        }
+    });
+
+    let mut rx = backend.subscribe_to_gestures().await;
     loop {
         match rx.recv().await {
             Ok(gesture) => {
@@ -138,45 +203,35 @@ pub async fn process_ring_stream(
 
                 let intent = gestura_core_intent::normalize_input_to_intent(raw_input);
 
+                // Gate: discard low-confidence and unrecognised gestures before
+                // they reach the pipeline to avoid unnecessary LLM/tool runs.
+                if intent.confidence < MIN_GESTURE_CONFIDENCE
+                    || intent.primary_action == "unknown_gesture"
+                {
+                    tracing::debug!(
+                        intent_id = %intent.id,
+                        primary_action = %intent.primary_action,
+                        confidence = intent.confidence,
+                        "Skipping low-confidence or unrecognised gesture"
+                    );
+                    continue;
+                }
+
                 tracing::debug!(
                     intent_id = %intent.id,
                     primary_action = %intent.primary_action,
                     confidence = intent.confidence,
-                    "Ring gesture normalized to intent; routing to agentic pipeline"
+                    "Ring gesture normalised to intent; enqueuing for pipeline"
                 );
 
-                let request =
-                    AgentRequest::new(intent.primary_action.clone()).with_streaming(false);
-
-                let pipeline = pipeline.clone();
-                let observer = observer.clone();
-                tokio::spawn(async move {
-                    match pipeline.process_blocking(request).await {
-                        Ok(_) => {
-                            observer
-                                .on_haptic_feedback(
-                                    gestura_core_haptics::HapticPattern::Confirm,
-                                    1.0,
-                                    200,
-                                )
-                                .await;
-                        }
-                        Err(e) => {
-                            tracing::warn!(
-                                error = %e,
-                                primary_action = %intent.primary_action,
-                                "Ring gesture failed to route through agentic pipeline"
-                            );
-                            observer
-                                .on_haptic_feedback(
-                                    gestura_core_haptics::HapticPattern::Error,
-                                    0.5,
-                                    150,
-                                )
-                                .await;
-                        }
-                    }
-                });
+                // Non-blocking enqueue. If the worker is behind we drop the
+                // gesture rather than blocking the BLE notification receiver.
+                if work_tx.try_send((intent, observer.clone())).is_err() {
+                    tracing::warn!(
+                        capacity = GESTURE_QUEUE_CAPACITY,
+                        "Gesture pipeline queue full; dropping gesture to prevent backlog"
+                    );
+                }
             }
             Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
                 tracing::warn!(
