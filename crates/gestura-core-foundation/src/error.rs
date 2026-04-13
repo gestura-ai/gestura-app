@@ -35,6 +35,13 @@ pub enum AppError {
     #[error("LLM error: {0}")]
     Llm(String),
 
+    /// Context window overflow - request exceeds model's context limit.
+    ///
+    /// This is distinct from generic LLM errors because it requires specific
+    /// recovery action (context compaction) rather than simple retry.
+    #[error("Context overflow: {0}")]
+    ContextOverflow(String),
+
     /// HTTP client error (for API calls)
     #[error("HTTP error: {0}")]
     Http(#[from] reqwest::Error),

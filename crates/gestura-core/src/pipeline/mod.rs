@@ -52,6 +52,7 @@ use crate::tasks::TaskManager;
 use crate::tool_confirmation::TOOL_CONFIRMATIONS;
 use crate::tools::PermissionManager;
 use crate::tools::registry::{ToolDefinition, all_tools};
+use gestura_core_llm::model_capabilities::ModelCapabilitiesCache;
 
 use request_telemetry::{AgentRequestTelemetry, RequestOutcome, RequestRunMode};
 use tool_dispatch::{FinalizePendingToolCallCtx, PendingToolCall};
@@ -164,6 +165,13 @@ pub struct AgentPipeline {
     knowledge_settings: Option<&'static KnowledgeSettingsManager>,
     /// Optional pre-flight LLM tool router (None when strategy is Keyword).
     tool_router: Option<Box<dyn tool_router::ToolRouter>>,
+    /// Model capabilities cache for dynamic context limit discovery.
+    ///
+    /// This cache learns model limits from:
+    /// - API discovery (Gemini, Anthropic, Grok, Ollama)
+    /// - Error parsing (context_length_exceeded messages)
+    /// - User configuration overrides
+    capabilities_cache: ModelCapabilitiesCache,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -462,6 +470,61 @@ impl AgentPipeline {
         if enhancement.applied {
             request.system_prompt = Some(enhancement.system_prompt);
             request.metadata.hints.extend(enhancement.metadata_hints);
+        }
+    }
+
+    /// Normalize a raw request into a unified [`gestura_core_intent::Intent`] and
+    /// attach the result as metadata hints.
+    ///
+    /// When `advanced-primitives` is disabled at compile time the
+    /// [`gestura_core_intent::INTENT_NORMALIZATION_ENABLED`] constant is `false`
+    /// and this entire branch constant-folds away, preserving the original
+    /// pipeline behavior.
+    #[inline(always)]
+    fn maybe_attach_normalized_intent(request: &mut AgentRequest) {
+        if !gestura_core_intent::INTENT_NORMALIZATION_ENABLED {
+            return;
+        }
+
+        let modality =
+            gestura_core_intent::InputModality::from_request_source(&request.metadata.source);
+        let raw_input = gestura_core_intent::RawInput {
+            text: request.input.clone(),
+            modality,
+            session_id: request.metadata.session_id.clone(),
+            gesture_data: None,
+        };
+        let intent = gestura_core_intent::normalize_input_to_intent(raw_input);
+
+        tracing::debug!(
+            intent_id = %intent.id,
+            modality = %intent.modality.label(),
+            action = %intent.primary_action,
+            confidence = intent.confidence,
+            "Normalized input to unified intent"
+        );
+
+        request
+            .metadata
+            .hints
+            .insert("intent.id".to_string(), intent.id.clone());
+        request.metadata.hints.insert(
+            "intent.primary_action".to_string(),
+            intent.primary_action.clone(),
+        );
+        request.metadata.hints.insert(
+            "intent.modality".to_string(),
+            intent.modality.label().to_string(),
+        );
+        request.metadata.hints.insert(
+            "intent.confidence".to_string(),
+            format!("{:.2}", intent.confidence),
+        );
+        if !intent.context_hints.is_empty() {
+            request.metadata.hints.insert(
+                "intent.context_hints".to_string(),
+                intent.context_hints.join(","),
+            );
         }
     }
 
@@ -889,6 +952,7 @@ Respond ONLY with the JSON array, no additional text."#,
             knowledge_store: None,
             knowledge_settings: None,
             tool_router,
+            capabilities_cache: ModelCapabilitiesCache::new(),
         }
     }
 
@@ -905,6 +969,7 @@ Respond ONLY with the JSON array, no additional text."#,
             knowledge_store: None,
             knowledge_settings: None,
             tool_router,
+            capabilities_cache: ModelCapabilitiesCache::new(),
         }
     }
 
@@ -1112,18 +1177,29 @@ Respond ONLY with the JSON array, no additional text."#,
     ///
     /// This automatically sets the context token limit based on the provider's capabilities
     /// and applies user settings from AppConfig.pipeline.
+    ///
+    /// **Note:** For model-specific limits, prefer [`with_model_optimized_config`].
     pub fn with_provider_optimized_config(config: AppConfig) -> Self {
         let provider = config.llm.primary.as_str();
-        let pipeline_config =
-            PipelineConfig::for_provider(provider).with_user_settings(&config.pipeline);
+        let model_id = Self::extract_model_id(&config, provider);
+        let capabilities_cache = ModelCapabilitiesCache::new();
+
+        // Use model-specific capabilities when we have a model ID
+        let pipeline_config = if let Some(model) = model_id {
+            PipelineConfig::for_model_with_cache(provider, model, &capabilities_cache)
+                .with_user_settings(&config.pipeline)
+        } else {
+            PipelineConfig::for_provider(provider).with_user_settings(&config.pipeline)
+        };
 
         tracing::info!(
             provider = provider,
+            model = model_id.unwrap_or("unknown"),
             max_context_tokens = pipeline_config.max_context_tokens,
             max_history_messages = pipeline_config.max_history_messages,
             auto_compact_threshold = pipeline_config.auto_compact_threshold,
             compaction_strategy = ?pipeline_config.compaction_strategy,
-            "Created pipeline with provider-optimized configuration and user settings"
+            "Created pipeline with model-optimized configuration and user settings"
         );
 
         let arc_config = std::sync::Arc::new(config.clone());
@@ -1137,7 +1213,72 @@ Respond ONLY with the JSON array, no additional text."#,
             knowledge_store: None,
             knowledge_settings: None,
             tool_router,
+            capabilities_cache,
         }
+    }
+
+    /// Create a pipeline with a shared capabilities cache for dynamic limit discovery.
+    ///
+    /// This allows the pipeline to learn model limits from errors and API discovery,
+    /// sharing that knowledge across pipeline instances.
+    pub fn with_shared_capabilities_cache(
+        config: AppConfig,
+        capabilities_cache: ModelCapabilitiesCache,
+    ) -> Self {
+        let provider = config.llm.primary.as_str();
+        let model_id = Self::extract_model_id(&config, provider);
+
+        let pipeline_config = if let Some(model) = model_id {
+            PipelineConfig::for_model_with_cache(provider, model, &capabilities_cache)
+                .with_user_settings(&config.pipeline)
+        } else {
+            PipelineConfig::for_provider(provider).with_user_settings(&config.pipeline)
+        };
+
+        tracing::info!(
+            provider = provider,
+            model = model_id.unwrap_or("unknown"),
+            max_context_tokens = pipeline_config.max_context_tokens,
+            "Created pipeline with shared capabilities cache"
+        );
+
+        let arc_config = std::sync::Arc::new(config.clone());
+        let tool_router = build_tool_router(&pipeline_config.tool_routing_strategy, arc_config);
+        Self {
+            config,
+            context_manager: Self::build_context_manager(),
+            analyzer: RequestAnalyzer::new(),
+            pipeline_config,
+            permission_manager: PermissionManager::new(),
+            knowledge_store: None,
+            knowledge_settings: None,
+            tool_router,
+            capabilities_cache,
+        }
+    }
+
+    /// Extract the model ID from config for the given provider.
+    fn extract_model_id<'a>(config: &'a AppConfig, provider: &str) -> Option<&'a str> {
+        let model = match provider {
+            "openai" => config.llm.openai.as_ref().map(|c| c.model.as_str()),
+            "anthropic" => config.llm.anthropic.as_ref().map(|c| c.model.as_str()),
+            "grok" => config.llm.grok.as_ref().map(|c| c.model.as_str()),
+            "gemini" => config.llm.gemini.as_ref().map(|c| c.model.as_str()),
+            "ollama" => config.llm.ollama.as_ref().map(|c| c.model.as_str()),
+            _ => None,
+        };
+        tracing::debug!(
+            provider = provider,
+            model = ?model,
+            has_openai_config = config.llm.openai.is_some(),
+            "[extract_model_id] Extracted model ID from config"
+        );
+        model
+    }
+
+    /// Get a reference to the capabilities cache for learning model limits.
+    pub fn capabilities_cache(&self) -> &ModelCapabilitiesCache {
+        &self.capabilities_cache
     }
 
     fn effective_request_max_iterations(&self, request: &AgentRequest) -> Option<usize> {
@@ -1269,6 +1410,7 @@ Respond ONLY with the JSON array, no additional text."#,
             analysis.confidence
         );
         self.maybe_apply_advanced_primitives_middleware(&mut request, &analysis).await;
+        Self::maybe_attach_normalized_intent(&mut request);
 
         // 1b. Pre-flight LLM tool routing (only when strategy != Keyword).
         // The router merges its selection into analysis.suggested_tools, which
@@ -1397,6 +1539,7 @@ Respond ONLY with the JSON array, no additional text."#,
         // 3.1+3.2. Enrich context with memory bank and enabled knowledge items.
         self.enrich_resolved_context(
             &mut resolved_context,
+            &request,
             request.metadata.workspace_dir.as_deref(),
             &request.input,
             &request.metadata,
@@ -1444,6 +1587,7 @@ Respond ONLY with the JSON array, no additional text."#,
             });
             self.enrich_resolved_context(
                 &mut resolved_context,
+                &request,
                 request.metadata.workspace_dir.as_deref(),
                 &request.input,
                 &request.metadata,
@@ -1517,16 +1661,19 @@ Respond ONLY with the JSON array, no additional text."#,
                 "Agent request seeded requires_build_and_test=true from requirement-detection input"
             );
         }
-        let mut response = self
+
+        // Execute with context overflow recovery: if we get a ContextOverflow error,
+        // learn the actual model limit, force compaction, and retry once.
+        let mut response = match self
             .execute_agentic_loop_streaming(
-                prompt,
+                prompt.clone(),
                 requires_build_and_test,
                 requires_mutating_file_tool_success,
-                relevant_tools,
+                relevant_tools.clone(),
                 include_mcp_tool_schemas,
-                resolved_context,
-                tx,
-                cancel_token,
+                resolved_context.clone(),
+                tx.clone(),
+                cancel_token.clone(),
                 workspace.as_ref(),
                 request.metadata.session_id.clone(),
                 request.metadata.task_id.clone(),
@@ -1540,7 +1687,133 @@ Respond ONLY with the JSON array, no additional text."#,
                 tools = relevant_tool_count,
                 max_iterations = ?effective_max_iterations
             ))
-            .await?;
+            .await
+        {
+            Ok(resp) => resp,
+            Err(AppError::ContextOverflow(ref error_msg)) => {
+                // Learn the actual limit from the error message and persist it in
+                // the cache for future requests.  We keep the result here so we
+                // can derive a correct prompt budget for this retry attempt.
+                let provider = self.config.llm.primary.as_str();
+                let model_id = Self::extract_model_id(&self.config, provider)
+                    .unwrap_or("unknown");
+
+                let learned_caps = self.capabilities_cache.learn_from_error(
+                    provider,
+                    model_id,
+                    error_msg,
+                );
+
+                if let Some(ref caps) = learned_caps {
+                    tracing::info!(
+                        provider = provider,
+                        model = model_id,
+                        learned_context_length = caps.context_length,
+                        learned_max_input_tokens = caps.max_input_tokens(),
+                        "Learned model context limit from overflow error; \
+                         will re-budget retry prompt to avoid immediate re-overflow"
+                    );
+                } else {
+                    tracing::warn!(
+                        provider = provider,
+                        model = model_id,
+                        error_msg = %error_msg,
+                        "Could not parse context limit from overflow error; \
+                         retry prompt will use the configured pipeline limits"
+                    );
+                }
+
+                // Compute the effective prompt budget for the retry.
+                //
+                // Using the learned limit (when available) prevents the retry from
+                // building a prompt that still exceeds the model's *actual* context
+                // window.  Before this fix, `truncate_prompt_if_needed` was called
+                // here, which always reads from `self.pipeline_config` — a stale
+                // value that may be larger than what the model really accepts.  If
+                // the overflow happened because our configured limit was too high,
+                // the retry would immediately overflow again.
+                let retry_max_input_tokens = learned_caps
+                    .as_ref()
+                    .map(|c| c.max_input_tokens())
+                    .unwrap_or_else(|| {
+                        self.pipeline_config
+                            .max_context_tokens
+                            .saturating_sub(self.pipeline_config.max_output_tokens)
+                    });
+
+                // Notify user about recovery attempt
+                let _ = tx.send(StreamChunk::Status {
+                    message: "Context overflow detected. Compacting conversation history and retrying..."
+                        .to_string(),
+                }).await;
+
+                // Force aggressive compaction on the history
+                let compacted_history = self.force_context_compaction(
+                    &request.history,
+                    &request.metadata,
+                ).await;
+
+                // Re-resolve context with compacted history
+                let mut compacted_request = request.clone();
+                compacted_request.history = compacted_history;
+
+                let compacted_analysis = self.analyzer.analyze(&compacted_request.input);
+                let mut compacted_context = self.context_manager.resolve_context(
+                    &compacted_request.input,
+                    &compacted_analysis,
+                    &compacted_request.history,
+                    compacted_request.metadata.workspace_dir.as_deref(),
+                );
+                self.enrich_resolved_context(
+                    &mut compacted_context,
+                    &compacted_request,
+                    compacted_request.metadata.workspace_dir.as_deref(),
+                    &compacted_request.input,
+                    &compacted_request.metadata,
+                ).await;
+
+                // Rebuild prompt using the learned limit so the retry prompt is
+                // guaranteed to fit within the model's real context window.
+                let (compacted_prompt, _) = self.truncate_prompt_with_budget(
+                    &compacted_request,
+                    &mut compacted_context,
+                    retry_max_input_tokens,
+                );
+
+                // Retry with compacted context
+                tracing::info!(
+                    retry_max_input_tokens = retry_max_input_tokens,
+                    learned_from_error = learned_caps.is_some(),
+                    original_history_len = request.history.len(),
+                    compacted_history_len = compacted_request.history.len(),
+                    "Retrying agent loop with compacted context and re-budgeted prompt"
+                );
+
+                self.execute_agentic_loop_streaming(
+                    compacted_prompt,
+                    requires_build_and_test,
+                    requires_mutating_file_tool_success,
+                    relevant_tools,
+                    include_mcp_tool_schemas,
+                    compacted_context,
+                    tx,
+                    cancel_token,
+                    workspace.as_ref(),
+                    compacted_request.metadata.session_id.clone(),
+                    compacted_request.metadata.task_id.clone(),
+                    effective_max_iterations,
+                    compacted_request.metadata.permission_level,
+                    &telemetry,
+                )
+                .instrument(tracing::info_span!(
+                    "agent.pipeline.execute_agent_loop",
+                    mode = "streaming_retry_after_compaction",
+                    tools = relevant_tool_count,
+                ))
+                .await?
+            }
+            Err(e) => return Err(e),
+        };
 
         response.truncated = truncated;
 
@@ -2067,6 +2340,7 @@ Respond ONLY with the JSON array, no additional text."#,
         });
         telemetry.record_analysis(&analysis).await;
         self.maybe_apply_advanced_primitives_middleware(&mut request, &analysis).await;
+        Self::maybe_attach_normalized_intent(&mut request);
 
         // 1b. Pre-flight LLM tool routing (only when strategy != Keyword).
         if let Some(router) = &self.tool_router
@@ -2145,6 +2419,7 @@ Respond ONLY with the JSON array, no additional text."#,
         // 3.1+3.2. Enrich context with memory bank and enabled knowledge items.
         self.enrich_resolved_context(
             &mut resolved_context,
+            &request,
             request.metadata.workspace_dir.as_deref(),
             &request.input,
             &request.metadata,
@@ -2217,6 +2492,7 @@ Respond ONLY with the JSON array, no additional text."#,
             });
             self.enrich_resolved_context(
                 &mut resolved_context,
+                &request,
                 request.metadata.workspace_dir.as_deref(),
                 &request.input,
                 &request.metadata,
@@ -2693,6 +2969,7 @@ Respond ONLY with the JSON array, no additional text."#,
     async fn enrich_resolved_context(
         &self,
         resolved_context: &mut crate::context::ResolvedContext,
+        request: &AgentRequest,
         workspace_dir: Option<&std::path::Path>,
         query: &str,
         metadata: &RequestMetadata,
@@ -2754,13 +3031,24 @@ Respond ONLY with the JSON array, no additional text."#,
 
         // 3.3 Knowledge items — only available when the pipeline was wired with
         //     `with_knowledge()` *and* the session has items enabled.
-        if let Some(knowledge_context) = self.load_enabled_knowledge(metadata.session_id.as_deref())
-        {
+        let knowledge_budget_tokens =
+            self.remaining_knowledge_budget_tokens(request, resolved_context);
+        if let Some(knowledge_context) = self.load_enabled_knowledge(
+            metadata.session_id.as_deref(),
+            query,
+            knowledge_budget_tokens,
+        ) {
             tracing::debug!(
                 knowledge_context_len = knowledge_context.len(),
+                knowledge_budget_tokens = knowledge_budget_tokens,
                 "Added enabled knowledge to request"
             );
             resolved_context.knowledge.push(knowledge_context);
+        } else {
+            tracing::debug!(
+                knowledge_budget_tokens = knowledge_budget_tokens,
+                "No enabled knowledge added after applying prompt budget"
+            );
         }
     }
 }

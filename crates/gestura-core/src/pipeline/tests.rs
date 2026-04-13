@@ -370,6 +370,145 @@ fn build_prompt_includes_memory_sections() {
     assert!(prompt.contains("Shared directive summary"));
 }
 
+#[test]
+fn truncate_prompt_if_needed_compacts_memory_when_no_history_or_files_exist() {
+    let pipeline = AgentPipeline::with_config(
+        AppConfig::default(),
+        PipelineConfig {
+            max_context_tokens: 2200,
+            max_output_tokens: 1300,
+            ..Default::default()
+        },
+    );
+    let request = AgentRequest::new("please inspect the repo and fix the issue")
+        .with_system_prompt("You are a concise coding assistant.");
+    let mut context = crate::context::ResolvedContext {
+        memory_sections: vec![
+            "### Session Working Memory\n".to_string() + &"A".repeat(2200),
+            "### Long-Term Memory\n".to_string() + &"B".repeat(2200),
+        ],
+        history_summary: Some("summary ".repeat(1500)),
+        ..Default::default()
+    };
+
+    let initial_prompt = pipeline.build_prompt(&request, &context);
+    assert!(matches!(
+        pipeline.check_token_limit(&initial_prompt),
+        TokenLimitStatus::Exceeded { .. }
+    ));
+
+    let (optimized_prompt, truncated) = pipeline.truncate_prompt_if_needed(&request, &mut context);
+
+    assert!(truncated);
+    assert!(context.history_summary.is_none());
+    assert!(matches!(
+        pipeline.check_token_limit(&optimized_prompt),
+        TokenLimitStatus::Ok { .. } | TokenLimitStatus::Warning { .. }
+    ));
+}
+
+// ---------------------------------------------------------------------------
+// truncate_prompt_with_budget — regression for the context-overflow retry bug
+// ---------------------------------------------------------------------------
+
+/// `truncate_prompt_with_budget` must use the *explicit* budget, not
+/// `pipeline_config.max_context_tokens`, even when the configured value is
+/// large enough that `truncate_prompt_if_needed` would not truncate at all.
+///
+/// This simulates the context-overflow retry path: the pipeline was configured
+/// with a limit higher than the model actually supports. After learning the real
+/// limit from the error, `truncate_prompt_with_budget` is called with the
+/// learned budget so the retry prompt is guaranteed to fit.
+#[test]
+fn truncate_prompt_with_budget_truncates_to_explicit_limit_not_pipeline_config() {
+    // Pipeline configured with a generous limit (e.g., from a static heuristic).
+    let pipeline = AgentPipeline::with_config(
+        AppConfig::default(),
+        PipelineConfig {
+            max_context_tokens: 200_000,
+            max_output_tokens: 8_192,
+            ..Default::default()
+        },
+    );
+
+    // Build a context with enough memory to clearly exceed the learned budget
+    // but comfortably fit inside the large configured limit.
+    let request = AgentRequest::new("continue the refactor")
+        .with_system_prompt("You are a concise coding assistant.");
+    let large_memory = "M".repeat(20_000); // ~5 000 estimated tokens
+    let mut context = crate::context::ResolvedContext {
+        memory_sections: vec![large_memory.clone(), large_memory.clone()],
+        history_summary: Some("H".repeat(10_000)),
+        ..Default::default()
+    };
+
+    // Verify precondition: the default wrapper would NOT truncate.
+    let initial_prompt = pipeline.build_prompt(&request, &context);
+    let initial_tokens = AgentPipeline::estimate_tokens(&initial_prompt);
+    let configured_budget = 200_000_usize.saturating_sub(8_192);
+    assert!(
+        initial_tokens < configured_budget,
+        "precondition: prompt ({initial_tokens} tokens) should fit in configured limit \
+         ({configured_budget}) so that truncate_prompt_if_needed would be a no-op"
+    );
+
+    // Simulate what learn_from_error returns: the model really only accepts
+    // a small context window.  Choose a budget smaller than the initial prompt.
+    let learned_max_input = initial_tokens / 2;
+    assert!(
+        learned_max_input < initial_tokens,
+        "precondition: learned budget must be smaller than the current prompt"
+    );
+
+    let (result_prompt, truncated) =
+        pipeline.truncate_prompt_with_budget(&request, &mut context, learned_max_input);
+
+    assert!(
+        truncated,
+        "truncate_prompt_with_budget should have truncated to fit the explicit budget"
+    );
+
+    let result_tokens = AgentPipeline::estimate_tokens(&result_prompt);
+    assert!(
+        result_tokens <= learned_max_input,
+        "result prompt ({result_tokens} tokens) must fit within the learned budget \
+         ({learned_max_input} tokens)"
+    );
+}
+
+/// `truncate_prompt_if_needed` (the wrapper) must continue to work correctly
+/// — it should truncate when the prompt exceeds the configured limit.
+#[test]
+fn truncate_prompt_if_needed_still_uses_pipeline_config_limit() {
+    let pipeline = AgentPipeline::with_config(
+        AppConfig::default(),
+        PipelineConfig {
+            max_context_tokens: 2_200,
+            max_output_tokens: 1_300,
+            ..Default::default()
+        },
+    );
+    let request =
+        AgentRequest::new("fix the bug").with_system_prompt("You are a concise coding assistant.");
+    let mut context = crate::context::ResolvedContext {
+        memory_sections: vec!["### Memory\n".to_string() + &"Z".repeat(3_000)],
+        history_summary: Some("summary ".repeat(500)),
+        ..Default::default()
+    };
+
+    let initial_prompt = pipeline.build_prompt(&request, &context);
+    assert!(
+        matches!(
+            pipeline.check_token_limit(&initial_prompt),
+            TokenLimitStatus::Exceeded { .. }
+        ),
+        "precondition: initial prompt must exceed the small configured limit"
+    );
+
+    let (_, truncated) = pipeline.truncate_prompt_if_needed(&request, &mut context);
+    assert!(truncated, "truncate_prompt_if_needed should have truncated");
+}
+
 #[tokio::test]
 async fn enrich_resolved_context_includes_shared_coordination_memory() {
     let temp = tempdir().unwrap();
@@ -405,11 +544,13 @@ async fn enrich_resolved_context_includes_shared_coordination_memory() {
         memory_tags: vec!["workflow-run:run-shared".to_string()],
         ..Default::default()
     };
+    let request = AgentRequest::new("continue implementing the workflow");
     let mut context = crate::context::ResolvedContext::default();
 
     pipeline
         .enrich_resolved_context(
             &mut context,
+            &request,
             Some(temp.path()),
             "continue implementing the workflow",
             &metadata,
@@ -465,11 +606,13 @@ async fn enrich_resolved_context_bounds_shared_coordination_memory_to_three_entr
         memory_tags: vec!["workflow-run:run-shared".to_string()],
         ..Default::default()
     };
+    let request = AgentRequest::new("continue implementing the workflow");
     let mut context = crate::context::ResolvedContext::default();
 
     pipeline
         .enrich_resolved_context(
             &mut context,
+            &request,
             Some(temp.path()),
             "continue implementing the workflow",
             &metadata,
@@ -506,11 +649,14 @@ async fn enrich_resolved_context_includes_enabled_session_knowledge_in_prompt() 
         session_id: Some("session-knowledge".to_string()),
         ..Default::default()
     };
+    let request = AgentRequest::new("help me fix async rust ownership issues")
+        .with_session("session-knowledge");
     let mut context = crate::context::ResolvedContext::default();
 
     pipeline
         .enrich_resolved_context(
             &mut context,
+            &request,
             Some(temp.path()),
             "help me fix async rust ownership issues",
             &metadata,
@@ -530,11 +676,66 @@ async fn enrich_resolved_context_includes_enabled_session_knowledge_in_prompt() 
             .any(|section| section.contains("Rust Expert"))
     );
 
-    let request = AgentRequest::new("help me fix async rust ownership issues")
-        .with_session("session-knowledge");
     let prompt = pipeline.build_prompt(&request, &context);
     assert!(prompt.contains("## Specialized Knowledge"));
     assert!(prompt.contains("Rust Expert"));
+}
+
+#[test]
+fn enrich_resolved_context_limits_enabled_knowledge_to_remaining_budget() {
+    let temp = tempdir().unwrap();
+    let store = Box::leak(Box::new(crate::knowledge::KnowledgeStore::new(
+        temp.path().join("knowledge"),
+    )));
+    store.register(
+        crate::knowledge::KnowledgeItem::new(
+            "relevant-rust",
+            "Relevant Rust Expert",
+            "Rust ownership and async guidance",
+        )
+        .with_triggers(["rust", "ownership", "async"])
+        .with_category("language")
+        .with_priority(20)
+        .with_content("rust guidance ".repeat(140)),
+    );
+    store.register(
+        crate::knowledge::KnowledgeItem::new(
+            "irrelevant-sales",
+            "Irrelevant Sales Expert",
+            "Sales forecasting and pipeline hygiene guidance",
+        )
+        .with_triggers(["forecast", "quota", "pipeline"])
+        .with_category("sales")
+        .with_priority(90)
+        .with_content("sales guidance ".repeat(140)),
+    );
+
+    let settings = Box::leak(Box::new(crate::knowledge::KnowledgeSettingsManager::new(
+        temp.path().to_path_buf(),
+    )));
+    let mut session_settings =
+        crate::knowledge::SessionKnowledgeSettings::new("session-budgeted-knowledge".to_string());
+    session_settings.enable("relevant-rust".to_string());
+    session_settings.enable("irrelevant-sales".to_string());
+    settings.save(&session_settings).unwrap();
+
+    let pipeline = AgentPipeline::new(AppConfig::default()).with_knowledge(store, settings);
+    let knowledge = pipeline
+        .load_enabled_knowledge(
+            Some("session-budgeted-knowledge"),
+            "help me fix rust async ownership bugs",
+            520,
+        )
+        .expect("knowledge should fit within explicit budget");
+
+    assert!(knowledge.contains("## Specialized Knowledge"));
+    assert!(knowledge.contains("Relevant Rust Expert"));
+    assert!(!knowledge.contains("sales guidance"));
+    assert!(
+        knowledge.contains("Additional enabled knowledge omitted")
+            || !knowledge.contains("Irrelevant Sales Expert")
+    );
+    assert!(AgentPipeline::estimate_tokens(&knowledge) <= 520);
 }
 
 #[tokio::test]
@@ -561,10 +762,12 @@ async fn enrich_resolved_context_skips_shared_coordination_without_scope_hints()
         .await
         .unwrap();
 
+    let request = AgentRequest::new("continue implementing the workflow");
     let mut context = crate::context::ResolvedContext::default();
     pipeline
         .enrich_resolved_context(
             &mut context,
+            &request,
             Some(temp.path()),
             "continue implementing the workflow",
             &RequestMetadata::default(),

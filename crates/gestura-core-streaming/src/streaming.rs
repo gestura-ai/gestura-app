@@ -473,6 +473,17 @@ pub enum StreamChunk {
     Paused,
     /// An error occurred
     Error(String),
+    /// Context overflow error - requires compaction before retry.
+    ///
+    /// This is emitted when the LLM request exceeds the model's context window.
+    /// Unlike generic errors, this signals to the pipeline that it should:
+    /// 1. Compact the context (summarize history, remove old messages)
+    /// 2. Retry the request with the reduced context
+    /// 3. Optionally learn the model's actual limit for future requests
+    ContextOverflow {
+        /// The original error message from the provider
+        error_message: String,
+    },
     /// Experiential reflection phase has started (ERL-inspired).
     ///
     /// UIs can use this to surface that the pipeline is performing a
@@ -499,6 +510,8 @@ pub enum StreamChunk {
 enum AttemptOutcome {
     Success,
     RetryableError,
+    /// Context length exceeded - needs compaction, not blind retry
+    ContextOverflowError,
     FatalError,
     Cancelled,
     Paused,
@@ -623,6 +636,16 @@ async fn forward_attempt_stream(
                 };
             }
             StreamChunk::Error(e) => {
+                // Context overflow errors need special handling - they cannot be fixed
+                // by blind retries. The caller should compact context and retry.
+                if is_context_overflow_message(e) {
+                    return AttemptForwardResult {
+                        outcome: AttemptOutcome::ContextOverflowError,
+                        forwarded_output,
+                        error: Some(e.clone()),
+                    };
+                }
+
                 // If we already streamed anything to the caller, we cannot safely retry
                 // without causing duplicated / confusing output.
                 if forwarded_output {
@@ -638,6 +661,14 @@ async fn forward_attempt_stream(
                     outcome: AttemptOutcome::RetryableError,
                     forwarded_output,
                     error: Some(e.clone()),
+                };
+            }
+            StreamChunk::ContextOverflow { error_message } => {
+                // Context overflow received as a chunk - forward and signal recovery needed
+                return AttemptForwardResult {
+                    outcome: AttemptOutcome::ContextOverflowError,
+                    forwarded_output,
+                    error: Some(error_message.clone()),
                 };
             }
         }
@@ -1344,14 +1375,38 @@ async fn stream_openai_chat_compatible(
         let status = response.status();
         let retry_after = response_retry_after_hint(response.headers());
         let body = response.text().await.unwrap_or_default();
-        return Err(AppError::Llm(format_openai_http_error(
+
+        // ALWAYS log this so we know this code path is being hit
+        tracing::error!(
+            status = %status,
+            body_len = body.len(),
+            "[CONTEXT_OVERFLOW_CHECK] HTTP error received in stream_openai_chat_compatible"
+        );
+
+        let error_msg = format_openai_http_error(
             status,
             "OpenAI",
             model,
             OpenAiApi::ChatCompletions,
             &body,
             retry_after,
-        )));
+        );
+
+        // Check if this is a context overflow error - needs special handling
+        let is_overflow =
+            is_context_overflow_message(&error_msg) || is_context_overflow_message(&body);
+        tracing::error!(
+            is_overflow = is_overflow,
+            body_preview = %body.chars().take(300).collect::<String>(),
+            "[CONTEXT_OVERFLOW_CHECK] Checking for context overflow"
+        );
+
+        if is_overflow {
+            tracing::error!("[CONTEXT_OVERFLOW_CHECK] Returning AppError::ContextOverflow");
+            return Err(AppError::ContextOverflow(error_msg));
+        }
+
+        return Err(AppError::Llm(error_msg));
     }
 
     let mut stream = response.bytes_stream();
@@ -1457,14 +1512,21 @@ async fn stream_openai_responses(
         let status = response.status();
         let retry_after = response_retry_after_hint(response.headers());
         let body = response.text().await.unwrap_or_default();
-        return Err(AppError::Llm(format_openai_http_error(
+        let error_msg = format_openai_http_error(
             status,
             "OpenAI",
             model,
             OpenAiApi::Responses,
             &body,
             retry_after,
-        )));
+        );
+
+        // Check if this is a context overflow error
+        if is_context_overflow_message(&error_msg) || is_context_overflow_message(&body) {
+            return Err(AppError::ContextOverflow(error_msg));
+        }
+
+        return Err(AppError::Llm(error_msg));
     }
 
     let mut stream = response.bytes_stream();
@@ -1695,10 +1757,14 @@ pub async fn stream_anthropic(req: AnthropicStreamRequest<'_>) -> Result<(), App
     if !response.status().is_success() {
         let status = response.status();
         let body = response.text().await.unwrap_or_default();
-        return Err(AppError::Llm(format!(
-            "Anthropic HTTP {}: {}",
-            status, body
-        )));
+        let error_msg = format!("Anthropic HTTP {}: {}", status, body);
+
+        // Check if this is a context overflow error
+        if is_context_overflow_message(&error_msg) || is_context_overflow_message(&body) {
+            return Err(AppError::ContextOverflow(error_msg));
+        }
+
+        return Err(AppError::Llm(error_msg));
     }
 
     let mut stream = response.bytes_stream();
@@ -1843,7 +1909,14 @@ pub async fn stream_gemini(
     if !response.status().is_success() {
         let status = response.status();
         let body = response.text().await.unwrap_or_default();
-        return Err(AppError::Llm(format!("Gemini HTTP {}: {}", status, body)));
+        let error_msg = format!("Gemini HTTP {}: {}", status, body);
+
+        // Check if this is a context overflow error
+        if is_context_overflow_message(&error_msg) || is_context_overflow_message(&body) {
+            return Err(AppError::ContextOverflow(error_msg));
+        }
+
+        return Err(AppError::Llm(error_msg));
     }
 
     let mut stream = response.bytes_stream();
@@ -2018,7 +2091,14 @@ pub async fn stream_ollama(
     if !response.status().is_success() {
         let status = response.status();
         let body = response.text().await.unwrap_or_default();
-        return Err(AppError::Llm(format!("Ollama HTTP {}: {}", status, body)));
+        let error_msg = format!("Ollama HTTP {}: {}", status, body);
+
+        // Check if this is a context overflow error
+        if is_context_overflow_message(&error_msg) || is_context_overflow_message(&body) {
+            return Err(AppError::ContextOverflow(error_msg));
+        }
+
+        return Err(AppError::Llm(error_msg));
     }
 
     // Immediately notify the caller that we have a connection. This resets
@@ -2202,6 +2282,31 @@ async fn stream_unconfigured_error(
 /// missing local configuration (e.g., absent API key).
 fn is_unconfigured_provider_message(message: &str) -> bool {
     message.contains("is not configured") || message.contains("not configured")
+}
+
+/// Returns `true` if an error message indicates a context length overflow.
+///
+/// These errors cannot be fixed by blind retries - they require context compaction
+/// or switching to a model with a larger context window.
+fn is_context_overflow_message(message: &str) -> bool {
+    let msg_lower = message.to_lowercase();
+    // OpenAI format: "contextlengthexceeded" (no underscore in JSON code field)
+    // or "context_length_exceeded" (with underscore in some error messages)
+    let is_overflow = msg_lower.contains("contextlengthexceeded")
+        || msg_lower.contains("context_length_exceeded")
+        || msg_lower.contains("context length")
+        || msg_lower.contains("maximum context")
+        || (msg_lower.contains("tokens") && msg_lower.contains("exceeds"))
+        || (msg_lower.contains("token") && msg_lower.contains("limit"));
+
+    if is_overflow {
+        tracing::warn!(
+            message_preview = %message.chars().take(200).collect::<String>(),
+            "Detected context overflow error"
+        );
+    }
+
+    is_overflow
 }
 
 /// Returns `true` if an [`AppError`] indicates a provider is not configured.
@@ -2401,6 +2506,28 @@ pub async fn start_streaming_with_fallback(
                 );
                 return Err(err);
             }
+            AttemptOutcome::ContextOverflowError => {
+                // Context overflow cannot be fixed by retry - caller must compact context.
+                // Return immediately with a specific error so the pipeline can handle it.
+                let error_msg = forward
+                    .error
+                    .clone()
+                    .unwrap_or_else(|| "Context length exceeded".to_string());
+
+                tracing::warn!(
+                    error = %error_msg,
+                    "Context overflow detected - returning to pipeline for compaction"
+                );
+
+                // Emit a special chunk so the pipeline knows to compact
+                let _ = tx
+                    .send(StreamChunk::ContextOverflow {
+                        error_message: error_msg.clone(),
+                    })
+                    .await;
+
+                return Err(AppError::ContextOverflow(error_msg));
+            }
             AttemptOutcome::RetryableError => {
                 if let Some(ref e) = forward.error {
                     last_error = Some(AppError::Llm(e.clone()));
@@ -2434,6 +2561,37 @@ pub async fn start_streaming_with_fallback(
         if unconfigured {
             skipped_retries_due_to_unconfigured = true;
             break;
+        }
+
+        // Context overflow errors require compaction, not blind retries.
+        // Return immediately so the pipeline can compact and retry.
+        let is_context_overflow = forward
+            .error
+            .as_deref()
+            .map(is_context_overflow_message)
+            .unwrap_or(false)
+            || matches!(&last_error, Some(AppError::ContextOverflow(_)));
+
+        if is_context_overflow {
+            let error_msg = forward
+                .error
+                .clone()
+                .or_else(|| last_error.as_ref().map(|e| e.to_string()))
+                .unwrap_or_else(|| "Context length exceeded".to_string());
+
+            tracing::warn!(
+                error = %error_msg,
+                "Context overflow detected - skipping retries, returning for compaction"
+            );
+
+            // Emit context overflow chunk so UI knows what's happening
+            let _ = tx
+                .send(StreamChunk::ContextOverflow {
+                    error_message: error_msg.clone(),
+                })
+                .await;
+
+            return Err(AppError::ContextOverflow(error_msg));
         }
 
         // Only back off if we will actually perform another attempt.

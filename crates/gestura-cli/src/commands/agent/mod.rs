@@ -1481,6 +1481,16 @@ fn execute_basic_mode_turn(
                     print!("  ");
                     let _ = std::io::stdout().flush();
                 }
+                StreamChunk::ContextOverflow { error_message } => {
+                    println!();
+                    println!(
+                        "  {} {}",
+                        "⚠".yellow(),
+                        format!("Context overflow detected: {error_message}").dimmed()
+                    );
+                    print!("  ");
+                    let _ = std::io::stdout().flush();
+                }
                 StreamChunk::MemoryBankSaved {
                     file_path,
                     session_id,
