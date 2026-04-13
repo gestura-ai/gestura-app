@@ -1,6 +1,6 @@
 [package]
 name = "gestura-core-ble"
-version = "0.10.0"
+version.workspace = true
 edition = "2024"
 license = "LicenseRef-Gestura-Prosperity-1.0"
 
