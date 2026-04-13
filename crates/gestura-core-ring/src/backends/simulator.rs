@@ -1,4 +1,5 @@
-use crate::{Gesture, RingBackend, RingStatus};
+use crate::{RingBackend, RingStatus};
+use gestura_core_gestures::Gesture;
 use async_trait::async_trait;
 use btleplug::api::{
     Central, Characteristic, Manager as _, Peripheral as _, ScanFilter, CharPropFlags,

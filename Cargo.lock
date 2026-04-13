@@ -2841,6 +2841,7 @@ dependencies = [
  "gestura-core-context",
  "gestura-core-explorer",
  "gestura-core-foundation",
+ "gestura-core-gestures",
  "gestura-core-haptics",
  "gestura-core-hooks",
  "gestura-core-intent",
@@ -3015,6 +3016,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "gestura-core-gestures"
+version = "0.10.0"
+dependencies = [
+ "serde",
+]
+
+[[package]]
 name = "gestura-core-haptics"
 version = "0.10.0"
 dependencies = [
@@ -3168,6 +3176,7 @@ dependencies = [
  "async-trait",
  "btleplug 0.11.8",
  "futures",
+ "gestura-core-gestures",
  "gestura-core-haptics",
  "serde",
  "serde_json",

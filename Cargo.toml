@@ -38,6 +38,7 @@ members = [
     "crates/gestura-core-intent",
     "crates/gestura-core-ring",
     "crates/gestura-core-haptics",
+    "crates/gestura-core-gestures",
 ]
 
 # Default members for `cargo build` without specifying a package

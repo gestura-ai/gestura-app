@@ -13,6 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Supports BLE GATT communication using `btleplug` exclusively for the `SimulatorBackend` to connect to the Haptic Harmony Simulator app (using UUID `12345678-1234-5678-9abc-123456789abc`).
   - Smoothly parses and handles `Tap`, `DoubleTap`, `Hold`, `Slide`, and `Tilt` BLE packets naturally into our agnostic `Gesture` domains on a dedicated event monitoring routine.
 - **Haptic Feedback Library** (`gestura-core-haptics`): separated primitive semantic haptic patterns out of the ring module so different devices can easily share and issue the same generic `HapticPattern`s (e.g. `Confirm`, `Tick`, `Waveform(Vec<u8>)`) independently.
+- **Generic Gestures Library** (`gestura-core-gestures`): decoupled the primitive semantic representation of gestural inputs (yielding properties like `gesture_type`, `acceleration`, etc.) out from hardware adapters into its own agnostic domain crate. Ensures `SimulatorBackend` and any future wearable interfaces align to a pure shared input schema without cross-library bleeding.
 - **Agentic Loop Ring Streaming**: newly integrated `process_ring_stream` binds to ring streams via `subscribe_to_gestures()`, normalizing raw ring emissions into unified intents on the fly and wiring BOS1921 waveforms backward explicitly via `OrchestratorObserver::on_haptic_feedback()`.
 
 ## [0.10.0] - 2026-04-13

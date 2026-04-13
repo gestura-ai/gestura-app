@@ -14,3 +14,4 @@ gestura-core-haptics = { path = "../gestura-core-haptics" }
 btleplug = "0.11"
 uuid = "1.0"
 futures = { workspace = true }
+gestura-core-gestures = { path = "../gestura-core-gestures" }
