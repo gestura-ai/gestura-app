@@ -131,7 +131,10 @@ pub async fn process_ring_stream(
                     .await;
             }
             Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
-                tracing::warn!("Ring processing stream lagged, {} gestures dropped", skipped);
+                tracing::warn!(
+                    "Ring processing stream lagged, {} gestures dropped",
+                    skipped
+                );
                 continue;
             }
             Err(tokio::sync::broadcast::error::RecvError::Closed) => {
