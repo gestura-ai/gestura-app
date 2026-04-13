@@ -1711,9 +1711,8 @@ Respond ONLY with the JSON array, no additional text."#,
 
                 // Notify user about recovery attempt
                 let _ = tx.send(StreamChunk::Status {
-                    message: format!(
-                        "Context overflow detected. Compacting conversation history and retrying..."
-                    ),
+                    message: "Context overflow detected. Compacting conversation history and retrying..."
+                        .to_string(),
                 }).await;
 
                 // Force aggressive compaction on the history

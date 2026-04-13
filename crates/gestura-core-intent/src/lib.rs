@@ -206,8 +206,6 @@ fn strip_fillers(text: &str) -> String {
     for filler in VOICE_FILLER_WORDS {
         // Case-insensitive removal; collapse resulting double-spaces.
         let pattern_lower = filler.to_lowercase();
-        // Build a simple case-insensitive replacement.
-        let lower = result.to_lowercase();
         while let Some(pos) = lower_find(&result, &pattern_lower) {
             let end = pos + filler.len();
             result = format!("{}{}", &result[..pos], &result[end..]);

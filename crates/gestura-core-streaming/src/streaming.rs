@@ -638,7 +638,7 @@ async fn forward_attempt_stream(
             StreamChunk::Error(e) => {
                 // Context overflow errors need special handling - they cannot be fixed
                 // by blind retries. The caller should compact context and retry.
-                if is_context_overflow_message(&e) {
+                if is_context_overflow_message(e) {
                     return AttemptForwardResult {
                         outcome: AttemptOutcome::ContextOverflowError,
                         forwarded_output,

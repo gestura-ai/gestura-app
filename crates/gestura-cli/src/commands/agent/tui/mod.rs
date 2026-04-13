@@ -707,6 +707,14 @@ fn run_main_loop(
                             push_activity_info(app, line);
                             app.set_status("Context compacted".to_string());
                         }
+                        StreamChunk::ContextOverflow { error_message } => {
+                            let preview = truncate_for_preview(&error_message, 240);
+                            push_activity_info(
+                                app,
+                                format!("⚠️ Context overflow detected: {}", preview),
+                            );
+                            app.set_status("Context overflow detected — compacting…".to_string());
+                        }
                         StreamChunk::MemoryBankSaved {
                             file_path,
                             session_id,
