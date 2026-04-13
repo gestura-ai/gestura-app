@@ -31,16 +31,28 @@ pub async fn find_device_by_service_uuid(
 
     tracing::info!("Scanning for device bounding service UUID {}", service_uuid);
 
+    // Track the last adapter-level error and whether any poll ever succeeded.
+    // Used at the end to distinguish "scan infrastructure failed" (adapter
+    // error) from "scan worked but no matching peripheral was found", so
+    // callers can react to each case appropriately instead of seeing a
+    // misleading "device not found" when the real problem is the adapter.
+    let mut last_scan_error: Option<String> = None;
+    let mut successful_polls: u32 = 0;
+
     for _ in 0..polling_attempts {
         tokio::time::sleep(polling_interval).await;
 
         let peripherals = match adapter.peripherals().await {
-            Ok(ps) => ps,
+            Ok(ps) => {
+                successful_polls += 1;
+                ps
+            }
             Err(e) => {
                 tracing::warn!(
                     "Failed to list peripherals during BLE scan (will retry): {}",
                     e
                 );
+                last_scan_error = Some(e.to_string());
                 continue;
             }
         };
@@ -65,6 +77,18 @@ pub async fn find_device_by_service_uuid(
     }
 
     let _ = adapter.stop_scan().await;
+
+    // If not a single peripheral listing succeeded the adapter itself is
+    // broken; propagate the last error so callers see "scan failed" rather
+    // than a misleading "device not found".
+    if successful_polls == 0
+        && let Some(err) = last_scan_error
+    {
+        return Err(format!(
+            "BLE scan failed for service {} – adapter could not list peripherals: {}",
+            service_uuid, err
+        ));
+    }
 
     Err(format!(
         "Device mapped to BLE service {} not found across bounds",
