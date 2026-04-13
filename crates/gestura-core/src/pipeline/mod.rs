@@ -105,28 +105,40 @@ pub async fn process_ring_stream(
     observer: std::sync::Arc<dyn crate::orchestrator::OrchestratorObserver>,
 ) {
     let mut rx = backend.subscribe_to_gestures().await;
-    while let Ok(gesture) = rx.recv().await {
-        // Integrate with gestura-core-intent
-        let raw_input = gestura_core_intent::RawInput {
-            text: gesture.gesture_type.clone(),
-            modality: gestura_core_intent::InputModality::Gesture,
-            session_id: None, // Or associate with an active session if needed
-            gesture_data: Some(gestura_core_intent::GestureData {
-                gesture_type: gesture.gesture_type,
-                acceleration: gesture.acceleration,
-                gyroscope: gesture.gyroscope,
-                confidence: gesture.confidence,
-            }),
-        };
+    loop {
+        match rx.recv().await {
+            Ok(gesture) => {
+                // Integrate with gestura-core-intent
+                let raw_input = gestura_core_intent::RawInput {
+                    text: gesture.gesture_type.clone(),
+                    modality: gestura_core_intent::InputModality::Gesture,
+                    session_id: None, // Or associate with an active session if needed
+                    gesture_data: Some(gestura_core_intent::GestureData {
+                        gesture_type: gesture.gesture_type,
+                        acceleration: gesture.acceleration,
+                        gyroscope: gesture.gyroscope,
+                        confidence: gesture.confidence,
+                    }),
+                };
 
-        let _intent = gestura_core_intent::normalize_input_to_intent(raw_input);
+                let _intent = gestura_core_intent::normalize_input_to_intent(raw_input);
 
-        // ... Here we would submit the intent to the pipeline ...
+                // ... Here we would submit the intent to the pipeline ...
 
-        // Example: Route haptic output through OrchestratorObserver so BOS1921 waveforms work
-        observer
-            .on_haptic_feedback(gestura_core_haptics::HapticPattern::Confirm, 1.0, 200)
-            .await;
+                // Example: Route haptic output through OrchestratorObserver so BOS1921 waveforms work
+                observer
+                    .on_haptic_feedback(gestura_core_haptics::HapticPattern::Confirm, 1.0, 200)
+                    .await;
+            }
+            Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
+                tracing::warn!("Ring processing stream lagged, {} gestures dropped", skipped);
+                continue;
+            }
+            Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                tracing::info!("Ring processing stream closed. Stopping task.");
+                break;
+            }
+        }
     }
 }
 

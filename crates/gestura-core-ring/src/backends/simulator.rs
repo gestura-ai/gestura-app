@@ -178,6 +178,8 @@ impl RingBackend for SimulatorBackend {
 
         if let Some(c) = notify_char {
             self.spawn_event_listener(peripheral, c.clone());
+        } else {
+            return Err("Simulator connected but no NOTIFY characteristic found; gestures will never be emitted.".to_string());
         }
 
         tracing::info!("SimulatorBackend successfully fully bound BLE channel");

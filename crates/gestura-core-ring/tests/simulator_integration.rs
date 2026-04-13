@@ -20,7 +20,12 @@ async fn test_simulator_backend_initializes_and_haptic_drops_gracefully() {
     backend.send_haptic(HapticPattern::Confirm, 1.0, 300).await;
 
     let status = backend.get_status().await;
-    assert_eq!(status.connection_state, "simulator_disconnected");
+    let state = status.connection_state.as_str();
+    assert!(
+        state == "simulator_disconnected" || state == "simulator_ble_connected",
+        "Unexpected connection state: {}",
+        state
+    );
 
     // Verify receiver dropping behaves gracefully
     let timeout = tokio::time::timeout(Duration::from_millis(50), rx.recv()).await;

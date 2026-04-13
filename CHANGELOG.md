@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- **Core Ring Abstraction** (`gestura-core-ring`): new crate defining standard hardware abstractions for the ring (`RingBackend`, `Gesture`, `RingStatus`) alongside a fully-featured `SimulatorBackend`. Easily integratable via an optional `ring-integration` feature toggle:
+- **Core Ring Abstraction** (`gestura-core-ring`): new crate defining standard hardware abstractions for the ring (`RingBackend`, `Gesture`, `DeviceStatus`) alongside a fully-featured `SimulatorBackend`. Easily integratable via an optional `ring-integration` feature toggle:
   - Supports BLE GATT communication using `btleplug` exclusively for the `SimulatorBackend` to connect to the Haptic Harmony Simulator app (using UUID `12345678-1234-5678-9abc-123456789abc`).
   - Smoothly parses and handles `Tap`, `DoubleTap`, `Hold`, `Slide`, and `Tilt` BLE packets naturally into our agnostic `Gesture` domains on a dedicated event monitoring routine.
 - **Haptic Feedback Library** (`gestura-core-haptics`): separated primitive semantic haptic patterns out of the ring module so different devices can easily share and issue the same generic `HapticPattern`s (e.g. `Confirm`, `Tick`, `Waveform(Vec<u8>)`) independently.

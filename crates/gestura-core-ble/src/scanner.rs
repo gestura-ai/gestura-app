@@ -41,10 +41,13 @@ pub async fn find_device_by_service_uuid(
                 .services
                 .contains(&service_uuid)
             {
+                let _ = adapter.stop_scan().await;
                 return Ok((adapter, p));
             }
         }
     }
+
+    let _ = adapter.stop_scan().await;
 
     Err(format!(
         "Device mapped to BLE service {} not found across bounds",
