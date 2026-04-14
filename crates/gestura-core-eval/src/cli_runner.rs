@@ -181,10 +181,14 @@ impl CliEvalRunner {
                 let (text, err) = self.invoke_agent(scenario, variation);
 
                 // Check whether this failure was a rate-limit and we have retries left.
-                // Some agents (e.g. opencode) write the 429 message to stdout and exit 0,
-                // so we also scan the response text itself.
+                // Three detection paths:
+                //  1. stderr contained 429/rate-limit text (most agents)
+                //  2. stdout contained it (opencode exits 0 with error in stdout)
+                //  3. Silent failure: exit non-zero, stdout AND stderr both empty —
+                //     the agent crashed before writing anything; treat as transient.
                 let is_rl = err.as_deref().map(is_rate_limit_error).unwrap_or(false)
-                    || is_rate_limit_error(&text);
+                    || is_rate_limit_error(&text)
+                    || is_silent_transient_failure(err.as_deref(), &text);
                 if is_rl && attempt < max_attempts {
                     // Exponential backoff: 15 s, 30 s, 60 s, …  Capped at 120 s.
                     let wait_secs = cfg.execution.rate_limit_backoff_secs
@@ -298,10 +302,18 @@ impl CliEvalRunner {
                     } else {
                         format!("exit {}", out.status)
                     };
+                    // Log stdout preview so silent failures (empty stderr) are
+                    // diagnosable without requiring RUST_LOG=debug.
+                    let stdout_preview = if stdout.is_empty() {
+                        "<empty>".to_string()
+                    } else {
+                        truncate(&stdout, 200)
+                    };
                     warn!(
                         scenario = %scenario.id,
                         variation = %variation.id,
                         error = %err,
+                        stdout = %stdout_preview,
                         "agent subprocess failed"
                     );
                     (stdout, Some(err))
@@ -342,6 +354,18 @@ fn build_prompt(variation: &EvalVariation) -> String {
     }
     buf.push_str(&format!("User: {}", variation.prompt));
     buf
+}
+
+/// Returns `true` when the subprocess exited non-zero but produced no output
+/// on either stdout or stderr.  This is almost never a deterministic application
+/// error (those always print something); it usually means the process was killed
+/// before it could write anything — OOM, SIGTERM during startup, or a connection
+/// failure that the agent didn't handle before crashing.  Safe to retry.
+fn is_silent_transient_failure(pipeline_error: Option<&str>, stdout: &str) -> bool {
+    stdout.trim().is_empty()
+        && pipeline_error
+            .map(|e| e.starts_with("exit "))
+            .unwrap_or(false)
 }
 
 /// Returns `true` if the subprocess error string looks like a provider
