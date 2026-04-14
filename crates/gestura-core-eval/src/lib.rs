@@ -30,20 +30,35 @@
 //!
 //! # Single scenario, JSON report
 //! ./target/debug/gestura-eval --scenario s1_simple_query --json
+//!
+//! # Multi-agent comparison suite
+//! ./target/debug/gestura-eval suite --families gestura,claude-code
+//!
+//! # Generate report from saved JSON files
+//! ./target/debug/gestura-eval report --from ./eval-results/2026-04-14
 //! ```
 
 pub mod cli_runner;
+pub mod comparison;
 pub mod config;
 pub mod evaluator;
+pub mod html_report;
+pub mod orchestrator;
+pub mod progress;
 pub mod report;
 pub mod scenario;
 
 pub use cli_runner::{CliEvalRunner, CliRunnerOptions};
+pub use comparison::{
+    AgentLatency, AgentRank, CategoryMatrix, CheckHeatmap, ComparisonEngine, ComparisonReport,
+    FamilyDegradation, VariationMatrix,
+};
 pub use config::{
     AgentMeta, AgentMode, EvalConfig, ExecutionConfig, ModelConfig, PermissionConfig,
     ScenarioOverride, SubprocessDef, Thresholds, VariationOverride, BUILTIN_AGENT_IDS,
 };
 pub use evaluator::{CheckResult, EvaluationResult, RuleEvaluator};
+pub use orchestrator::{MultiRunOrchestrator, ProfileSelector, SuiteRunPlan, agent_family};
+pub use progress::{ProgressCallback, ProgressEvent};
 pub use report::{EvalReport, EvalSummary, ScenarioResult, VariationResult};
 pub use scenario::{EvalScenario, EvalScenarioSuite, EvalVariation, HistoryMessage, Rubric};
-

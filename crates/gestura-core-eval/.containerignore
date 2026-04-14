@@ -67,8 +67,12 @@ docs/
 !crates/gestura-core-eval/README.md
 
 # ── Reports and output artefacts ─────────────────────────────────────────────
+# Local suite run output directories (created by `gestura-eval suite --output-dir`)
+eval-results/
 reports/
 eval-*.json
+comparison-*.json
+report-*.html
 
 # ── GUI crate source (never compiled in the eval image) ──────────────────────
 crates/gestura-gui/

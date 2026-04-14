@@ -6,7 +6,7 @@
 #   builder  — compiles gestura (CLI) and gestura-eval from source
 #   runtime  — minimal Debian image with Node.js agent CLIs + built binaries
 #
-# Build (run from repo root):
+# ── Build (run from repo root) ────────────────────────────────────────────────
 #   podman build \
 #     -f crates/gestura-core-eval/Containerfile \
 #     --ignorefile crates/gestura-core-eval/.containerignore \
@@ -17,15 +17,55 @@
 #     --build-arg BUILDKIT_INLINE_CACHE=1 \
 #     -t gestura-eval .
 #
-# Run — pass API keys at runtime, never bake them into the image:
+# ── Single-agent run ──────────────────────────────────────────────────────────
 #   podman run --rm \
 #     -e ANTHROPIC_API_KEY=sk-ant-... \
-#     -e OPENAI_API_KEY=sk-... \
 #     gestura-eval --agent gestura-full --dry-run
 #
 #   podman run --rm \
 #     --env-file .env \
 #     gestura-eval --agent claude-code-full --scenario s3_planning --json
+#
+# ── Multi-agent suite (bind-mount /reports to retrieve artefacts) ─────────────
+#
+#   # Gestura vs Claude Code — 6 profiles, live progress, HTML + JSON output
+#   podman run --rm \
+#     -e ANTHROPIC_API_KEY=sk-ant-... \
+#     -v ./my-reports:/reports \
+#     gestura-eval suite \
+#       --families gestura,claude-code \
+#       --output-dir /reports
+#
+#   # Full 12-profile comparison (gestura, claude-code, codex, opencode)
+#   podman run --rm \
+#     -e ANTHROPIC_API_KEY=sk-ant-... \
+#     -e OPENAI_API_KEY=sk-... \
+#     -v ./my-reports:/reports \
+#     gestura-eval suite \
+#       --families gestura,claude-code,codex,opencode \
+#       --output-dir /reports
+#
+#   # Dry-run first to validate profiles and check logic before spending API calls
+#   podman run --rm gestura-eval suite --families gestura,claude-code --dry-run
+#
+# ── Report from saved files (no agent invocations) ────────────────────────────
+#
+#   # Re-generate HTML from a previous run's JSON files
+#   podman run --rm \
+#     -v ./my-reports:/reports \
+#     gestura-eval report \
+#       --from /reports \
+#       --format html \
+#       --output-dir /reports
+#
+#   # Merge two separate run directories (regression tracking)
+#   podman run --rm \
+#     -v ./my-reports:/reports \
+#     gestura-eval report \
+#       --from /reports/2026-04-07 \
+#       --from /reports/2026-04-14 \
+#       --format all \
+#       --output-dir /reports/diff
 # ─────────────────────────────────────────────────────────────────────────────
 
 # ── Stage 1: cargo-chef installer ────────────────────────────────────────────
@@ -159,10 +199,26 @@ RUN gestura      --version \
 # All subprocesses (gestura, claude, codex, opencode) run as this user.
 # Credentials are injected via environment variables — never stored on disk.
 RUN useradd --create-home --uid 1000 --shell /bin/bash eval
+
+# ── Report output directory ───────────────────────────────────────────────────
+# Suite runs write per-agent JSON, a combined comparison JSON, and an HTML
+# report to this directory. Bind-mount it to retrieve artefacts from the host:
+#
+#   podman run --rm -v ./my-reports:/reports gestura-eval suite \
+#     --families gestura,claude-code --output-dir /reports
+#
+# The EVAL_OUTPUT_DIR env var is available as a default; override it at runtime
+# with --output-dir or by setting EVAL_OUTPUT_DIR to any writable path.
+RUN mkdir -p /reports && chown eval:eval /reports
+VOLUME /reports
+
 WORKDIR /home/eval
 USER eval
 
 # ── Eval-specific env vars ────────────────────────────────────────────────────
+# Default output directory for suite and report subcommands.
+ENV EVAL_OUTPUT_DIR="/reports"
+
 # Always disable the macOS Keychain in Gestura subprocesses — the keychain
 # daemon is not available inside a container and the subprocess would hang.
 ENV GESTURA_DISABLE_KEYCHAIN="1"
@@ -195,7 +251,7 @@ ENV GESTURA_DISABLE_KEYCHAIN="1"
 # claude-code-* and opencode-* read ANTHROPIC_API_KEY directly (no prefix)
 # ENV ANTHROPIC_API_KEY=""
 
-# # codex-* reads OPENAI_API_KEY directly (no prefix)
+# codex-* reads OPENAI_API_KEY directly (no prefix)
 # ENV OPENAI_API_KEY=""
 
 # Augment (Auggie) — augment-* profiles use an OAuth session token, not a static
@@ -241,7 +297,7 @@ ENV RUST_LOG="warn"
 # Default: print built-in agent profiles and exit.
 # Override CMD or pass args directly:
 #   podman run gestura-eval --agent gestura-full
-#   podman run gestura-eval --agent codex-full --dry-run --json
+#   podman run gestura-eval suite --families gestura,claude-code --output-dir /reports
+#   podman run gestura-eval report --from /reports --format html --output-dir /reports
 ENTRYPOINT ["gestura-eval"]
 CMD ["--list-agents"]
-

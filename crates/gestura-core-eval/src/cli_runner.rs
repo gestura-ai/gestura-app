@@ -7,19 +7,20 @@
 //! what `args_prefix` to prepend, what environment variables to forward, what
 //! pass/fail thresholds to apply, and any per-scenario rubric overrides.
 
-use std::{path::PathBuf, process::Command, time::Instant};
+use std::{path::PathBuf, process::Command, thread, time::{Duration, Instant}};
 
 use tracing::{debug, info, warn};
 
 use crate::{
     config::EvalConfig,
     evaluator::RuleEvaluator,
+    progress::{ProgressCallback, ProgressEvent},
     report::{EvalReport, ScenarioResult, VariationResult},
     scenario::{EvalScenario, EvalScenarioSuite, EvalVariation},
 };
 
 /// Runtime options for one eval run — agent profile + ephemeral CLI flags.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct CliRunnerOptions {
     /// Loaded agent profile (model, permissions, subprocess settings, thresholds).
     pub eval_config: EvalConfig,
@@ -29,6 +30,9 @@ pub struct CliRunnerOptions {
     pub dry_run: bool,
     /// CLI-level binary override (takes precedence over `eval_config.subprocess.bin`).
     pub bin_override: Option<PathBuf>,
+    /// Optional progress callback. Fires `ProfileStarted`, `VariationDone`, and
+    /// `ProfileFinished` events. When `None` the runner is zero-overhead.
+    pub progress: Option<ProgressCallback>,
 }
 
 impl CliRunnerOptions {
@@ -39,6 +43,7 @@ impl CliRunnerOptions {
             scenario_ids: Vec::new(),
             dry_run: false,
             bin_override: None,
+            progress: None,
         }
     }
 
@@ -86,6 +91,10 @@ impl CliEvalRunner {
         );
 
         let scenarios = suite.filter_by_ids(&self.options.scenario_ids);
+
+        // Count total variations upfront for ProfileStarted.
+        let total_variations: usize = scenarios.iter().map(|s| s.variations.len()).sum();
+
         info!(
             total = scenarios.len(),
             dry_run = self.options.dry_run,
@@ -93,6 +102,13 @@ impl CliEvalRunner {
             bin = %bin.display(),
             "gestura-eval run starting"
         );
+
+        if let Some(ref cb) = self.options.progress {
+            cb(ProgressEvent::ProfileStarted {
+                agent_id: cfg.agent.id.clone(),
+                total_variations,
+            });
+        }
 
         for scenario in scenarios {
             report.scenarios.push(self.run_scenario(scenario));
@@ -105,6 +121,14 @@ impl CliEvalRunner {
             total = report.summary.total_variations,
             "gestura-eval run complete"
         );
+
+        if let Some(ref cb) = self.options.progress {
+            cb(ProgressEvent::ProfileFinished {
+                agent_id: cfg.agent.id.clone(),
+                report: report.clone(),
+            });
+        }
+
         report
     }
 
@@ -134,6 +158,11 @@ impl CliEvalRunner {
     ) -> VariationResult {
         debug!(scenario = %scenario.id, variation = %variation.id, "variation");
         let prompt_preview = truncate(&variation.prompt, 80);
+        let cfg = &self.options.eval_config;
+        let max_attempts = 1 + cfg.execution.retries as usize;
+
+        // Wall-clock start covers the full attempt sequence including backoff waits,
+        // giving an honest picture of how long this variation actually took.
         let start = Instant::now();
 
         let (response_text, pipeline_error) = if self.options.dry_run {
@@ -145,13 +174,42 @@ impl CliEvalRunner {
                 None,
             )
         } else {
-            self.invoke_agent(scenario, variation)
+            // Retry loop: re-attempt on rate-limit (429) errors up to `retries` times.
+            let mut attempt = 0usize;
+            loop {
+                attempt += 1;
+                let (text, err) = self.invoke_agent(scenario, variation);
+
+                // Check whether this failure was a rate-limit and we have retries left.
+                let is_rl = err.as_deref().map(is_rate_limit_error).unwrap_or(false);
+                if is_rl && attempt < max_attempts {
+                    // Exponential backoff: 15 s, 30 s, 60 s, …  Capped at 120 s.
+                    let wait_secs = cfg.execution.rate_limit_backoff_secs
+                        .saturating_mul(1u64 << (attempt - 1).min(3));
+
+                    if let Some(ref cb) = self.options.progress {
+                        cb(ProgressEvent::RateLimitRetry {
+                            agent_id: cfg.agent.id.clone(),
+                            scenario_id: scenario.id.clone(),
+                            variation_id: variation.id.clone(),
+                            attempt: attempt as u32,
+                            max_attempts: max_attempts as u32,
+                            wait_secs,
+                        });
+                    }
+
+                    thread::sleep(Duration::from_secs(wait_secs));
+                    continue;
+                }
+
+                break (text, err);
+            }
         };
 
         let duration_ms = start.elapsed().as_millis() as u64;
         let eval = RuleEvaluator::evaluate(variation, &response_text);
 
-        VariationResult {
+        let result = VariationResult {
             variation_id: variation.id.clone(),
             prompt_preview,
             response: response_text,
@@ -160,7 +218,26 @@ impl CliEvalRunner {
             checks: eval.checks,
             score: eval.score,
             passed: eval.passed,
+        };
+
+        if let Some(ref cb) = self.options.progress {
+            cb(ProgressEvent::VariationDone {
+                agent_id: cfg.agent.id.clone(),
+                scenario_id: scenario.id.clone(),
+                variation_id: variation.id.clone(),
+                passed: result.passed,
+                score: result.score,
+                duration_ms: result.duration_ms,
+            });
         }
+
+        // Inter-variation throttle — inserted after the progress event so the
+        // terminal shows the result immediately, then pauses before the next call.
+        if cfg.execution.delay_between_variations_ms > 0 {
+            thread::sleep(Duration::from_millis(cfg.execution.delay_between_variations_ms));
+        }
+
+        result
     }
 
     /// Build the prompt and invoke the agent binary as a subprocess.
@@ -264,6 +341,21 @@ fn build_prompt(variation: &EvalVariation) -> String {
     buf
 }
 
+/// Returns `true` if the subprocess error string looks like a provider
+/// rate-limit rejection (HTTP 429).  Checked case-insensitively against
+/// patterns common across Anthropic, OpenAI, and other providers.
+fn is_rate_limit_error(error: &str) -> bool {
+    let e = error.to_lowercase();
+    e.contains("429")
+        || e.contains("rate limit")
+        || e.contains("rate_limit")
+        || e.contains("too many requests")
+        || e.contains("tokens per minute")
+        || e.contains("requests per minute")
+        || e.contains("request rejected")
+        || e.contains("overloaded")
+}
+
 fn truncate(s: &str, max_chars: usize) -> String {
     let s = s.replace('\n', " ");
     if s.chars().count() <= max_chars {
@@ -274,4 +366,3 @@ fn truncate(s: &str, max_chars: usize) -> String {
         t
     }
 }
-

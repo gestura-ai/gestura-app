@@ -23,4 +23,6 @@ regex = "1"
 toml.workspace = true
 clap.workspace = true
 colored.workspace = true
+indicatif.workspace = true
+console.workspace = true
 

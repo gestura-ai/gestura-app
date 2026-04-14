@@ -3009,6 +3009,8 @@ dependencies = [
  "chrono",
  "clap",
  "colored",
+ "console",
+ "indicatif",
  "regex",
  "serde",
  "serde_json",

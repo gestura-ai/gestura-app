@@ -155,9 +155,28 @@ pub struct ExecutionConfig {
     pub require_confirmation: bool,
     /// String sent as the approval response in iterative mode (e.g. `"yes"`).
     pub confirmation_response: String,
-    /// Retry a failed subprocess call this many times before recording as failed.
+    /// How many times to retry a failed subprocess call before recording it as
+    /// failed.  Retries are only attempted on rate-limit (429) errors; hard
+    /// failures (binary not found, non-429 exit codes) fail immediately.
     pub retries: u32,
+    /// Minimum pause inserted **after** each variation call completes, in
+    /// milliseconds.  A value of 0 (the default) means no deliberate throttle.
+    ///
+    /// Use this as a conservative backstop when a provider's per-minute token
+    /// budget is tight.  The `--variation-delay` CLI flag overrides this at
+    /// runtime without changing the profile TOML.
+    #[serde(default)]
+    pub delay_between_variations_ms: u64,
+    /// Initial wait before the first rate-limit retry, in seconds.  Doubles on
+    /// each subsequent retry (exponential backoff).  Default: 15 s.
+    ///
+    /// With `retries = 1` and the default backoff: one 15 s pause, then fail.
+    /// With `retries = 3`: 15 s → 30 s → 60 s, then fail.
+    #[serde(default = "default_rate_limit_backoff_secs")]
+    pub rate_limit_backoff_secs: u64,
 }
+
+fn default_rate_limit_backoff_secs() -> u64 { 15 }
 
 impl Default for ExecutionConfig {
     fn default() -> Self {
@@ -167,6 +186,8 @@ impl Default for ExecutionConfig {
             require_confirmation: false,
             confirmation_response: "yes".into(),
             retries: 0,
+            delay_between_variations_ms: 0,
+            rate_limit_backoff_secs: 15,
         }
     }
 }
