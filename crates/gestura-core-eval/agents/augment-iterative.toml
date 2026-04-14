@@ -1,16 +1,17 @@
 # ─────────────────────────────────────────────────────────────────────────────
-# agents/augment-iterative.toml — Augment (Auggie) · Iterative Approval
+# agents/augment-iterative.toml — Augment (Auggie) · Iterative (Print mode)
 #
 # Mode: ITERATIVE
-# Framework: Augment Code AI agent   https://www.augmentcode.com
-# Binary: augment
+# Framework: Augment Code CLI (Auggie)   https://augmentcode.com/product/CLI
+# Binary: auggie   (npm install -g @augmentcode/auggie — requires Node.js 22+)
 #
-# Iterative profile: Augment pauses before side-effectful actions and requests
-# confirmation. The eval runner automatically sends `confirmation_response`
-# when the agent is waiting so the run can complete non-interactively.
+# Iterative profile: uses --print (non-interactive) but with a restricted
+# tool set. Auggie's --ask flag enables retrieval-only mode, limiting the
+# agent to read-only tools (codebase-retrieval, web-fetch) and preventing
+# any writes or shell execution — a close approximation of "approval-required"
+# workflow behaviour without needing to pipe stdin confirmations.
 #
-# This mode maps to Augment's natural "approval-required" workflow, making it
-# the most representative profile for how Augment is typically used in IDEs.
+# Auth: set AUGMENT_SESSION_AUTH (see augment-full.toml for instructions).
 # ─────────────────────────────────────────────────────────────────────────────
 
 [agent]
@@ -18,6 +19,8 @@ id          = "augment-iterative"
 name        = "Augment (Auggie) — Iterative Approval"
 description = "Augment Code agent · claude-sonnet-4-6, confirmation-gated workflow"
 mode        = "iterative"
+requires_manual_auth = true
+auth_env_var         = "AUGMENT_SESSION_AUTH"
 
 [model]
 provider    = "anthropic"
@@ -42,11 +45,14 @@ confirmation_response = "yes"
 retries               = 1
 
 [subprocess]
-bin         = "augment"
-args_prefix = ["run", "--interactive"]   # verify flag with `augment --help`
+bin         = "auggie"
+# --ask   enables ask mode: only retrieval and non-editing tools are active.
+# --print exits after the single response (no interactive loop).
+args_prefix = ["--ask", "--print"]
+response_strip_prefix = "assistant:"
 
 [subprocess.env]
-ANTHROPIC_MODEL = "claude-sonnet-4-6"
+AUGMENT_DISABLE_AUTO_UPDATE = "1"
 
 [thresholds]
 min_variation_score    = 0.75

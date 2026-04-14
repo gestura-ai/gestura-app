@@ -89,6 +89,14 @@ struct Args {
     /// Suppress progress output (implies --json for machine consumers).
     #[arg(long, short)]
     quiet: bool,
+
+    /// Show the agent's full response and all check results (pass and fail)
+    /// for every variation, not just failures.  Useful for debugging or
+    /// understanding why a passing score does not match expectations.
+    /// In non-verbose mode, the response is still shown (truncated) for
+    /// failed variations.
+    #[arg(long, short)]
+    verbose: bool,
 }
 
 fn main() {
@@ -117,12 +125,21 @@ fn main() {
         println!("{}", "Built-in agent profiles:".bold());
         for id in BUILTIN_AGENT_IDS {
             match EvalConfig::load_builtin(id) {
-                Ok(cfg) => println!(
-                    "  {:<28} [{:<12}] {}",
-                    id.cyan(),
-                    format!("{:?}", cfg.agent.mode).to_lowercase().yellow(),
-                    cfg.agent.description.dimmed()
-                ),
+                Ok(cfg) => {
+                    let mode_tag = format!("{:?}", cfg.agent.mode).to_lowercase();
+                    let auth_tag = if cfg.agent.requires_manual_auth {
+                        " [manual-auth]".red().to_string()
+                    } else {
+                        String::new()
+                    };
+                    println!(
+                        "  {:<28} [{:<12}]{} {}",
+                        id.cyan(),
+                        mode_tag.yellow(),
+                        auth_tag,
+                        cfg.agent.description.dimmed()
+                    );
+                }
                 Err(e) => println!("  {:<28} (error: {e})", id),
             }
         }
@@ -151,6 +168,36 @@ fn main() {
             }
         }
     };
+
+    // Guard: profiles that require manual auth (OAuth session tokens, not static API keys)
+    // are excluded from fully automated runs. Fail fast rather than timing out mid-run.
+    if eval_config.agent.requires_manual_auth
+        && !args.dry_run
+        && let Some(ref env_var) = eval_config.agent.auth_env_var
+    {
+        let present = std::env::var(env_var).map(|v| !v.is_empty()).unwrap_or(false);
+        if !present {
+            eprintln!(
+                "{} Agent profile '{}' requires manual authentication.\n\
+                 \n\
+                 This profile uses an OAuth session token ({env_var}) rather than a\n\
+                 static API key. It is excluded from fully automated runs.\n\
+                 \n\
+                 To run it:\n\
+                 \n\
+                 1. Log in on a machine with a browser:  auggie login\n\
+                 2. Export the session:                  export {env_var}=$(auggie token print)\n\
+                 3. Re-run with the token in env:        {env_var}=... gestura-eval --agent {}\n\
+                 \n\
+                 To validate check logic without auth:   gestura-eval --agent {} --dry-run",
+                "error:".red().bold(),
+                eval_config.agent.id,
+                eval_config.agent.id,
+                eval_config.agent.id,
+            );
+            std::process::exit(2);
+        }
+    }
 
     // Validate --scenario filter.
     if let Some(ref id) = args.scenario
@@ -195,12 +242,12 @@ fn main() {
     if args.json || args.quiet {
         report.print_json();
     } else {
-        report.print_text();
+        report.print_text(args.verbose);
 
         let s = &report.summary;
         if s.failed_variations > 0 && !args.dry_run {
             eprintln!(
-                "\n{} {}/{} variations failed. Re-run with --json for machine-readable details.",
+                "\n{} {}/{} variations failed. Re-run with --verbose for full response context or --json for machine-readable details.",
                 "note:".yellow(),
                 s.failed_variations,
                 s.total_variations

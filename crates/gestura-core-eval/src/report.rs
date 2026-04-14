@@ -128,7 +128,16 @@ impl EvalReport {
     }
 
     /// Print a human-readable summary to stdout.
-    pub fn print_text(&self) {
+    ///
+    /// When `verbose` is `false` (the default), the agent response is shown
+    /// (truncated to 400 chars) only for **failed** variations, together with
+    /// every failing check and its diagnostic message.  Passing variations show
+    /// only a one-line status.
+    ///
+    /// When `verbose` is `true` every variation shows its full response text
+    /// (up to 800 chars) and every individual check result — useful when
+    /// investigating why a passing score differs from expectations.
+    pub fn print_text(&self, verbose: bool) {
         let s = &self.summary;
         println!();
         println!("╔══════════════════════════════════════════════════════════╗");
@@ -140,7 +149,7 @@ impl EvalReport {
         println!("  Mode    : {}", self.agent_mode);
         println!("  Provider: {} / {}", self.provider, self.model);
         if self.dry_run {
-            println!("  Mode    : DRY-RUN (no LLM calls)");
+            println!("  ⚠ DRY-RUN (no actual subprocess calls)");
         }
         println!();
         println!(
@@ -163,19 +172,48 @@ impl EvalReport {
                 scenario.scenario_name,
                 scenario.score * 100.0
             );
+
             for v in &scenario.variations {
                 let vicon = if v.passed { "  ✓" } else { "  ✗" };
-                let preview = &v.prompt_preview;
                 println!("      {} {} — {:.0}%", vicon, v.variation_id, v.score * 100.0);
-                println!("        Prompt : {preview}");
-                for check in &v.checks {
-                    let cicon = if check.passed { "✓" } else { "✗" };
-                    if !check.passed {
-                        println!("        {cicon} {} — {}", check.name, check.details);
-                    }
-                }
+                println!("        Prompt : {}", v.prompt_preview);
+
+                // ── Pipeline / subprocess error ─────────────────────────────
                 if let Some(ref err) = v.pipeline_error {
                     println!("        ⚠ Pipeline error: {err}");
+                }
+
+                // ── Check results ───────────────────────────────────────────
+                let show_checks = !v.passed || verbose;
+                if show_checks {
+                    for check in &v.checks {
+                        if verbose || !check.passed {
+                            let cicon = if check.passed { "✓" } else { "✗" };
+                            println!(
+                                "        {} {:<35} {}",
+                                cicon,
+                                check.name,
+                                check.details
+                            );
+                        }
+                    }
+                }
+
+                // ── Agent response ──────────────────────────────────────────
+                // Always shown on failure; shown in verbose mode even on pass.
+                if !v.passed || verbose {
+                    let response_limit = if verbose { 800 } else { 400 };
+                    let display_response = if v.response.trim().is_empty() {
+                        "<empty response>".to_string()
+                    } else {
+                        truncate_response(&v.response, response_limit)
+                    };
+                    println!("        ┌─ Agent response ({} words) ─────────────────────",
+                        v.response.split_whitespace().count());
+                    for line in display_response.lines() {
+                        println!("        │ {line}");
+                    }
+                    println!("        └─────────────────────────────────────────────────");
                 }
             }
             println!();
@@ -183,11 +221,29 @@ impl EvalReport {
     }
 
     /// Serialize the report to pretty-printed JSON on stdout.
+    ///
+    /// The JSON payload includes every `VariationResult.response` field in full,
+    /// so machine consumers always have complete diagnostic context without
+    /// any truncation.
     pub fn print_json(&self) {
         println!(
             "{}",
             serde_json::to_string_pretty(self).unwrap_or_else(|e| format!("{{\"error\":\"{e}\"}}"))
         );
+    }
+}
+
+// ─── Helpers ──────────────────────────────────────────────────────────────────
+
+/// Truncate `text` to at most `max_chars` characters, appending `…` if cut.
+/// Preserves line breaks so multi-line responses stay readable.
+fn truncate_response(text: &str, max_chars: usize) -> String {
+    let char_count = text.chars().count();
+    if char_count <= max_chars {
+        text.to_string()
+    } else {
+        let truncated: String = text.chars().take(max_chars - 1).collect();
+        format!("{truncated}…\n<response truncated at {max_chars} chars; use --verbose or --json for full output>")
     }
 }
 

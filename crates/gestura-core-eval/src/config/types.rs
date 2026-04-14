@@ -20,6 +20,24 @@ pub struct AgentMeta {
     pub description: String,
     /// Fundamental execution contract — drives subprocess strategy and expected behaviours.
     pub mode: AgentMode,
+    /// When `true` the agent cannot authenticate via a static API key; it requires
+    /// an OAuth session token that must be obtained interactively (e.g. `auggie login`).
+    ///
+    /// Profiles with this flag set will **not** run in automated (non-dry-run) contexts
+    /// unless the authentication environment variable they need is already present.
+    /// The evaluator fails fast with a clear error rather than timing out mid-run.
+    ///
+    /// Corresponds to `requires_manual_auth = true` in the profile TOML.
+    #[serde(default)]
+    pub requires_manual_auth: bool,
+    /// Environment variable that must be set for this profile to run without `--dry-run`.
+    ///
+    /// Used together with `requires_manual_auth`. When set, the evaluator checks for
+    /// this variable at startup and exits early if it is absent or empty.
+    ///
+    /// Example: `"AUGMENT_SESSION_AUTH"`.
+    #[serde(default)]
+    pub auth_env_var: Option<String>,
 }
 
 impl Default for AgentMeta {
@@ -29,6 +47,8 @@ impl Default for AgentMeta {
             name: "Baseline".into(),
             description: "Default evaluation profile".into(),
             mode: AgentMode::Autonomous,
+            requires_manual_auth: false,
+            auth_env_var: None,
         }
     }
 }

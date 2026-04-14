@@ -85,47 +85,58 @@ docker build \
 
 **Run with inline credentials:**
 
+> **Gestura uses a `GESTURA_` prefix** for all its env vars. Pass `GESTURA_ANTHROPIC_API_KEY`
+> for `gestura-*` profiles **and** bare `ANTHROPIC_API_KEY` for `claude-code-*` / `opencode-*`.
+
 ```bash
-podman run --rm \
-  -e ANTHROPIC_API_KEY=sk-ant-... \
-  -e OPENAI_API_KEY=sk-... \
+# gestura-* profiles — needs the GESTURA_ prefixed var
+docker run --rm \
+  -e GESTURA_ANTHROPIC_API_KEY=sk-ant-... \
   gestura-eval --agent gestura-full
+
+# claude-code-* / opencode-* — needs bare ANTHROPIC_API_KEY
+docker run --rm \
+  -e ANTHROPIC_API_KEY=sk-ant-... \
+  gestura-eval --agent claude-code-full
+
+# codex-* — needs bare OPENAI_API_KEY
+docker run --rm \
+  -e OPENAI_API_KEY=sk-... \
+  gestura-eval --agent codex-full
 ```
 
 **Run with an `.env` file** (keep credentials out of shell history):
 
 ```bash
 # .env  — never commit this file
-# ANTHROPIC_API_KEY=sk-ant-...
-# OPENAI_API_KEY=sk-...
+# GESTURA_ANTHROPIC_API_KEY=sk-ant-...   # for gestura-* profiles
+# ANTHROPIC_API_KEY=sk-ant-...           # for claude-code-*, opencode-*
+# OPENAI_API_KEY=sk-...                  # for codex-*
 
-podman run --rm --env-file .env gestura-eval --agent claude-code-full
-podman run --rm --env-file .env gestura-eval --agent codex-full --dry-run --json
+docker run --rm --env-file .env gestura-eval --agent gestura-full
+docker run --rm --env-file .env gestura-eval --agent claude-code-full
+docker run --rm --env-file .env gestura-eval --agent codex-full --dry-run --json
 ```
 
 **All supported runtime env vars:**
 
 | Variable | Required for | Description |
 |---|---|---|
-| `ANTHROPIC_API_KEY` | gestura-\*, claude-code-\*, augment-\*, opencode-\* | **Required.** Anthropic API key (`sk-ant-...`) |
-| `OPENAI_API_KEY` | codex-\* | **Required for Codex.** OpenAI API key (`sk-...`) |
-| `GROK_API_KEY` | custom gestura profile with `llm.primary=grok` | Grok / xAI key (`xai-...`) |
-| `GEMINI_API_KEY` | custom gestura profile with `llm.primary=gemini` | Google Gemini API key |
-| `ANTHROPIC_MODEL` | all Anthropic-backed profiles | Override model without editing TOML |
-| `OPENAI_MODEL` | codex-\* | Override model without editing TOML |
-| `GROK_MODEL` | custom Grok profile | Override model without editing TOML |
-| `GEMINI_MODEL` | custom Gemini profile | Override model without editing TOML |
-| `LLM_PRIMARY` | gestura-\* | Override active provider (`openai\|anthropic\|grok\|gemini\|ollama`) |
-| `LLM_FALLBACK` | gestura-\* | Override fallback provider |
-| `OLLAMA_BASE_URL` | custom Ollama profile | URL of running Ollama server; no key needed |
-| `OLLAMA_MODEL` | custom Ollama profile | Ollama model name |
-| `SERPAPI_KEY` | gestura web_search tool | Only needed if a scenario invokes web search via SerpAPI |
-| `BRAVE_SEARCH_KEY` | gestura web_search tool | Only needed if a scenario invokes web search via Brave |
+| `GESTURA_ANTHROPIC_API_KEY` | gestura-\* | **Required for Gestura.** Gestura reads all config via `GESTURA_` prefix |
+| `ANTHROPIC_API_KEY` | claude-code-\*, opencode-\* | **Required.** Bare key read directly by those CLIs (no prefix) |
+| `OPENAI_API_KEY` | codex-\* | **Required for Codex.** Bare key read directly by Codex CLI |
+| `AUGMENT_SESSION_AUTH` | augment-\* | OAuth session JSON from `auggie token print`; excluded from automated runs |
+| `AUGMENT_DISABLE_AUTO_UPDATE` | augment-\* | Pre-set to `1`; disables self-update checks in CI |
+| `GESTURA_GROK_API_KEY` | custom gestura profile with `llm.primary=grok` | Grok / xAI key (`xai-...`) |
+| `GESTURA_GEMINI_API_KEY` | custom gestura profile with `llm.primary=gemini` | Google Gemini API key |
 | `GESTURA_DISABLE_KEYCHAIN` | gestura-\* | Pre-set to `1` in the image; prevents keychain hangs |
 | `RUST_LOG` | gestura-eval binary | Tracing verbosity; defaults to `warn` (stderr only) |
 
-> **`augment-*` profiles:** Augment Code does not yet ship a public CLI binary. The profiles
-> are ready for when it does. Use `--dry-run` in the meantime — no credentials needed.
+> **`augment-*` profiles — Auggie auth:** Auggie uses an account session token, not a raw API key.
+> 1. Install: `npm install -g @augmentcode/auggie` (Node.js 22+ required)
+> 2. Log in once on a real machine: `auggie login`
+> 3. Export the session: `export AUGMENT_SESSION_AUTH=$(auggie token print)`
+> 4. Pass it to the container: `podman run --rm -e AUGMENT_SESSION_AUTH="$AUGMENT_SESSION_AUTH" gestura-eval --agent augment-full`
 
 ---
 

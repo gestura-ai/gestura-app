@@ -2,14 +2,16 @@
 # agents/augment-sandboxed.toml — Augment (Auggie) · Sandboxed
 #
 # Mode: SANDBOXED
-# Framework: Augment Code AI agent   https://www.augmentcode.com
-# Binary: augment
+# Framework: Augment Code CLI (Auggie)   https://augmentcode.com/product/CLI
+# Binary: auggie   (npm install -g @augmentcode/auggie — requires Node.js 22+)
 #
 # Sandboxed profile: reasoning-only, no tool execution, no writes.
-# Suitable for running Augment against untrusted or sensitive content where
-# isolation must be guaranteed.
+# Tools are removed individually via --remove-tool flags so no shell commands
+# or file writes can occur during evaluation.
 #
 # Uses claude-haiku-3-5 for cost efficiency on read-only tasks.
+#
+# Auth: set AUGMENT_SESSION_AUTH (see augment-full.toml for instructions).
 # ─────────────────────────────────────────────────────────────────────────────
 
 [agent]
@@ -17,6 +19,8 @@ id          = "augment-sandboxed"
 name        = "Augment (Auggie) — Sandboxed"
 description = "Augment Code agent · claude-haiku-3-5, read-only, no tool execution"
 mode        = "sandboxed"
+requires_manual_auth = true
+auth_env_var         = "AUGMENT_SESSION_AUTH"
 
 [model]
 provider    = "anthropic"
@@ -40,11 +44,19 @@ require_confirmation  = false
 retries               = 0
 
 [subprocess]
-bin         = "augment"
-args_prefix = ["run", "--no-tools"]   # verify flag name with `augment --help`
+bin         = "auggie"
+# --print         — non-interactive, exit after one response
+# --remove-tool   — strip dangerous tools for this session (repeatable)
+args_prefix = [
+    "--print",
+    "--remove-tool", "launch-process",
+    "--remove-tool", "write-file",
+    "--remove-tool", "str-replace-editor",
+]
+response_strip_prefix = "assistant:"
 
 [subprocess.env]
-ANTHROPIC_MODEL = "claude-haiku-3-5"
+AUGMENT_DISABLE_AUTO_UPDATE = "1"
 
 [thresholds]
 min_variation_score    = 0.70
