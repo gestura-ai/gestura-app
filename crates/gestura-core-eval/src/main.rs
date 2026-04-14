@@ -91,12 +91,16 @@ struct Args {
     quiet: bool,
 
     /// Show the agent's full response and all check results (pass and fail)
-    /// for every variation, not just failures.  Useful for debugging or
-    /// understanding why a passing score does not match expectations.
-    /// In non-verbose mode, the response is still shown (truncated) for
-    /// failed variations.
+    /// for every variation.  Useful for a complete picture of what the agent
+    /// said across the entire suite.
     #[arg(long, short)]
     verbose: bool,
+
+    /// Show the agent response only for variations that failed at least one
+    /// check.  Limits output to breaking cases while still providing the
+    /// context needed to understand what went wrong.
+    #[arg(long)]
+    show_breaking: bool,
 }
 
 fn main() {
@@ -242,12 +246,12 @@ fn main() {
     if args.json || args.quiet {
         report.print_json();
     } else {
-        report.print_text(args.verbose);
+        report.print_text(args.verbose, args.show_breaking);
 
         let s = &report.summary;
         if s.failed_variations > 0 && !args.dry_run {
             eprintln!(
-                "\n{} {}/{} variations failed. Re-run with --verbose for full response context or --json for machine-readable details.",
+                "\n{} {}/{} variations failed. Re-run with --show-breaking to see failing responses, --verbose for all responses, or --json for machine-readable details.",
                 "note:".yellow(),
                 s.failed_variations,
                 s.total_variations

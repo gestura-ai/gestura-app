@@ -13,7 +13,7 @@
 #   --allowedTools ""   empty allowlist = no tools permitted
 #   -p                  non-interactive print mode
 #
-# Uses claude-haiku-3-5 for cost efficiency — sandboxed tasks are simpler.
+# Uses claude-haiku-4-5 for cost efficiency — sandboxed tasks are simpler.
 # ─────────────────────────────────────────────────────────────────────────────
 
 [agent]
@@ -24,7 +24,7 @@ mode        = "sandboxed"
 
 [model]
 provider    = "anthropic"
-name        = "claude-haiku-3-5"   # fast, cost-efficient for read-only tasks
+name        = "claude-haiku-4-5-20251001"   # fast, cost-efficient for read-only tasks
 temperature = 0.3
 max_tokens  = 2048
 
@@ -48,7 +48,7 @@ bin         = "claude"
 args_prefix = ["--allowedTools", "", "-p"]
 
 [subprocess.env]
-ANTHROPIC_MODEL = "claude-haiku-3-5"
+ANTHROPIC_MODEL = "claude-haiku-4-5-20251001"
 
 [thresholds]
 min_variation_score    = 0.70

@@ -5,14 +5,17 @@
 # Framework: OpenAI Codex CLI   https://github.com/openai/codex
 # Binary: codex   Install: npm i -g @openai/codex
 #
-# Iterative profile: Codex runs with `--approval-mode suggest` so the agent
-# proposes every shell command or file write and waits for approval before
-# executing. The eval runner sends `confirmation_response` ("yes") when the
-# agent is waiting so the run can complete non-interactively.
+# Iterative profile: non-interactive exec mode with a read-only sandbox.
+# The agent cannot execute shell commands or write files, focusing purely on
+# reasoning and analysis output — analogous to the "suggest / propose" intent
+# of the old approval-mode. All tool calls are blocked at the sandbox level
+# so no approval gate is needed.
 #
-# Invocation: codex --approval-mode suggest --quiet --model gpt-4.5 "<prompt>"
-#   --approval-mode suggest   propose actions, require approval to execute
-#   --quiet                   suppress interactive UI
+# Invocation: codex exec --ask-for-approval never --sandbox read-only --model gpt-4.5 "<prompt>"
+#   exec                          non-interactive subcommand (replaces --quiet)
+#   --ask-for-approval never      no blocking approval prompts in automated runs
+#   --sandbox read-only           block all shell execution and file writes
+#   --model                       pin the model version
 # ─────────────────────────────────────────────────────────────────────────────
 
 [agent]
@@ -45,7 +48,7 @@ retries               = 1
 
 [subprocess]
 bin         = "codex"
-args_prefix = ["--approval-mode", "suggest", "--quiet", "--model", "gpt-4.5"]
+args_prefix = ["exec", "--ask-for-approval", "never", "--sandbox", "read-only", "--model", "gpt-4.5"]
 
 [subprocess.env]
 OPENAI_MODEL = "gpt-4.5"

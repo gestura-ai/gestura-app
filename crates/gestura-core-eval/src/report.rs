@@ -129,15 +129,14 @@ impl EvalReport {
 
     /// Print a human-readable summary to stdout.
     ///
-    /// When `verbose` is `false` (the default), the agent response is shown
-    /// (truncated to 400 chars) only for **failed** variations, together with
-    /// every failing check and its diagnostic message.  Passing variations show
-    /// only a one-line status.
+    /// Three display modes, controlled by the two flags:
     ///
-    /// When `verbose` is `true` every variation shows its full response text
-    /// (up to 800 chars) and every individual check result — useful when
-    /// investigating why a passing score differs from expectations.
-    pub fn print_text(&self, verbose: bool) {
+    /// | `verbose` | `show_breaking` | Behaviour |
+    /// |-----------|-----------------|-----------|
+    /// | false     | false           | Pass/fail + failing check details only — no response text |
+    /// | false     | true            | Same, plus the agent response (≤ 400 chars) for failed variations |
+    /// | true      | any             | All check results (✓ and ✗) + full response (≤ 800 chars) for every variation |
+    pub fn print_text(&self, verbose: bool, show_breaking: bool) {
         let s = &self.summary;
         println!();
         println!("╔══════════════════════════════════════════════════════════╗");
@@ -184,32 +183,35 @@ impl EvalReport {
                 }
 
                 // ── Check results ───────────────────────────────────────────
-                let show_checks = !v.passed || verbose;
-                if show_checks {
-                    for check in &v.checks {
-                        if verbose || !check.passed {
-                            let cicon = if check.passed { "✓" } else { "✗" };
-                            println!(
-                                "        {} {:<35} {}",
-                                cicon,
-                                check.name,
-                                check.details
-                            );
-                        }
+                // Always show failing checks; show passing checks only in verbose mode.
+                for check in &v.checks {
+                    if verbose || !check.passed {
+                        let cicon = if check.passed { "✓" } else { "✗" };
+                        println!(
+                            "        {} {:<35} {}",
+                            cicon,
+                            check.name,
+                            check.details
+                        );
                     }
                 }
 
                 // ── Agent response ──────────────────────────────────────────
-                // Always shown on failure; shown in verbose mode even on pass.
-                if !v.passed || verbose {
+                // verbose        → show for every variation (800 char limit)
+                // show_breaking  → show only for failed variations (400 char limit)
+                // default        → never shown
+                let show_response = verbose || (show_breaking && !v.passed);
+                if show_response {
                     let response_limit = if verbose { 800 } else { 400 };
                     let display_response = if v.response.trim().is_empty() {
                         "<empty response>".to_string()
                     } else {
                         truncate_response(&v.response, response_limit)
                     };
-                    println!("        ┌─ Agent response ({} words) ─────────────────────",
-                        v.response.split_whitespace().count());
+                    println!(
+                        "        ┌─ Agent response ({} words) ─────────────────────",
+                        v.response.split_whitespace().count()
+                    );
                     for line in display_response.lines() {
                         println!("        │ {line}");
                     }

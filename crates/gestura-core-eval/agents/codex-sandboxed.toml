@@ -6,14 +6,13 @@
 # Binary: codex   Install: npm i -g @openai/codex
 #
 # Sandboxed profile: read-only, reasoning-only. No shell execution, no file
-# writes, no network calls. Enforced by the `--sandbox` flag which restricts
-# Codex to analysis and text generation only.
+# writes, no network calls. Uses gpt-4o-mini for cost efficiency.
 #
-# Uses gpt-4o-mini for cost efficiency on sandboxed read-only tasks.
-#
-# Invocation: codex --sandbox --quiet --model gpt-4o-mini "<prompt>"
-#   --sandbox   restrict to read-only, no tool execution
-#   --quiet     suppress interactive UI
+# Invocation: codex exec --sandbox read-only --ask-for-approval never --model gpt-4o-mini "<prompt>"
+#   exec                          non-interactive subcommand (replaces --quiet)
+#   --sandbox read-only           hard block on all shell/write operations
+#   --ask-for-approval never      no blocking prompts in automated eval runs
+#   --model                       pin the model version
 # ─────────────────────────────────────────────────────────────────────────────
 
 [agent]
@@ -45,7 +44,7 @@ retries               = 0
 
 [subprocess]
 bin         = "codex"
-args_prefix = ["--sandbox", "--quiet", "--model", "gpt-4o-mini"]
+args_prefix = ["exec", "--sandbox", "read-only", "--ask-for-approval", "never", "--model", "gpt-4o-mini"]
 
 [subprocess.env]
 OPENAI_MODEL = "gpt-4o-mini"
