@@ -1,0 +1,90 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# agents/claude-code-sandboxed.toml — Claude Code · Sandboxed
+#
+# Mode: SANDBOXED
+# Framework: Claude Code (Anthropic's official CLI coding agent)
+# Binary: claude   Install: https://claude.ai/code
+#
+# Sandboxed profile: restricts Claude Code to read-only, reasoning-only output.
+# No shell execution, no file writes, no network calls. Safe for running against
+# untrusted prompts or in environments where isolation must be enforced.
+#
+# Invocation: claude --allowedTools "" -p "<prompt>"
+#   --allowedTools ""   empty allowlist = no tools permitted
+#   -p                  non-interactive print mode
+#
+# Uses claude-haiku-3-5 for cost efficiency — sandboxed tasks are simpler.
+# ─────────────────────────────────────────────────────────────────────────────
+
+[agent]
+id          = "claude-code-sandboxed"
+name        = "Claude Code — Sandboxed"
+description = "Anthropic CLI · read-only reasoning, no tools, no writes"
+mode        = "sandboxed"
+
+[model]
+provider    = "anthropic"
+name        = "claude-haiku-3-5"   # fast, cost-efficient for read-only tasks
+temperature = 0.3
+max_tokens  = 2048
+
+[permissions]
+level           = "sandbox"
+tools_enabled   = false
+shell_enabled   = false
+network_enabled = false
+write_enabled   = false
+allowed_tools   = []
+denied_tools    = []
+
+[execution]
+max_iterations        = 1
+timeout_secs          = 30
+require_confirmation  = false
+retries               = 0
+
+[subprocess]
+bin         = "claude"
+args_prefix = ["--allowedTools", "", "-p"]
+
+[subprocess.env]
+ANTHROPIC_MODEL = "claude-haiku-3-5"
+
+[thresholds]
+min_variation_score    = 0.70
+min_scenario_pass_rate = 0.67
+min_overall_score      = 0.70
+
+# ─── Scenario overrides ───────────────────────────────────────────────────────
+# Sandboxed agents produce shorter answers — relax length requirements.
+
+[scenarios.s3_planning.variation_overrides.v1]
+min_words       = 40
+disabled_checks = ["has_verification_step"]
+
+[scenarios.s3_planning.variation_overrides.v2]
+min_words = 40
+
+[scenarios.s3_planning.variation_overrides.v3]
+min_words = 40
+
+[scenarios.s4_error_handling.variation_overrides.v1]
+min_words = 25
+
+[scenarios.s4_error_handling.variation_overrides.v2]
+min_words = 25
+
+[scenarios.s4_error_handling.variation_overrides.v3]
+min_words = 25
+
+[scenarios.s5_tool_extensibility.variation_overrides.v1]
+min_words       = 30
+disabled_checks = ["no_fabricated_live_output"]
+
+[scenarios.s5_tool_extensibility.variation_overrides.v2]
+min_words = 30
+
+[scenarios.s5_tool_extensibility.variation_overrides.v3]
+min_words       = 30
+disabled_checks = ["no_fabricated_live_output"]
+

@@ -3003,6 +3003,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "gestura-core-eval"
+version = "0.11.0"
+dependencies = [
+ "chrono",
+ "clap",
+ "colored",
+ "regex",
+ "serde",
+ "serde_json",
+ "toml 0.8.2",
+ "tracing",
+ "tracing-subscriber",
+ "uuid",
+]
+
+[[package]]
 name = "gestura-core-explorer"
 version = "0.11.0"
 dependencies = [

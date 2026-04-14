@@ -1,0 +1,201 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# Containerfile — gestura-eval multi-agent evaluation harness
+#
+# Three-stage build:
+#   chef     — installs cargo-chef for Rust dependency caching
+#   builder  — compiles gestura (CLI) and gestura-eval from source
+#   runtime  — minimal Debian image with Node.js agent CLIs + built binaries
+#
+# Build (run from repo root):
+#   podman build \
+#     -f crates/gestura-core-eval/Containerfile \
+#     --ignorefile crates/gestura-core-eval/.containerignore \
+#     -t gestura-eval .
+#
+#   docker build \
+#     -f crates/gestura-core-eval/Containerfile \
+#     --build-arg BUILDKIT_INLINE_CACHE=1 \
+#     -t gestura-eval .
+#
+# Run — pass API keys at runtime, never bake them into the image:
+#   podman run --rm \
+#     -e ANTHROPIC_API_KEY=sk-ant-... \
+#     -e OPENAI_API_KEY=sk-... \
+#     gestura-eval --agent gestura-full --dry-run
+#
+#   podman run --rm \
+#     --env-file .env \
+#     gestura-eval --agent claude-code-full --scenario s3_planning --json
+# ─────────────────────────────────────────────────────────────────────────────
+
+# ── Stage 1: cargo-chef installer ────────────────────────────────────────────
+# Installs cargo-chef into a stable Rust image so that the planner and builder
+# stages can use it without repeating the install step.
+FROM rust:1.94-slim-bookworm AS chef
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    pkg-config \
+    libssl-dev \
+    ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+# cargo-chef computes a build "recipe" (dependency manifest) from Cargo.toml
+# files alone, then cooks (downloads + compiles) all transitive dependencies
+# before the real source is copied. This makes the heavy dep-compile layer
+# cacheable and invalidated only when Cargo.toml / Cargo.lock change.
+RUN cargo install cargo-chef --locked
+
+WORKDIR /src
+
+# ── Stage 2a: Planner — generate dependency recipe ───────────────────────────
+FROM chef AS planner
+COPY . .
+RUN cargo chef prepare --recipe-path recipe.json
+
+# ── Stage 2b: Builder — cook deps then compile real source ───────────────────
+FROM chef AS builder
+
+COPY --from=planner /src/recipe.json recipe.json
+
+# Cook (compile) all transitive dependencies.
+# --no-default-features skips voice-local (needs cmake/whisper.cpp/LLVM) and
+# the security keychain crate — neither is needed for headless eval runs.
+RUN cargo chef cook --release \
+    --no-default-features \
+    -p gestura-cli \
+    -p gestura-core-eval \
+    --recipe-path recipe.json
+
+# Copy the full source tree; only crate source files invalidate this layer.
+COPY . .
+
+# Compile the two binaries we ship in the runtime image.
+RUN cargo build --release \
+    --no-default-features \
+    -p gestura-cli \
+    -p gestura-core-eval
+
+# ── Stage 3: Runtime ──────────────────────────────────────────────────────────
+FROM debian:bookworm-slim AS runtime
+
+LABEL org.opencontainers.image.title="gestura-eval" \
+    org.opencontainers.image.description="Gestura multi-agent evaluation harness" \
+    org.opencontainers.image.source="https://github.com/gestura-ai/gestura-app" \
+    org.opencontainers.image.licenses="LicenseRef-Gestura-Prosperity-1.0"
+
+# ── System packages ───────────────────────────────────────────────────────────
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates \
+    curl \
+    git \
+    # Required by Codex CLI subprocess operations
+    bash \
+    # Required for OpenCode and Augment npm packages
+    xz-utils \
+    && rm -rf /var/lib/apt/lists/*
+
+# ── Node.js 20 LTS (required by agent CLIs) ──────────────────────────────────
+# Uses the official NodeSource setup script to add the v20 APT repository,
+# then installs Node + npm in the same layer to keep image size down.
+RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
+    && apt-get install -y --no-install-recommends nodejs \
+    && rm -rf /var/lib/apt/lists/* \
+    && node --version \
+    && npm --version
+
+# ── Agent CLIs (installed as root so /usr/local/bin is on every user's PATH) ─
+#
+# claude       — Claude Code (Anthropic)  https://claude.ai/code
+#   Requires:  ANTHROPIC_API_KEY  or  prior `claude login` session
+#
+# codex        — OpenAI Codex CLI         https://github.com/openai/codex
+#   Requires:  OPENAI_API_KEY
+#
+# opencode     — OpenCode                 https://github.com/sst/opencode
+#   Requires:  ANTHROPIC_API_KEY  (default profiles use Claude)
+#              or OPENAI_API_KEY  (if you override model to OpenAI)
+#
+# Note: Augment Code does not yet ship a public CLI binary.
+# The augment-* profiles are ready for when it does; use --dry-run until then.
+RUN npm install -g \
+    @anthropic-ai/claude-code \
+    @openai/codex \
+    opencode-ai \
+    && claude  --version \
+    && codex   --version \
+    && opencode --version
+
+# ── Rust binaries from builder ────────────────────────────────────────────────
+COPY --from=builder /src/target/release/gestura      /usr/local/bin/gestura
+COPY --from=builder /src/target/release/gestura-eval /usr/local/bin/gestura-eval
+
+RUN gestura      --version \
+    && gestura-eval --version
+
+# ── Non-root user ─────────────────────────────────────────────────────────────
+# All subprocesses (gestura, claude, codex, opencode) run as this user.
+# Credentials are injected via environment variables — never stored on disk.
+RUN useradd --create-home --uid 1000 --shell /bin/bash eval
+WORKDIR /home/eval
+USER eval
+
+# ── Eval-specific env vars ────────────────────────────────────────────────────
+# Always disable the macOS Keychain in Gestura subprocesses — the keychain
+# daemon is not available inside a container and the subprocess would hang.
+ENV GESTURA_DISABLE_KEYCHAIN="1"
+
+# ── API key placeholders — supply at runtime via -e or --env-file ─────────────
+#
+# None of these are set to real values here. Pass them at `podman run` time:
+#   podman run --rm -e ANTHROPIC_API_KEY=sk-ant-... gestura-eval --agent gestura-full
+#   podman run --rm --env-file .env gestura-eval --agent codex-full
+#
+# ── LLM provider keys ─────────────────────────────────────────────────────────
+# Anthropic — required for: gestura-*, claude-code-*, augment-*, opencode-*
+ENV ANTHROPIC_API_KEY=""
+
+# OpenAI — required for: codex-*
+#           also used if an opencode-* profile is pointed at an OpenAI model
+ENV OPENAI_API_KEY=""
+
+# Grok (xAI) — required only if a custom gestura profile sets llm.primary=grok
+#   Key format: xai-...
+ENV GROK_API_KEY=""
+
+# Google Gemini — required only if a custom gestura profile sets llm.primary=gemini
+ENV GEMINI_API_KEY=""
+
+# ── Optional: model name overrides (avoids editing profile TOML files) ────────
+ENV ANTHROPIC_MODEL=""
+ENV OPENAI_MODEL=""
+ENV GROK_MODEL=""
+ENV GEMINI_MODEL=""
+
+# ── Optional: Gestura provider routing ────────────────────────────────────────
+# Values: openai | anthropic | grok | gemini | ollama
+ENV LLM_PRIMARY=""
+ENV LLM_FALLBACK=""
+
+# ── Optional: Ollama (local models, no API key required) ──────────────────────
+# Point at a running Ollama server — no API key needed, just a base URL.
+# Example: -e OLLAMA_BASE_URL=http://host.containers.internal:11434
+ENV OLLAMA_BASE_URL=""
+ENV OLLAMA_MODEL=""
+
+# ── Optional: web search tool keys ────────────────────────────────────────────
+# Gestura reads these for its web_search tool. Neither is needed unless a
+# custom eval profile or scenario explicitly invokes web search.
+ENV SERPAPI_KEY=""
+ENV BRAVE_SEARCH_KEY=""
+
+# ── Tracing verbosity (stderr only — never captured in eval response output) ──
+ENV RUST_LOG="warn"
+
+# ── Entrypoint ────────────────────────────────────────────────────────────────
+# Default: print built-in agent profiles and exit.
+# Override CMD or pass args directly:
+#   podman run gestura-eval --agent gestura-full
+#   podman run gestura-eval --agent codex-full --dry-run --json
+ENTRYPOINT ["gestura-eval"]
+CMD ["--list-agents"]
+

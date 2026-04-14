@@ -1,0 +1,67 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# agents/baseline.toml — Universal eval baseline
+#
+# This file is the single source of truth for all default values.
+# Agent-specific profiles declare only what differs from this baseline.
+# All fields here must have a valid value — nothing is optional at the baseline level.
+# ─────────────────────────────────────────────────────────────────────────────
+
+[agent]
+id          = "baseline"
+name        = "Baseline"
+description = "Universal default standards shared by every agent profile"
+mode        = "autonomous"
+
+# ─── Model ───────────────────────────────────────────────────────────────────
+# Agents override this to match the model they actually run.
+
+[model]
+provider    = "anthropic"
+name        = "claude-sonnet-4-6"
+temperature = 0.7
+max_tokens  = 8192
+
+# ─── Permissions ─────────────────────────────────────────────────────────────
+# Baseline is conservative: no tools, no shell, no network, no writes.
+# Full-permission and iterative profiles open this up selectively.
+
+[permissions]
+level           = "restricted"
+tools_enabled   = false
+shell_enabled   = false
+network_enabled = false
+write_enabled   = false
+allowed_tools   = []
+denied_tools    = []
+
+# ─── Execution ───────────────────────────────────────────────────────────────
+
+[execution]
+max_iterations        = 1
+timeout_secs          = 60
+require_confirmation  = false
+confirmation_response = "yes"
+retries               = 0
+
+# ─── Subprocess ──────────────────────────────────────────────────────────────
+# args_prefix is prepended to every invocation: `gestura exec "<prompt>"`.
+
+[subprocess]
+args_prefix = ["exec"]
+
+[subprocess.env]
+GESTURA_DISABLE_KEYCHAIN = "1"
+
+# ─── Thresholds ──────────────────────────────────────────────────────────────
+# Baseline demands high quality: 80% of checks must pass per variation,
+# all variations must pass per scenario, and overall score ≥ 80%.
+
+[thresholds]
+min_variation_score   = 0.80
+min_scenario_pass_rate = 1.0
+min_overall_score     = 0.80
+
+# ─── Scenario overrides ───────────────────────────────────────────────────────
+# Baseline defines no overrides — all scenarios run with their built-in rubric.
+# Agent profiles add overrides here to tune expectations for their execution mode.
+

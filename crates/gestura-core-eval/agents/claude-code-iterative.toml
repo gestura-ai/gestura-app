@@ -1,0 +1,81 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# agents/claude-code-iterative.toml — Claude Code · Iterative Approval
+#
+# Mode: ITERATIVE
+# Framework: Claude Code (Anthropic's official CLI coding agent)
+# Binary: claude   Install: https://claude.ai/code
+#
+# Iterative profile: Claude Code runs with default permission gates enabled.
+# The agent pauses before every shell command, file write, or network call
+# and asks for explicit approval. The eval runner sends `confirmation_response`
+# ("yes") when the agent is waiting, then reads the final response.
+#
+# Invocation: claude -p "<prompt>"   (default = confirmation gates ON)
+# ─────────────────────────────────────────────────────────────────────────────
+
+[agent]
+id          = "claude-code-iterative"
+name        = "Claude Code — Iterative Approval"
+description = "Anthropic CLI · default confirmation gates, step-by-step approval"
+mode        = "iterative"
+
+[model]
+provider    = "anthropic"
+name        = "claude-sonnet-4-6"   # strongest reasoning to justify each step
+temperature = 0.5
+max_tokens  = 8096
+
+[permissions]
+level           = "restricted"
+tools_enabled   = true
+shell_enabled   = false    # shell gated — agent must request approval each time
+network_enabled = false
+write_enabled   = false
+allowed_tools   = ["file", "git", "code", "task", "web_search"]
+denied_tools    = ["shell", "screenshot", "screen_record"]
+
+[execution]
+max_iterations        = 5
+timeout_secs          = 180
+require_confirmation  = true
+confirmation_response = "yes"
+retries               = 1
+
+[subprocess]
+bin         = "claude"
+args_prefix = ["-p"]      # no --dangerously-skip-permissions → gates are active
+
+[subprocess.env]
+ANTHROPIC_MODEL = "claude-sonnet-4-6"
+
+[thresholds]
+min_variation_score    = 0.75
+min_scenario_pass_rate = 0.67
+min_overall_score      = 0.75
+
+# ─── Scenario overrides ───────────────────────────────────────────────────────
+
+[scenarios.s1_simple_query.variation_overrides.v3]
+additional_checks = ["acknowledges_uncertainty"]
+
+[scenarios.s3_planning.variation_overrides.v1]
+additional_checks = ["has_verification_step"]
+
+[scenarios.s3_planning.variation_overrides.v2]
+additional_checks = ["has_verification_step"]
+
+[scenarios.s3_planning.variation_overrides.v3]
+additional_checks = ["has_verification_step"]
+
+[scenarios.s4_error_handling.variation_overrides.v1]
+additional_checks = ["suggests_test", "root_cause_explained"]
+
+[scenarios.s7_context_retention.variation_overrides.v1]
+additional_checks = ["no_invented_detail"]
+
+[scenarios.s7_context_retention.variation_overrides.v2]
+additional_checks = ["no_invented_detail"]
+
+[scenarios.s7_context_retention.variation_overrides.v3]
+additional_checks = ["no_invented_detail"]
+

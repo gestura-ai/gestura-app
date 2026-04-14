@@ -1,0 +1,73 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# agents/claude-code-full.toml — Claude Code · Full Permission (Autonomous)
+#
+# Mode: AUTONOMOUS
+# Framework: Claude Code (Anthropic's official CLI coding agent)
+# Binary: claude   Install: https://claude.ai/code
+#
+# Full-permission profile: skips confirmation prompts so the agent completes
+# tasks end-to-end without pausing for approval. Suitable for automated CI
+# pipelines and benchmark runs where human-in-the-loop is not required.
+#
+# Invocation: claude --dangerously-skip-permissions -p "<prompt>"
+#   --dangerously-skip-permissions  bypass all confirmation gates
+#   -p / --print                    non-interactive, print response to stdout
+# ─────────────────────────────────────────────────────────────────────────────
+
+[agent]
+id          = "claude-code-full"
+name        = "Claude Code — Full Permission (Autonomous)"
+description = "Anthropic CLI · unrestricted e2e execution, no confirmation gates"
+mode        = "autonomous"
+
+[model]
+provider    = "anthropic"
+name        = "claude-sonnet-4-6"
+temperature = 1.0      # Claude Code runs at temp 1 by default
+max_tokens  = 8096
+
+[permissions]
+level           = "full"
+tools_enabled   = true
+shell_enabled   = true
+network_enabled = true
+write_enabled   = true
+allowed_tools   = []   # all built-in tools available
+denied_tools    = []
+
+[execution]
+max_iterations        = 10
+timeout_secs          = 120
+require_confirmation  = false
+retries               = 1
+
+[subprocess]
+bin         = "claude"
+args_prefix = ["--dangerously-skip-permissions", "-p"]
+
+[subprocess.env]
+# ANTHROPIC_API_KEY must be set in the calling environment.
+# claude reads ANTHROPIC_MODEL if you prefer env-based model pinning.
+ANTHROPIC_MODEL = "claude-sonnet-4-6"
+
+[thresholds]
+min_variation_score    = 0.85
+min_scenario_pass_rate = 1.0
+min_overall_score      = 0.85
+
+# ─── Scenario overrides ───────────────────────────────────────────────────────
+
+[scenarios.s3_planning.variation_overrides.v1]
+min_words         = 120
+additional_checks = ["has_structured_sections", "has_verification_step"]
+
+[scenarios.s3_planning.variation_overrides.v2]
+min_words         = 100
+additional_checks = ["has_structured_sections"]
+
+[scenarios.s4_error_handling.variation_overrides.v1]
+additional_checks = ["suggests_test", "root_cause_explained"]
+
+[scenarios.s4_error_handling.variation_overrides.v2]
+additional_checks = ["suggests_test"]
+

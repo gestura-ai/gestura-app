@@ -1,0 +1,89 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# agents/codex-sandboxed.toml — Codex CLI (OpenAI) · Sandboxed
+#
+# Mode: SANDBOXED
+# Framework: OpenAI Codex CLI   https://github.com/openai/codex
+# Binary: codex   Install: npm i -g @openai/codex
+#
+# Sandboxed profile: read-only, reasoning-only. No shell execution, no file
+# writes, no network calls. Enforced by the `--sandbox` flag which restricts
+# Codex to analysis and text generation only.
+#
+# Uses gpt-4o-mini for cost efficiency on sandboxed read-only tasks.
+#
+# Invocation: codex --sandbox --quiet --model gpt-4o-mini "<prompt>"
+#   --sandbox   restrict to read-only, no tool execution
+#   --quiet     suppress interactive UI
+# ─────────────────────────────────────────────────────────────────────────────
+
+[agent]
+id          = "codex-sandboxed"
+name        = "Codex CLI (OpenAI) — Sandboxed"
+description = "OpenAI Codex · gpt-4o-mini, read-only reasoning, no tool execution"
+mode        = "sandboxed"
+
+[model]
+provider    = "openai"
+name        = "gpt-4o-mini"
+temperature = 0.3
+max_tokens  = 2048
+
+[permissions]
+level           = "sandbox"
+tools_enabled   = false
+shell_enabled   = false
+network_enabled = false
+write_enabled   = false
+allowed_tools   = []
+denied_tools    = []
+
+[execution]
+max_iterations        = 1
+timeout_secs          = 30
+require_confirmation  = false
+retries               = 0
+
+[subprocess]
+bin         = "codex"
+args_prefix = ["--sandbox", "--quiet", "--model", "gpt-4o-mini"]
+
+[subprocess.env]
+OPENAI_MODEL = "gpt-4o-mini"
+
+[thresholds]
+min_variation_score    = 0.70
+min_scenario_pass_rate = 0.67
+min_overall_score      = 0.70
+
+# ─── Scenario overrides ──────────────────────────────────────────────────────
+
+[scenarios.s3_planning.variation_overrides.v1]
+min_words       = 40
+disabled_checks = ["has_verification_step"]
+
+[scenarios.s3_planning.variation_overrides.v2]
+min_words = 40
+
+[scenarios.s3_planning.variation_overrides.v3]
+min_words = 40
+
+[scenarios.s4_error_handling.variation_overrides.v1]
+min_words = 25
+
+[scenarios.s4_error_handling.variation_overrides.v2]
+min_words = 25
+
+[scenarios.s4_error_handling.variation_overrides.v3]
+min_words = 25
+
+[scenarios.s5_tool_extensibility.variation_overrides.v1]
+min_words       = 30
+disabled_checks = ["no_fabricated_live_output"]
+
+[scenarios.s5_tool_extensibility.variation_overrides.v2]
+min_words = 30
+
+[scenarios.s5_tool_extensibility.variation_overrides.v3]
+min_words       = 30
+disabled_checks = ["no_fabricated_live_output"]
+

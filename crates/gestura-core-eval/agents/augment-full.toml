@@ -1,0 +1,73 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# agents/augment-full.toml — Augment (Auggie) · Full Permission (Autonomous)
+#
+# Mode: AUTONOMOUS
+# Framework: Augment Code AI agent   https://www.augmentcode.com
+# Binary: augment   (verify with `augment --help` after installation)
+#
+# Augment is powered by Claude Sonnet 4.6, so model parity with gestura-full
+# and claude-code-full is maintained across Anthropic-backed agents.
+#
+# Full-permission profile: unrestricted tool access, autonomous task completion.
+#
+# Invocation: augment run "<prompt>"
+#   run       execute a single prompt non-interactively and exit
+#
+# NOTE: Verify the exact binary name and `run` subcommand against your
+# installed version of Augment Code. Update `bin` and `args_prefix` if needed.
+# ─────────────────────────────────────────────────────────────────────────────
+
+[agent]
+id          = "augment-full"
+name        = "Augment (Auggie) — Full Permission (Autonomous)"
+description = "Augment Code agent · claude-sonnet-4-6, unrestricted e2e execution"
+mode        = "autonomous"
+
+[model]
+provider    = "anthropic"
+name        = "claude-sonnet-4-6"   # Augment is backed by Anthropic Claude
+temperature = 0.7
+max_tokens  = 8192
+
+[permissions]
+level           = "full"
+tools_enabled   = true
+shell_enabled   = true
+network_enabled = true
+write_enabled   = true
+allowed_tools   = []
+denied_tools    = []
+
+[execution]
+max_iterations        = 10
+timeout_secs          = 120
+require_confirmation  = false
+retries               = 1
+
+[subprocess]
+bin         = "augment"
+args_prefix = ["run"]
+
+[subprocess.env]
+# AUGMENT_API_KEY or equivalent credential must be set in your environment.
+# Verify the exact env var name with `augment --help`.
+ANTHROPIC_MODEL = "claude-sonnet-4-6"
+
+[thresholds]
+min_variation_score    = 0.85
+min_scenario_pass_rate = 1.0
+min_overall_score      = 0.85
+
+# ─── Scenario overrides ───────────────────────────────────────────────────────
+
+[scenarios.s3_planning.variation_overrides.v1]
+min_words         = 120
+additional_checks = ["has_structured_sections", "has_verification_step"]
+
+[scenarios.s3_planning.variation_overrides.v2]
+min_words         = 100
+additional_checks = ["has_structured_sections"]
+
+[scenarios.s4_error_handling.variation_overrides.v1]
+additional_checks = ["suggests_test", "root_cause_explained"]
+

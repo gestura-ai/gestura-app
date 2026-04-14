@@ -41,6 +41,7 @@ members = [
     "crates/gestura-core-gestures",
     "crates/gestura-core-devices",
     "crates/gestura-core-ble",
+    "crates/gestura-core-eval",
 ]
 
 # Default members for `cargo build` without specifying a package
@@ -211,6 +212,9 @@ gestura-core-context = { path = "crates/gestura-core-context" }
 
 # Domain crate: unified intent normalization layer.
 gestura-core-intent = { path = "crates/gestura-core-intent" }
+
+# Domain crate: reproducible evaluation harness (8 standardised test scenarios).
+gestura-core-eval = { path = "crates/gestura-core-eval" }
 
 [profile.dev]
 opt-level = 0

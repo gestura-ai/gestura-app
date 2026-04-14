@@ -1,0 +1,81 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# agents/augment-iterative.toml — Augment (Auggie) · Iterative Approval
+#
+# Mode: ITERATIVE
+# Framework: Augment Code AI agent   https://www.augmentcode.com
+# Binary: augment
+#
+# Iterative profile: Augment pauses before side-effectful actions and requests
+# confirmation. The eval runner automatically sends `confirmation_response`
+# when the agent is waiting so the run can complete non-interactively.
+#
+# This mode maps to Augment's natural "approval-required" workflow, making it
+# the most representative profile for how Augment is typically used in IDEs.
+# ─────────────────────────────────────────────────────────────────────────────
+
+[agent]
+id          = "augment-iterative"
+name        = "Augment (Auggie) — Iterative Approval"
+description = "Augment Code agent · claude-sonnet-4-6, confirmation-gated workflow"
+mode        = "iterative"
+
+[model]
+provider    = "anthropic"
+name        = "claude-sonnet-4-6"
+temperature = 0.5
+max_tokens  = 8192
+
+[permissions]
+level           = "restricted"
+tools_enabled   = true
+shell_enabled   = false
+network_enabled = false
+write_enabled   = false
+allowed_tools   = ["file", "git", "code", "task"]
+denied_tools    = ["shell", "screenshot", "screen_record"]
+
+[execution]
+max_iterations        = 5
+timeout_secs          = 180
+require_confirmation  = true
+confirmation_response = "yes"
+retries               = 1
+
+[subprocess]
+bin         = "augment"
+args_prefix = ["run", "--interactive"]   # verify flag with `augment --help`
+
+[subprocess.env]
+ANTHROPIC_MODEL = "claude-sonnet-4-6"
+
+[thresholds]
+min_variation_score    = 0.75
+min_scenario_pass_rate = 0.67
+min_overall_score      = 0.75
+
+# ─── Scenario overrides ───────────────────────────────────────────────────────
+
+[scenarios.s1_simple_query.variation_overrides.v3]
+additional_checks = ["acknowledges_uncertainty"]
+
+[scenarios.s3_planning.variation_overrides.v1]
+additional_checks = ["has_verification_step"]
+
+[scenarios.s3_planning.variation_overrides.v2]
+additional_checks = ["has_verification_step"]
+
+[scenarios.s3_planning.variation_overrides.v3]
+additional_checks = ["has_verification_step"]
+
+[scenarios.s4_error_handling.variation_overrides.v1]
+additional_checks = ["suggests_test", "root_cause_explained"]
+
+[scenarios.s7_context_retention.variation_overrides.v1]
+additional_checks = ["no_invented_detail"]
+
+[scenarios.s7_context_retention.variation_overrides.v2]
+additional_checks = ["no_invented_detail"]
+
+[scenarios.s7_context_retention.variation_overrides.v3]
+additional_checks = ["no_invented_detail"]
+

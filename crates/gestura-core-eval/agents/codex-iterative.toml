@@ -1,0 +1,83 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# agents/codex-iterative.toml — Codex CLI (OpenAI) · Iterative Approval
+#
+# Mode: ITERATIVE
+# Framework: OpenAI Codex CLI   https://github.com/openai/codex
+# Binary: codex   Install: npm i -g @openai/codex
+#
+# Iterative profile: Codex runs with `--approval-mode suggest` so the agent
+# proposes every shell command or file write and waits for approval before
+# executing. The eval runner sends `confirmation_response` ("yes") when the
+# agent is waiting so the run can complete non-interactively.
+#
+# Invocation: codex --approval-mode suggest --quiet --model gpt-4.5 "<prompt>"
+#   --approval-mode suggest   propose actions, require approval to execute
+#   --quiet                   suppress interactive UI
+# ─────────────────────────────────────────────────────────────────────────────
+
+[agent]
+id          = "codex-iterative"
+name        = "Codex CLI (OpenAI) — Iterative Approval"
+description = "OpenAI Codex · gpt-4.5, suggest-mode approval gates, step-by-step"
+mode        = "iterative"
+
+[model]
+provider    = "openai"
+name        = "gpt-4.5"
+temperature = 0.7
+max_tokens  = 16384
+
+[permissions]
+level           = "restricted"
+tools_enabled   = true
+shell_enabled   = false
+network_enabled = false
+write_enabled   = false
+allowed_tools   = ["file", "git", "code", "task"]
+denied_tools    = ["shell", "screenshot", "screen_record"]
+
+[execution]
+max_iterations        = 5
+timeout_secs          = 180
+require_confirmation  = true
+confirmation_response = "yes"
+retries               = 1
+
+[subprocess]
+bin         = "codex"
+args_prefix = ["--approval-mode", "suggest", "--quiet", "--model", "gpt-4.5"]
+
+[subprocess.env]
+OPENAI_MODEL = "gpt-4.5"
+
+[thresholds]
+min_variation_score    = 0.75
+min_scenario_pass_rate = 0.67
+min_overall_score      = 0.75
+
+# ─── Scenario overrides ──────────────────────────────────────────────────────
+
+[scenarios.s1_simple_query.variation_overrides.v3]
+additional_checks = ["acknowledges_uncertainty"]
+
+[scenarios.s3_planning.variation_overrides.v1]
+additional_checks = ["has_verification_step"]
+
+[scenarios.s3_planning.variation_overrides.v2]
+additional_checks = ["has_verification_step"]
+
+[scenarios.s3_planning.variation_overrides.v3]
+additional_checks = ["has_verification_step"]
+
+[scenarios.s4_error_handling.variation_overrides.v1]
+additional_checks = ["suggests_test", "root_cause_explained"]
+
+[scenarios.s7_context_retention.variation_overrides.v1]
+additional_checks = ["no_invented_detail"]
+
+[scenarios.s7_context_retention.variation_overrides.v2]
+additional_checks = ["no_invented_detail"]
+
+[scenarios.s7_context_retention.variation_overrides.v3]
+additional_checks = ["no_invented_detail"]
+

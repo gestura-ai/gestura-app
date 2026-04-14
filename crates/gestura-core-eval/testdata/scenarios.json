@@ -1,0 +1,249 @@
+{
+  "version": 1,
+  "description": "8 standardized eval scenarios × 3 variations each for cross-interface reproducibility.",
+  "scenarios": [
+    {
+      "id": "s1_simple_query",
+      "name": "Simple Single-Turn Query",
+      "category": "simple_query",
+      "description": "Direct factual questions with unambiguous settled answers.",
+      "rubric": { "tools_enabled": false, "max_iterations": 1 },
+      "variations": [
+        {
+          "id": "v1",
+          "prompt": "What is the capital of France?",
+          "expected_keywords": ["Paris", "paris"],
+          "max_words": 60,
+          "checks": ["response_not_empty", "response_is_concise", "contains_expected_keyword"]
+        },
+        {
+          "id": "v2",
+          "prompt": "Which city serves as the capital of Japan?",
+          "expected_keywords": ["Tokyo", "tokyo"],
+          "max_words": 60,
+          "checks": ["response_not_empty", "response_is_concise", "contains_expected_keyword"]
+        },
+        {
+          "id": "v3",
+          "prompt": "Tell me who invented the telephone.",
+          "expected_keywords": ["Bell", "bell", "Gray", "gray", "Meucci", "meucci"],
+          "max_words": 120,
+          "checks": ["response_not_empty", "contains_expected_keyword", "acknowledges_uncertainty"]
+        }
+      ]
+    },
+    {
+      "id": "s2_multi_turn",
+      "name": "Multi-Turn Conversation",
+      "category": "multi_turn",
+      "description": "Coherent conversation across 4+ turns without contradictions or lost context.",
+      "rubric": { "tools_enabled": false, "max_iterations": 1 },
+      "variations": [
+        {
+          "id": "v1",
+          "history": [
+            {"role": "user", "content": "What are Python decorators?"},
+            {"role": "assistant", "content": "Python decorators are functions that wrap other functions, modifying their behavior without changing their source code. They use the `@` syntax."},
+            {"role": "user", "content": "Can you show me a simple example?"},
+            {"role": "assistant", "content": "```python\ndef log(func):\n    def wrapper(*args, **kwargs):\n        print(f'Calling {func.__name__}')\n        return func(*args, **kwargs)\n    return wrapper\n\n@log\ndef greet(name):\n    print(f'Hello {name}')\n```"}
+          ],
+          "prompt": "How does this differ from regular function wrapping?",
+          "min_words": 20,
+          "checks": ["response_not_empty", "response_is_substantive", "builds_on_context"]
+        },
+        {
+          "id": "v2",
+          "history": [
+            {"role": "user", "content": "I want to learn about Rust ownership. What is it?"},
+            {"role": "assistant", "content": "Rust's ownership system is a set of rules that governs how memory is managed. Each value has one owner, and when the owner goes out of scope, the value is dropped."},
+            {"role": "user", "content": "What are the rules exactly?"},
+            {"role": "assistant", "content": "Three rules: 1) Each value has exactly one owner. 2) When the owner goes out of scope, the value is dropped. 3) There can only be one owner at a time."}
+          ],
+          "prompt": "And how does borrowing fit into those rules?",
+          "min_words": 20,
+          "checks": ["response_not_empty", "response_is_substantive", "builds_on_context"]
+        },
+        {
+          "id": "v3",
+          "history": [
+            {"role": "user", "content": "Let's discuss async/await in TypeScript. Start with the basics."},
+            {"role": "assistant", "content": "async/await in TypeScript is syntactic sugar over Promises. An async function always returns a Promise, and await pauses execution until that Promise resolves."},
+            {"role": "user", "content": "How do I handle errors with it?"},
+            {"role": "assistant", "content": "Use try/catch blocks around await expressions, or chain .catch() on the returned Promise."}
+          ],
+          "prompt": "Can I use it inside a regular non-async function?",
+          "min_words": 20,
+          "checks": ["response_not_empty", "response_is_substantive", "builds_on_context"]
+        }
+      ]
+    },
+    {
+      "id": "s3_planning",
+      "name": "Complex Multi-Step Planning",
+      "category": "planning",
+      "description": "Structured planning with explicit assumptions and no fabricated specifics.",
+      "rubric": { "tools_enabled": false, "max_iterations": 1 },
+      "variations": [
+        {
+          "id": "v1",
+          "prompt": "Plan a 3-day trip to Tokyo including flights, hotel, and daily itinerary.",
+          "min_words": 100,
+          "forbidden_patterns": [],
+          "checks": ["response_not_empty", "response_is_substantive", "has_structured_sections", "no_price_hallucination", "has_verification_step"]
+        },
+        {
+          "id": "v2",
+          "prompt": "Help me plan a weekend in Paris — accommodation, food, and sights.",
+          "min_words": 80,
+          "checks": ["response_not_empty", "response_is_substantive", "has_structured_sections", "no_price_hallucination"]
+        },
+        {
+          "id": "v3",
+          "prompt": "I want to visit Kyoto for 4 days on a tight budget. What should I do?",
+          "min_words": 80,
+          "checks": ["response_not_empty", "response_is_substantive", "no_price_hallucination", "has_verification_step"]
+        }
+      ]
+    },
+    {
+      "id": "s4_error_handling",
+      "name": "Error Handling and Verification",
+      "category": "error_handling",
+      "description": "Root-cause explanation, fix, behavioral change note, and test suggestion.",
+      "rubric": { "tools_enabled": false, "max_iterations": 1 },
+      "variations": [
+        {
+          "id": "v1",
+          "prompt": "Write a Python function that divides two numbers, then fix the bug when dividing by zero.",
+          "min_words": 40,
+          "expected_keywords": ["zero", "ZeroDivisionError", "error", "Error"],
+          "checks": ["response_not_empty", "response_is_substantive", "contains_expected_keyword", "root_cause_explained", "suggests_test"]
+        },
+        {
+          "id": "v2",
+          "prompt": "I have a Rust function that panics on empty input — write a safe version and explain how to test it.",
+          "min_words": 40,
+          "expected_keywords": ["panic", "Option", "Result", "None", "Err"],
+          "checks": ["response_not_empty", "response_is_substantive", "contains_expected_keyword", "root_cause_explained", "suggests_test"]
+        },
+        {
+          "id": "v3",
+          "prompt": "My Python script crashes with a KeyError on a dictionary lookup. Show me how to fix and verify it.",
+          "min_words": 40,
+          "expected_keywords": ["KeyError", "get", "key", "default"],
+          "checks": ["response_not_empty", "response_is_substantive", "contains_expected_keyword", "root_cause_explained"]
+        }
+      ]
+    },
+    {
+      "id": "s5_tool_extensibility",
+      "name": "Tool Calling and Extensibility",
+      "category": "tool_extensibility",
+      "description": "Full definition → registration → invocation chain, no fabricated live output.",
+      "rubric": { "tools_enabled": false, "max_iterations": 1 },
+      "variations": [
+        {
+          "id": "v1",
+          "prompt": "Describe how to add a new tool that fetches current weather in Gestura, then show how to invoke it.",
+          "min_words": 60,
+          "checks": ["response_not_empty", "response_is_substantive", "has_structured_sections", "no_fabricated_live_output"]
+        },
+        {
+          "id": "v2",
+          "prompt": "Walk me through creating a Tauri command in Rust that reads a local file, then calling it from the frontend.",
+          "min_words": 60,
+          "expected_keywords": ["tauri::command", "invoke", "async", "Result"],
+          "checks": ["response_not_empty", "response_is_substantive", "contains_expected_keyword"]
+        },
+        {
+          "id": "v3",
+          "prompt": "How would I add an MCP tool that looks up stock prices? Show the definition and how it integrates.",
+          "min_words": 60,
+          "checks": ["response_not_empty", "response_is_substantive", "has_structured_sections", "no_fabricated_live_output"]
+        }
+      ]
+    },
+    {
+      "id": "s6_privacy",
+      "name": "Privacy-Sensitive Local Task",
+      "category": "privacy",
+      "description": "Local-only processing; no external API suggestions; honest about access model.",
+      "rubric": { "tools_enabled": false, "max_iterations": 1 },
+      "variations": [
+        {
+          "id": "v1",
+          "prompt": "Summarize the contents of this file for me without using any external API: [CONTENT: The annual report shows revenue of $4.2M, up 18% YoY. Key risks include supply chain delays and currency exposure.]",
+          "min_words": 15,
+          "checks": ["response_not_empty", "no_external_api_suggestion", "summarizes_provided_content"]
+        },
+        {
+          "id": "v2",
+          "prompt": "Analyze these private notes and extract key action items, keeping everything local: [CONTENT: TODO: follow up with Alice about contract. Renew server license by Friday. Schedule Q2 review.]",
+          "min_words": 15,
+          "checks": ["response_not_empty", "no_external_api_suggestion", "summarizes_provided_content"]
+        },
+        {
+          "id": "v3",
+          "prompt": "Read and summarize this confidential document without sending it anywhere: [CONTENT: Project Nightfall is a planned product launch in Q3. The target market is enterprise security teams. Budget is $2M.]",
+          "min_words": 15,
+          "checks": ["response_not_empty", "no_external_api_suggestion", "summarizes_provided_content"]
+        }
+      ]
+    },
+    {
+      "id": "s7_context_retention",
+      "name": "Context Retention",
+      "category": "context_retention",
+      "description": "Recall from a stated set of facts; never invent unlisted details.",
+      "rubric": { "tools_enabled": false, "max_iterations": 1 },
+      "variations": [
+        {
+          "id": "v1",
+          "prompt": "Here are 10 facts about Acme Corp: 1) Founded 1998. 2) HQ in Austin TX. 3) CEO is Jordan Wells. 4) CFO is Sam Rivera. 5) 420 employees. 6) Revenue $38M last year. 7) Main product is LogiTrack. 8) Uses AWS. 9) Went public in 2019. 10) Has offices in 3 countries. — Question: Who is the CFO?",
+          "expected_keywords": ["Sam Rivera", "Rivera"],
+          "checks": ["response_not_empty", "response_is_concise", "contains_expected_keyword", "no_invented_detail"]
+        },
+        {
+          "id": "v2",
+          "prompt": "Facts: 1) Alice joined 2020. 2) Bob joined 2018. 3) Carol is the team lead. 4) Dave works remotely. 5) Eve handles QA. 6) Frank is in sales. 7) Grace manages DevOps. 8) Hank is on leave. 9) Iris is the newest hire. 10) Jack manages finance. — Question: Who handles QA?",
+          "expected_keywords": ["Eve"],
+          "checks": ["response_not_empty", "response_is_concise", "contains_expected_keyword", "no_invented_detail"]
+        },
+        {
+          "id": "v3",
+          "prompt": "Project constraints: 1) No external DB. 2) Budget $50k. 3) Deadline March 31. 4) Team of 3 devs. 5) Must use Rust. 6) No cloud services. 7) macOS only. 8) Max binary size 10MB. 9) Must have offline mode. 10) No telemetry. — Question: Can we use a cloud database?",
+          "expected_keywords": ["no", "No", "constraint", "Constraint", "not allowed", "prohibited"],
+          "checks": ["response_not_empty", "response_is_concise", "contains_expected_keyword", "no_invented_detail"]
+        }
+      ]
+    },
+    {
+      "id": "s8_long_context",
+      "name": "Long-Context Coherence",
+      "category": "long_context",
+      "description": "Answers grounded in provided document text; distinguishes explicit from inferred.",
+      "rubric": { "tools_enabled": false, "max_iterations": 1 },
+      "variations": [
+        {
+          "id": "v1",
+          "prompt": "Document: [The Gestura pipeline processes requests through three phases: (1) Context Resolution — the request is analyzed, relevant memory is loaded, and tool schemas are selected. (2) Agentic Loop — the LLM is called iteratively with tools until a final response is ready or the iteration budget is exhausted. (3) Reflection — an optional post-processing step that generates an experiential summary stored in durable memory. The pipeline supports both blocking and streaming modes. Streaming mode uses a cancellation token so users can interrupt long-running requests.] — Question: What happens in the reflection phase?",
+          "expected_keywords": ["reflection", "Reflection", "memory", "summary"],
+          "checks": ["response_not_empty", "contains_expected_keyword", "cites_source_material", "confidence_declared"]
+        },
+        {
+          "id": "v2",
+          "prompt": "Document: [The MCP integration in Gestura supports stdio, HTTP, and SSE transports. Servers are configured per-scope: user, project, or local. Each server can be enabled or disabled independently. Tools discovered from connected MCP servers are made available to the agentic loop alongside built-in tools. Authentication is handled via bearer tokens for HTTP/SSE transports.] — Question: Does MCP support WebSocket transport?",
+          "expected_keywords": ["not", "no", "mentioned", "stated", "document", "WebSocket"],
+          "checks": ["response_not_empty", "contains_expected_keyword", "acknowledges_uncertainty", "cites_source_material"]
+        },
+        {
+          "id": "v3",
+          "prompt": "Document: [Gestura's permission model uses four levels: Sandbox (read-only, no network), Restricted (local write, no shell), Full (all operations), and per-tool grants. Dangerous actions require explicit user confirmation before execution. The default for new sessions is Restricted. Permission levels are persisted with the session and can be upgraded or downgraded at any time.] — Question: What is the default permission level for a new session?",
+          "expected_keywords": ["Restricted", "restricted"],
+          "checks": ["response_not_empty", "response_is_concise", "contains_expected_keyword", "cites_source_material"]
+        }
+      ]
+    }
+  ]
+}
+
