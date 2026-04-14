@@ -92,6 +92,7 @@ h2{{font-size:.9rem;font-weight:600;color:#58a6ff;margin-bottom:.9rem;letter-spa
 .scen-id{{color:#79c0ff;font-weight:700;font-size:.78rem;min-width:130px}}
 .scen-title{{color:#c9d1d9;flex:1;font-size:.82rem}}
 .cat-pill{{background:#21262d;border:1px solid #30363d;color:#8b949e;padding:1px 7px;border-radius:10px;font-size:.68rem;white-space:nowrap}}
+.scen-pass-summary{{color:#484f58;font-size:.68rem;white-space:nowrap;margin-left:.5rem}}
 .review-scen-body{{display:none;padding:.75rem;background:#0d1117;border-top:1px solid #21262d}}
 /* Variation blocks */
 .review-var{{margin-bottom:1rem}}
@@ -539,10 +540,12 @@ fn build_review_panel(report: &ComparisonReport) -> String {
                <span class='scen-id'>{sid}</span>\
                <span class='scen-title'>{name}</span>\
                <span class='cat-pill'>{cat}</span>\
+               <span class='scen-pass-summary'>{summary}</span>\
              </div>",
-            sid  = html_escape(&scenario.scenario_id),
-            name = html_escape(&scenario.scenario_name),
-            cat  = html_escape(&scenario.category),
+            sid     = html_escape(&scenario.scenario_id),
+            name    = html_escape(&scenario.scenario_name),
+            cat     = html_escape(&scenario.category),
+            summary = html_escape(&summary_str),
         ));
 
         out.push_str("<div class='review-scen-body'>");
@@ -557,7 +560,7 @@ fn build_review_panel(report: &ComparisonReport) -> String {
                    <span class='var-prompt-text'>{prompt}</span>\
                  </div>",
                 vid    = html_escape(&variation.variation_id),
-                prompt = html_escape(&variation.prompt),
+                prompt = html_escape(&variation.prompt_preview),
             ));
 
             out.push_str("<div class='response-grid'>");
