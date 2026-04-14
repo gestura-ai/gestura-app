@@ -181,7 +181,10 @@ impl CliEvalRunner {
                 let (text, err) = self.invoke_agent(scenario, variation);
 
                 // Check whether this failure was a rate-limit and we have retries left.
-                let is_rl = err.as_deref().map(is_rate_limit_error).unwrap_or(false);
+                // Some agents (e.g. opencode) write the 429 message to stdout and exit 0,
+                // so we also scan the response text itself.
+                let is_rl = err.as_deref().map(is_rate_limit_error).unwrap_or(false)
+                    || is_rate_limit_error(&text);
                 if is_rl && attempt < max_attempts {
                     // Exponential backoff: 15 s, 30 s, 60 s, …  Capped at 120 s.
                     let wait_secs = cfg.execution.rate_limit_backoff_secs

@@ -11,9 +11,8 @@
 # of the old approval-mode. All tool calls are blocked at the sandbox level
 # so no approval gate is needed.
 #
-# Invocation: codex exec --ask-for-approval never --sandbox read-only --model gpt-4.5 "<prompt>"
-#   exec                          non-interactive subcommand (replaces --quiet)
-#   --ask-for-approval never      no blocking approval prompts in automated runs
+# Invocation: codex exec --sandbox read-only --model gpt-4.5 "<prompt>"
+#   exec                          non-interactive subcommand
 #   --sandbox read-only           block all shell execution and file writes
 #   --model                       pin the model version
 # ─────────────────────────────────────────────────────────────────────────────
@@ -48,7 +47,7 @@ retries               = 1
 
 [subprocess]
 bin         = "codex"
-args_prefix = ["exec", "--ask-for-approval", "never", "--sandbox", "read-only", "--model", "gpt-4.5"]
+args_prefix = ["exec", "--skip-git-repo-check", "--sandbox", "read-only", "--model", "gpt-4.5"]
 
 [subprocess.env]
 OPENAI_MODEL = "gpt-4.5"

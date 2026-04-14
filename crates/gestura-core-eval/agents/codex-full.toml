@@ -9,9 +9,8 @@
 # sandbox and no approval gates. The agent can read/write files in the
 # working directory without pausing for confirmation.
 #
-# Invocation: codex exec --ask-for-approval never --sandbox workspace-write --model gpt-4.5 "<prompt>"
-#   exec                          non-interactive subcommand (replaces --quiet)
-#   --ask-for-approval never      never pause for human approval (replaces --approval-mode full-auto)
+# Invocation: codex exec --sandbox workspace-write --model gpt-4.5 "<prompt>"
+#   exec                          non-interactive subcommand
 #   --sandbox workspace-write     allow file writes in the workspace, block broader system access
 #   --model                       pin the model version
 # ─────────────────────────────────────────────────────────────────────────────
@@ -45,7 +44,7 @@ retries               = 1
 
 [subprocess]
 bin         = "codex"
-args_prefix = ["exec", "--ask-for-approval", "never", "--sandbox", "workspace-write", "--model", "gpt-4.5"]
+args_prefix = ["exec", "--skip-git-repo-check", "--sandbox", "workspace-write", "--model", "gpt-4.5"]
 
 [subprocess.env]
 # OPENAI_API_KEY must be set in the calling environment.

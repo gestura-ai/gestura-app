@@ -10,8 +10,14 @@
 # confirmation. The eval runner sends `confirmation_response` ("yes") when the
 # agent is waiting so the run can complete non-interactively.
 #
-# Invocation: opencode run --interactive "<prompt>"
-#   --interactive  enable confirmation gates (verify flag with `opencode --help`)
+# Invocation: opencode run --dangerously-skip-permissions --model anthropic/claude-sonnet-4-6 "<prompt>"
+#   run                             non-interactive subcommand
+#   --dangerously-skip-permissions  auto-approve permission prompts
+#   --model                         model in provider/model format
+#
+# NOTE: opencode has no --interactive approval-gate flag. The iterative profile
+# distinction is captured in the eval rubric (lower thresholds, additional checks)
+# rather than in the CLI invocation.
 # ─────────────────────────────────────────────────────────────────────────────
 
 [agent]
@@ -44,7 +50,7 @@ retries               = 1
 
 [subprocess]
 bin         = "opencode"
-args_prefix = ["run", "--interactive"]
+args_prefix = ["run", "--dangerously-skip-permissions", "--model", "anthropic/claude-sonnet-4-6"]
 
 [subprocess.env]
 ANTHROPIC_MODEL = "claude-sonnet-4-6"

@@ -10,12 +10,10 @@
 # OpenCode is model-agnostic; this profile pins to claude-sonnet-4-6 for
 # consistency with the Anthropic-backed agent profiles.
 #
-# Invocation: opencode run --yes "<prompt>"
-#   run    execute a single prompt non-interactively
-#   --yes  auto-approve all confirmation prompts (verify flag with `opencode --help`)
-#
-# NOTE: OpenCode is evolving rapidly. Verify CLI flags against your installed
-# version. Update `args_prefix` accordingly.
+# Invocation: opencode run --dangerously-skip-permissions --model anthropic/claude-sonnet-4-6 "<prompt>"
+#   run                             non-interactive subcommand
+#   --dangerously-skip-permissions  auto-approve all permission prompts
+#   --model                         model in provider/model format
 # ─────────────────────────────────────────────────────────────────────────────
 
 [agent]
@@ -47,7 +45,7 @@ retries               = 1
 
 [subprocess]
 bin         = "opencode"
-args_prefix = ["run", "--yes"]
+args_prefix = ["run", "--dangerously-skip-permissions", "--model", "anthropic/claude-sonnet-4-6"]
 
 [subprocess.env]
 ANTHROPIC_MODEL = "claude-sonnet-4-6"

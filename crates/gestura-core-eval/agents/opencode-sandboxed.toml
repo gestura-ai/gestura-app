@@ -9,8 +9,13 @@
 # Sandboxed profile: read-only reasoning, no tool execution, no writes.
 # Uses claude-haiku-3-5 for cost efficiency on isolated, read-only tasks.
 #
-# Invocation: opencode run --no-tools "<prompt>"
-#   --no-tools  disable all tool execution (verify flag with `opencode --help`)
+# Invocation: opencode run --dangerously-skip-permissions --model anthropic/claude-haiku-3-5 "<prompt>"
+#   run                             non-interactive subcommand
+#   --dangerously-skip-permissions  auto-approve permission prompts
+#   --model                         model in provider/model format
+#
+# NOTE: opencode has no --no-tools flag. Sandboxed behaviour is enforced by the
+# eval rubric (tools_enabled=false) and by choosing a lightweight model here.
 # ─────────────────────────────────────────────────────────────────────────────
 
 [agent]
@@ -42,7 +47,7 @@ retries               = 0
 
 [subprocess]
 bin         = "opencode"
-args_prefix = ["run", "--no-tools"]
+args_prefix = ["run", "--dangerously-skip-permissions", "--model", "anthropic/claude-haiku-3-5"]
 
 [subprocess.env]
 ANTHROPIC_MODEL = "claude-haiku-3-5"

@@ -41,14 +41,15 @@ max_iterations        = 1
 timeout_secs          = 60
 require_confirmation  = false
 confirmation_response = "yes"
-# Retry up to 3 times on rate-limit (429) errors before marking a variation
-# failed.  Each retry waits rate_limit_backoff_secs × 2^(attempt-1):
-#   1st retry: 15 s  |  2nd: 30 s  |  3rd: 60 s
-retries                     = 3
-rate_limit_backoff_secs     = 15
-# Optional throttle inserted after every variation call (milliseconds).
-# 0 = no deliberate pause. Override at runtime with --variation-delay.
-delay_between_variations_ms = 0
+# Retry up to 5 times on rate-limit (429) errors before marking a variation
+# failed.  Each retry waits rate_limit_backoff_secs × 2^(attempt-1), capped at 8×:
+#   1st retry: 30 s  |  2nd: 60 s  |  3rd: 120 s  |  4th–5th: 240 s
+retries                     = 5
+rate_limit_backoff_secs     = 30
+# Minimum pause inserted after every variation call (milliseconds).
+# 2 000 ms keeps the per-minute token rate well below the 30 K TPM limit for
+# most prompt sizes. Override at runtime with --variation-delay.
+delay_between_variations_ms = 2000
 
 # ─── Subprocess ──────────────────────────────────────────────────────────────
 # args_prefix is prepended to every invocation: `gestura exec "<prompt>"`.

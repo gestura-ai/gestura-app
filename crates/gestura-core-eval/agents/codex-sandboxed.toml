@@ -8,10 +8,9 @@
 # Sandboxed profile: read-only, reasoning-only. No shell execution, no file
 # writes, no network calls. Uses gpt-4o-mini for cost efficiency.
 #
-# Invocation: codex exec --sandbox read-only --ask-for-approval never --model gpt-4o-mini "<prompt>"
-#   exec                          non-interactive subcommand (replaces --quiet)
+# Invocation: codex exec --sandbox read-only --model gpt-4o-mini "<prompt>"
+#   exec                          non-interactive subcommand
 #   --sandbox read-only           hard block on all shell/write operations
-#   --ask-for-approval never      no blocking prompts in automated eval runs
 #   --model                       pin the model version
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -44,7 +43,7 @@ retries               = 0
 
 [subprocess]
 bin         = "codex"
-args_prefix = ["exec", "--sandbox", "read-only", "--ask-for-approval", "never", "--model", "gpt-4o-mini"]
+args_prefix = ["exec", "--skip-git-repo-check", "--sandbox", "read-only", "--model", "gpt-4o-mini"]
 
 [subprocess.env]
 OPENAI_MODEL = "gpt-4o-mini"
