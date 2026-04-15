@@ -7,7 +7,7 @@
 //! what `args_prefix` to prepend, what environment variables to forward, what
 //! pass/fail thresholds to apply, and any per-scenario rubric overrides.
 
-use std::{path::PathBuf, process::Command, thread, time::{Duration, Instant}};
+use std::{path::PathBuf, process::{Command, Stdio}, thread, time::{Duration, Instant}};
 
 use tracing::{debug, info, warn};
 
@@ -264,6 +264,11 @@ impl CliEvalRunner {
         let bin = self.bin();
 
         let mut cmd = Command::new(&bin);
+
+        // Null stdin so agents that probe stdin (e.g. codex falling back to
+        // interactive mode after an auth failure) get immediate EOF instead of
+        // blocking the eval run indefinitely.
+        cmd.stdin(Stdio::null());
 
         // Prepend agent-specific args (e.g. `["--dangerously-skip-permissions", "-p"]`)
         // then append the prompt as the final argument.

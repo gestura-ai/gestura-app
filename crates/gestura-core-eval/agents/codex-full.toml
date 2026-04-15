@@ -9,21 +9,39 @@
 # sandbox and no approval gates. The agent can read/write files in the
 # working directory without pausing for confirmation.
 #
-# Invocation: codex exec --sandbox workspace-write --model gpt-4.5 "<prompt>"
+# Invocation: codex exec --skip-git-repo-check --sandbox workspace-write --model gpt-4o "<prompt>"
 #   exec                          non-interactive subcommand
+#   --skip-git-repo-check         skip git repo check (required in eval containers)
 #   --sandbox workspace-write     allow file writes in the workspace, block broader system access
 #   --model                       pin the model version
+#
+# ── Authentication ─────────────────────────────────────────────────────────────
+# Codex v0.120.0+ uses the OpenAI Responses API (wss://api.openai.com/v1/responses)
+# exclusively — NOT the standard Chat Completions API (/v1/chat/completions).
+# A key valid for chat completions will still 401 here if the account does not have
+# Responses API access. On 401, codex exhausts 5 retries then exits with empty stdout;
+# the 401 details appear only in stderr (pipeline_error in the eval report).
+#
+# Required env: OPENAI_API_KEY with Responses API access enabled on the account.
+# Verify access: curl -s -o /dev/null -w "%{http_code}" \
+#   -H "Authorization: Bearer $OPENAI_API_KEY" \
+#   -H "Content-Type: application/json" \
+#   -d '{"model":"gpt-4o","input":"ping"}' \
+#   https://api.openai.com/v1/responses
+# Expected: 200  |  Got 401 → account needs Responses API access
 # ─────────────────────────────────────────────────────────────────────────────
 
 [agent]
 id          = "codex-full"
 name        = "Codex CLI (OpenAI) — Full Permission (Autonomous)"
-description = "OpenAI Codex · gpt-4.5, full-auto approval, unrestricted execution"
+description = "OpenAI Codex · gpt-4o, full-auto approval, unrestricted execution"
 mode        = "autonomous"
+requires_manual_auth = true
+auth_env_var         = "OPENAI_API_KEY"
 
 [model]
 provider    = "openai"
-name        = "gpt-4.5"        # update to your available model (e.g. o3, gpt-5)
+name        = "gpt-4o"         # gpt-4.5 was a removed research preview; gpt-4o is stable
 temperature = 1.0
 max_tokens  = 16384
 
@@ -44,11 +62,13 @@ retries               = 1
 
 [subprocess]
 bin         = "codex"
-args_prefix = ["exec", "--skip-git-repo-check", "--sandbox", "workspace-write", "--model", "gpt-4.5"]
+args_prefix = ["exec", "--skip-git-repo-check", "--sandbox", "workspace-write", "--model", "gpt-4o"]
 
 [subprocess.env]
-# OPENAI_API_KEY must be set in the calling environment.
-OPENAI_MODEL = "gpt-4.5"
+# OPENAI_API_KEY is read from the calling environment (inherited by default).
+# If it is missing or lacks Responses API access the run will 401 and produce
+# empty stdout; check pipeline_error in the report for the full error chain.
+OPENAI_MODEL = "gpt-4o"
 
 [thresholds]
 min_variation_score    = 0.85

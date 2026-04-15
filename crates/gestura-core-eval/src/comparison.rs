@@ -265,6 +265,12 @@ fn build_check_heatmap(reports: &[EvalReport], leaderboard: &[AgentRank]) -> Che
         for scenario in &report.scenarios {
             for variation in &scenario.variations {
                 for check in &variation.checks {
+                    // Skipped checks carry no signal — the agent produced no output.
+                    // Including them would make negative checks (e.g. no_price_hallucination)
+                    // appear to have a 0% failure rate for broken profiles.
+                    if check.skipped {
+                        continue;
+                    }
                     let entry = agent_entry.entry(check.name.clone()).or_insert((0, 0));
                     entry.1 += 1;
                     if !check.passed {

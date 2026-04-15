@@ -9,7 +9,7 @@
 # Tools are removed individually via --remove-tool flags so no shell commands
 # or file writes can occur during evaluation.
 #
-# Uses claude-haiku-3-5 for cost efficiency on read-only tasks.
+# Uses claude-haiku-4-5-20251001 for cost efficiency on read-only tasks.
 #
 # Auth: set AUGMENT_SESSION_AUTH (see augment-full.toml for instructions).
 # ─────────────────────────────────────────────────────────────────────────────
@@ -17,14 +17,14 @@
 [agent]
 id          = "augment-sandboxed"
 name        = "Augment (Auggie) — Sandboxed"
-description = "Augment Code agent · claude-haiku-3-5, read-only, no tool execution"
+description = "Augment Code agent · claude-haiku-4-5-20251001, read-only, no tool execution"
 mode        = "sandboxed"
 requires_manual_auth = true
 auth_env_var         = "AUGMENT_SESSION_AUTH"
 
 [model]
 provider    = "anthropic"
-name        = "claude-haiku-3-5"
+name        = "claude-haiku-4-5-20251001"
 temperature = 0.3
 max_tokens  = 2048
 

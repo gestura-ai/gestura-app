@@ -16,7 +16,16 @@ pub struct CheckResult {
     pub name: String,
     /// Whether the check passed.
     pub passed: bool,
-    /// Human-readable explanation.
+    /// `true` when the check was not run because the agent produced an empty
+    /// response.  Skipped checks must not be counted toward pass/fail scores or
+    /// included in comparison statistics — they carry no signal about agent
+    /// capability and negative checks (e.g. `no_price_hallucination`) would
+    /// vacuously pass on empty strings, corrupting the check heatmap.
+    ///
+    /// `#[serde(default)]` keeps existing JSON reports readable without this field.
+    #[serde(default)]
+    pub skipped: bool,
+    /// Human-readable explanation (or skip reason).
     pub details: String,
 }
 
@@ -36,7 +45,26 @@ pub struct RuleEvaluator;
 
 impl RuleEvaluator {
     /// Evaluate a response against all checks declared in `variation`.
+    ///
+    /// **Empty-response short-circuit:** if the agent returned nothing, only
+    /// `response_not_empty` is executed (and it fails).  All other checks are
+    /// recorded as [`CheckResult::skipped`] so that negative checks such as
+    /// `no_price_hallucination` cannot vacuously pass on an empty string and
+    /// corrupt the check heatmap in comparison reports.
     pub fn evaluate(variation: &EvalVariation, response: &str) -> EvaluationResult {
+        // ── Short-circuit on empty response ───────────────────────────────────
+        let empty_check = check_response_not_empty(response);
+        if !empty_check.passed {
+            let mut results = vec![empty_check];
+            for check_name in &variation.checks {
+                if check_name != "response_not_empty" {
+                    results.push(skip(check_name));
+                }
+            }
+            return EvaluationResult { checks: results, passed: false, score: 0.0 };
+        }
+
+        // ── Normal path: non-empty response ───────────────────────────────────
         let mut results: Vec<CheckResult> = variation
             .checks
             .iter()
@@ -48,10 +76,12 @@ impl RuleEvaluator {
             results.insert(0, check_response_not_empty(response));
         }
 
-        let total = results.len() as f32;
-        let passed_count = results.iter().filter(|r| r.passed).count() as f32;
+        // Score is computed only over non-skipped checks.
+        let evaluable: Vec<&CheckResult> = results.iter().filter(|r| !r.skipped).collect();
+        let total = evaluable.len() as f32;
+        let passed_count = evaluable.iter().filter(|r| r.passed).count() as f32;
         let score = if total > 0.0 { passed_count / total } else { 1.0 };
-        let passed = results.iter().all(|r| r.passed);
+        let passed = evaluable.iter().all(|r| r.passed);
 
         EvaluationResult { checks: results, passed, score }
     }
@@ -89,6 +119,7 @@ impl RuleEvaluator {
             other => CheckResult {
                 name: other.to_string(),
                 passed: false,
+                skipped: false,
                 details: format!("Unknown check: '{other}' — add it to evaluator.rs"),
             },
         }
@@ -98,10 +129,18 @@ impl RuleEvaluator {
 // ─── Individual checks ────────────────────────────────────────────────────────
 
 fn pass(name: &str, msg: &str) -> CheckResult {
-    CheckResult { name: name.to_string(), passed: true, details: msg.to_string() }
+    CheckResult { name: name.to_string(), passed: true, skipped: false, details: msg.to_string() }
 }
 fn fail(name: &str, msg: &str) -> CheckResult {
-    CheckResult { name: name.to_string(), passed: false, details: msg.to_string() }
+    CheckResult { name: name.to_string(), passed: false, skipped: false, details: msg.to_string() }
+}
+fn skip(name: &str) -> CheckResult {
+    CheckResult {
+        name: name.to_string(),
+        passed: false,
+        skipped: true,
+        details: "skipped — response was empty; cannot evaluate".to_string(),
+    }
 }
 
 fn check_response_not_empty(response: &str) -> CheckResult {
@@ -161,9 +200,19 @@ fn check_no_forbidden_patterns(response: &str, patterns: &[String]) -> CheckResu
 
 fn check_acknowledges_uncertainty(response: &str) -> CheckResult {
     let hedges = [
-        "may", "might", "could", "often credited", "commonly attributed",
-        "though", "however", "contested", "disputed", "debated",
-        "some sources", "depending on", "it depends", "not entirely clear",
+        // Modal / softening language
+        "may", "might", "could", "though", "however",
+        // Attribution phrasing (historical/factual uncertainty)
+        "often credited", "commonly attributed", "generally attributed",
+        "widely credited", "widely regarded", "typically credited",
+        "credited with", "generally considered",
+        // Explicit epistemic markers
+        "contested", "disputed", "debated", "not entirely clear",
+        "some sources", "depending on", "it depends",
+        // Contrast phrasing (e.g. "while other inventors…")
+        "while other", "while some",
+        // Document-grounded hedging (long-context scenarios)
+        "based on", "not mentioned", "not stated", "not listed",
     ];
     let lower = response.to_lowercase();
     if hedges.iter().any(|h| lower.contains(h)) {
@@ -234,16 +283,29 @@ fn check_builds_on_context(response: &str) -> CheckResult {
 }
 
 fn check_no_external_api_suggestion(response: &str) -> CheckResult {
+    // Affirmative patterns that suggest data is being sent out.
     let patterns = ["upload to", "send to", "api.openai", "openai.com", "via cloud", "external service"];
     let lower = response.to_lowercase();
-    if patterns.iter().any(|p| lower.contains(p)) {
-        fail(
-            "no_external_api_suggestion",
-            "Response suggests sending data to an external service",
-        )
-    } else {
-        pass("no_external_api_suggestion", "Response respects local-only constraint")
+
+    for pat in &patterns {
+        if let Some(idx) = lower.find(pat) {
+            // Check whether the match is in a negation context — scan up to 60
+            // characters before the match for denial words.  This prevents
+            // false positives like "without sending to any external services".
+            let window_start = idx.saturating_sub(60);
+            let window = &lower[window_start..idx];
+            let negated = ["without", "not ", "no ", "never", "avoiding", "instead of"]
+                .iter()
+                .any(|neg| window.contains(neg));
+            if !negated {
+                return fail(
+                    "no_external_api_suggestion",
+                    "Response suggests sending data to an external service",
+                );
+            }
+        }
     }
+    pass("no_external_api_suggestion", "Response respects local-only constraint")
 }
 
 fn check_summarizes_provided_content(response: &str) -> CheckResult {
@@ -277,8 +339,19 @@ fn check_no_invented_detail(response: &str, expected_keywords: &[String]) -> Che
 
 fn check_root_cause_explained(response: &str) -> CheckResult {
     let markers = [
-        "because", "cause", "reason", "happens when", "occurs when",
-        "root", "the issue", "the problem", "why", "due to",
+        // Causal connectives
+        "because", "cause", "reason", "due to", "results in",
+        // Temporal / conditional framing
+        "happens when", "occurs when", "triggered when", "triggered by",
+        // Conditional failure explanation (code comments / prose)
+        "panics if", "crashes if", "fails if", "fails when",
+        "is missing", "does not exist", "not present",
+        // Direct naming of the problem
+        "root", "the issue", "the problem", "the bug", "why",
+        // Error/exception language (code error explanations)
+        "raises", "thrown", "throws", "exception", "error occurs",
+        // Fix-consequence language
+        "prevents", "avoids", "this stops",
     ];
     let lower = response.to_lowercase();
     if markers.iter().any(|m| lower.contains(m)) {
@@ -329,8 +402,13 @@ fn check_cites_source_material(response: &str) -> CheckResult {
 fn check_confidence_declared(response: &str) -> CheckResult {
     // Accepts explicit confidence, certainty language, or an acknowledgment of what's inferred vs. stated.
     let markers = [
-        "directly stated", "explicitly", "inferred", "implied", "not mentioned",
-        "unclear", "can confirm", "the document states", "based on",
+        // Explicit grounding in provided material
+        "directly stated", "the document states", "based on", "according to",
+        "as described", "as stated", "as mentioned",
+        // Epistemic hedging
+        "explicitly", "inferred", "implied", "not mentioned", "unclear",
+        // Confidence assertion
+        "can confirm",
     ];
     let lower = response.to_lowercase();
     if markers.iter().any(|m| lower.contains(m)) {

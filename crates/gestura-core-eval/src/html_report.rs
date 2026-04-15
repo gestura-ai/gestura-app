@@ -833,7 +833,7 @@ fn js_string(s: &str) -> String {
 }
 
 fn js_string_array<'a, I: Iterator<Item = &'a str>>(items: I) -> String {
-    let inner: Vec<String> = items.map(|s| js_string(s)).collect();
+    let inner: Vec<String> = items.map(js_string).collect();
     format!("[{}]", inner.join(","))
 }
 
@@ -857,7 +857,7 @@ fn abbreviate_slot(slot: &str) -> String {
     let parts: Vec<&str> = slot.splitn(2, '/').collect();
     match parts.as_slice() {
         [scenario, variation] => {
-            let short = scenario.splitn(2, '_').next().unwrap_or(scenario);
+            let short = scenario.split('_').next().unwrap_or(scenario);
             format!("{short}/{variation}")
         }
         _ => slot.to_string(),

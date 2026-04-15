@@ -183,10 +183,24 @@ impl EvalReport {
                 }
 
                 // ── Check results ───────────────────────────────────────────
-                // Always show failing checks; show passing checks only in verbose mode.
+                // Always show genuinely failing checks.
+                // Show passing checks and skipped checks only in verbose mode.
+                // Skipped checks (empty response) use ⊘ to distinguish them from
+                // real failures — the response_not_empty failure already explains why.
                 for check in &v.checks {
-                    if verbose || !check.passed {
-                        let cicon = if check.passed { "✓" } else { "✗" };
+                    let show = if check.skipped {
+                        verbose // only clutter the output in verbose mode
+                    } else {
+                        verbose || !check.passed
+                    };
+                    if show {
+                        let cicon = if check.skipped {
+                            "⊘"
+                        } else if check.passed {
+                            "✓"
+                        } else {
+                            "✗"
+                        };
                         println!(
                             "        {} {:<35} {}",
                             cicon,

@@ -168,7 +168,7 @@ struct SuiteArgs {
     /// Minimum pause between variation subprocess calls, in milliseconds.
     /// Overrides `execution.delay_between_variations_ms` in every profile.
     /// Use to stay within per-minute token-rate limits without editing TOMLs.
-    /// Example: --variation-delay 2000  (2 s between calls ≈ safe for most tiers)
+    /// Example: --variation-delay-ms 3000  (3 s between calls ≈ safe for most tiers)
     #[arg(long, value_name = "MS")]
     variation_delay_ms: Option<u64>,
 }
@@ -438,11 +438,11 @@ fn run_suite(args: SuiteArgs, suite: EvalScenarioSuite) {
     }
 
     // Create output directory if requested.
-    if let Some(ref dir) = args.output_dir {
-        if let Err(e) = std::fs::create_dir_all(dir) {
-            eprintln!("{} Could not create output directory '{}': {e}", "error:".red().bold(), dir.display());
-            std::process::exit(1);
-        }
+    if let Some(ref dir) = args.output_dir
+        && let Err(e) = std::fs::create_dir_all(dir)
+    {
+        eprintln!("{} Could not create output directory '{}': {e}", "error:".red().bold(), dir.display());
+        std::process::exit(1);
     }
 
     // Determine effective format.
@@ -456,13 +456,13 @@ fn run_suite(args: SuiteArgs, suite: EvalScenarioSuite) {
         println!("{}", "gestura-eval suite — multi-agent comparison".bold());
         println!("  Profiles : {} agents", profiles.len());
         if !args.families.is_empty() {
-            println!("  Families : {}", args.families.join(", ").cyan().to_string());
+            println!("  Families : {}", args.families.join(", ").cyan());
         }
         if !args.agents.is_empty() {
-            println!("  Agents   : {}", args.agents.join(", ").cyan().to_string());
+            println!("  Agents   : {}", args.agents.join(", ").cyan());
         }
         if !args.scenario.is_empty() {
-            println!("  Scenarios: {}", args.scenario.join(", ").cyan().to_string());
+            println!("  Scenarios: {}", args.scenario.join(", ").cyan());
         }
         if args.dry_run {
             println!("  Run      : {}", "DRY-RUN (no subprocess calls)".yellow());
@@ -769,13 +769,8 @@ fn load_reports_from_path(path: &std::path::Path) -> Vec<EvalReport> {
 
 fn try_load_report(path: &std::path::Path) -> Option<EvalReport> {
     let content = std::fs::read_to_string(path).ok()?;
-    match serde_json::from_str::<EvalReport>(&content) {
-        Ok(r) => Some(r),
-        Err(_) => {
-            // Not an EvalReport — might be a ComparisonReport or other artefact; skip silently.
-            None
-        }
-    }
+    // Not an EvalReport — might be a ComparisonReport or other artefact; skip silently.
+    serde_json::from_str::<EvalReport>(&content).ok()
 }
 
 fn save_comparison_json(comparison: &gestura_core_eval::comparison::ComparisonReport, dir: &std::path::Path) {

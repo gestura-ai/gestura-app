@@ -7,12 +7,12 @@
 # Binary: opencode   Install: npm i -g opencode-ai
 #
 # Sandboxed profile: read-only reasoning, no tool execution, no writes.
-# Uses claude-haiku-3-5 for cost efficiency on isolated, read-only tasks.
+# Uses claude-haiku-4-5-20251001 for cost efficiency on isolated, read-only tasks.
 #
-# Invocation: opencode run --dangerously-skip-permissions --model anthropic/claude-haiku-3-5 "<prompt>"
+# Invocation: opencode run --dangerously-skip-permissions --model anthropic/claude-haiku-4-5-20251001 "<prompt>"
 #   run                             non-interactive subcommand
 #   --dangerously-skip-permissions  auto-approve permission prompts
-#   --model                         model in provider/model format
+#   --model                         model in provider/model format (provider/model-id)
 #
 # NOTE: opencode has no --no-tools flag. Sandboxed behaviour is enforced by the
 # eval rubric (tools_enabled=false) and by choosing a lightweight model here.
@@ -21,12 +21,12 @@
 [agent]
 id          = "opencode-sandboxed"
 name        = "OpenCode — Sandboxed"
-description = "OpenCode · claude-haiku-3-5, read-only reasoning, no tool execution"
+description = "OpenCode · claude-haiku-4-5-20251001, read-only reasoning, no tool execution"
 mode        = "sandboxed"
 
 [model]
 provider    = "anthropic"
-name        = "claude-haiku-3-5"
+name        = "claude-haiku-4-5-20251001"
 temperature = 0.3
 max_tokens  = 2048
 
@@ -47,10 +47,10 @@ retries               = 0
 
 [subprocess]
 bin         = "opencode"
-args_prefix = ["run", "--dangerously-skip-permissions", "--model", "anthropic/claude-haiku-3-5"]
+args_prefix = ["run", "--dangerously-skip-permissions", "--model", "anthropic/claude-haiku-4-5-20251001"]
 
 [subprocess.env]
-ANTHROPIC_MODEL = "claude-haiku-3-5"
+ANTHROPIC_MODEL = "claude-haiku-4-5-20251001"
 
 [thresholds]
 min_variation_score    = 0.70

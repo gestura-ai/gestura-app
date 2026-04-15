@@ -8,10 +8,15 @@
 # Sandboxed profile: read-only, reasoning-only. No shell execution, no file
 # writes, no network calls. Uses gpt-4o-mini for cost efficiency.
 #
-# Invocation: codex exec --sandbox read-only --model gpt-4o-mini "<prompt>"
+# Invocation: codex exec --skip-git-repo-check --sandbox read-only --model gpt-4o-mini "<prompt>"
 #   exec                          non-interactive subcommand
+#   --skip-git-repo-check         skip git repo check (required in eval containers)
 #   --sandbox read-only           hard block on all shell/write operations
 #   --model                       pin the model version
+#
+# ── Authentication ─────────────────────────────────────────────────────────────
+# See codex-full.toml for the full Responses API auth requirement and curl
+# verification command. Same OPENAI_API_KEY access level is required here.
 # ─────────────────────────────────────────────────────────────────────────────
 
 [agent]
@@ -19,6 +24,8 @@ id          = "codex-sandboxed"
 name        = "Codex CLI (OpenAI) — Sandboxed"
 description = "OpenAI Codex · gpt-4o-mini, read-only reasoning, no tool execution"
 mode        = "sandboxed"
+requires_manual_auth = true
+auth_env_var         = "OPENAI_API_KEY"
 
 [model]
 provider    = "openai"

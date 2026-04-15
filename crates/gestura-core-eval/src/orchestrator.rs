@@ -113,22 +113,23 @@ impl MultiRunOrchestrator {
 
         for config in &self.plan.profiles {
             // Guard: skip profiles that need a session token if it isn't present.
-            if config.agent.requires_manual_auth && !self.plan.dry_run {
-                if let Some(ref env_var) = config.agent.auth_env_var {
-                    let present = std::env::var(env_var)
-                        .map(|v| !v.is_empty())
-                        .unwrap_or(false);
-                    if !present {
-                        let reason = format!("requires manual auth ({env_var} not set)");
-                        warn!(agent_id = %config.agent.id, %reason, "skipping profile");
-                        if let Some(ref cb) = self.progress {
-                            cb(ProgressEvent::ProfileSkipped {
-                                agent_id: config.agent.id.clone(),
-                                reason,
-                            });
-                        }
-                        continue;
+            if config.agent.requires_manual_auth
+                && !self.plan.dry_run
+                && let Some(ref env_var) = config.agent.auth_env_var
+            {
+                let present = std::env::var(env_var)
+                    .map(|v| !v.is_empty())
+                    .unwrap_or(false);
+                if !present {
+                    let reason = format!("requires manual auth ({env_var} not set)");
+                    warn!(agent_id = %config.agent.id, %reason, "skipping profile");
+                    if let Some(ref cb) = self.progress {
+                        cb(ProgressEvent::ProfileSkipped {
+                            agent_id: config.agent.id.clone(),
+                            reason,
+                        });
                     }
+                    continue;
                 }
             }
 

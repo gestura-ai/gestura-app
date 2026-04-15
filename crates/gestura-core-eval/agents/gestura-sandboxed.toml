@@ -14,7 +14,7 @@
 # shorter answers, no external verification steps), thresholds are relaxed
 # and length minimums are reduced across planning and extensibility scenarios.
 #
-# Model: claude-haiku-3-5 — fast, cost-efficient for read-only reasoning.
+# Model: claude-haiku-4-5-20251001 — fast, cost-efficient for read-only reasoning.
 # ─────────────────────────────────────────────────────────────────────────────
 
 [agent]
@@ -25,7 +25,7 @@ mode        = "sandboxed"
 
 [model]
 provider    = "anthropic"
-name        = "claude-haiku-3-5"
+name        = "claude-haiku-4-5-20251001"
 temperature = 0.3
 max_tokens  = 2048
 
