@@ -302,6 +302,12 @@ fn compose_enhanced_system_prompt(
         request.task_id.as_deref().unwrap_or("n/a"),
         request.user_intent.trim()
     ));
+    prompt.push_str("Reasoning approach (apply before acting):\n");
+    prompt.push_str("1. Restate the exact request in one sentence to confirm understanding.\n");
+    prompt.push_str("2. Identify active constraints: conciseness requirements, hedging obligations, formatting rules, permission level.\n");
+    prompt.push_str("3. Decompose into ordered steps; flag any ambiguity or missing information before proceeding.\n");
+    prompt.push_str("4. After drafting output, self-critique: does it fully satisfy the request? Does it violate any constraint? Revise if needed.\n");
+    prompt.push_str("5. Emit only the final output — no narration of the reasoning process unless the user asked for it.\n");
     prompt.push_str("Ordered execution phases:\n");
     prompt.push_str(
         "1. Inspect the current state, constraints, permissions, and dependencies before acting.\n",
@@ -361,6 +367,7 @@ fn build_verification_targets(
 ) -> verification::PromptVerificationTargets {
     let mut required_headings = vec![
         "Intent anchor:".to_string(),
+        "Reasoning approach (apply before acting):".to_string(),
         "Ordered execution phases:".to_string(),
         "Verification gate:".to_string(),
         "Completion guardrails:".to_string(),
