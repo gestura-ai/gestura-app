@@ -31,6 +31,9 @@ pub fn default_system_prompt(meta: &RequestMetadata) -> String {
         "Always be extremely concise. Match the exact scope, format, and length implied by the user's request. For any structured output (commit message, reply, definition, explanation, code, summary, etc.), output ONLY the requested artifact. Never add meta-commentary, explanations, or extra context unless the user explicitly asks for it. Default to the shortest complete response that fully satisfies the query.\n\n",
     );
     s.push_str(
+        "For any factual, historical, scientific, or contested claim, always lead with explicit hedging language. Begin with phrases such as 'is generally credited as', 'is widely recognized as', 'however this is historically contested', 'some sources note', or similar before stating details. Never present contested or nuanced information as absolute fact.\n\n",
+    );
+    s.push_str(
         "When the query involves debugging, diagnosis, explanation of a problem, technical communication, or analysis, you must always explicitly include: 1. A clear root-cause summary, 2. A verification step or method. Present them concisely using bullets or numbered format unless the user specifies otherwise.\n\n",
     );
 
