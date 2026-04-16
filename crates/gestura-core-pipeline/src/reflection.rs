@@ -298,7 +298,8 @@ pub fn quality_signals_for_response(
         iterations_used: response.iterations,
         max_iterations,
         was_truncated: response.truncated,
-        has_failure_patterns: detect_failure_patterns(&response.content),
+        has_failure_patterns: detect_failure_patterns(&response.content)
+            || detect_assertive_uncertainty(&response.content),
         is_empty_response: response.content.trim().is_empty(),
     }
 }
@@ -374,6 +375,28 @@ pub fn detect_failure_patterns(text: &str) -> bool {
         "i'm not able to",
         "error occurred",
         "failed to execute",
+        "i was not able to",
+        "i was unable to",
+        "as an ai, i",
+    ];
+    patterns.iter().any(|p| lower.contains(p))
+}
+
+/// Check if response text contains overconfident, unhedged assertions on
+/// factual or contested topics.
+///
+/// These patterns indicate the agent stated something as absolute fact when
+/// appropriate hedging language should have been used. Used as an additional
+/// quality signal alongside [`detect_failure_patterns`].
+pub fn detect_assertive_uncertainty(text: &str) -> bool {
+    let lower = text.to_lowercase();
+    let patterns = [
+        "the fact is that",
+        "it is a fact that",
+        "it is definitely the case",
+        "there is no question that",
+        "it is absolutely certain",
+        "without any doubt",
     ];
     patterns.iter().any(|p| lower.contains(p))
 }
@@ -803,6 +826,22 @@ mod tests {
         ));
         assert!(!detect_failure_patterns(
             "Here is the file content you requested"
+        ));
+    }
+
+    #[test]
+    fn test_detect_assertive_uncertainty() {
+        assert!(detect_assertive_uncertainty(
+            "The fact is that Python was invented in 1989."
+        ));
+        assert!(detect_assertive_uncertainty(
+            "There is no question that this is the correct approach."
+        ));
+        assert!(!detect_assertive_uncertainty(
+            "Python is generally credited as a language designed for readability."
+        ));
+        assert!(!detect_assertive_uncertainty(
+            "The file was found at the expected path."
         ));
     }
 
