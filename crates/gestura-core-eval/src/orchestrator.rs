@@ -139,6 +139,7 @@ impl MultiRunOrchestrator {
                 dry_run: self.plan.dry_run,
                 bin_override: self.plan.bin_override.clone(),
                 progress: self.progress.clone(),
+                ..CliRunnerOptions::new()
             };
 
             let runner = CliEvalRunner::new(opts);

@@ -13,11 +13,25 @@ use tracing::{debug, info, warn};
 
 use crate::{
     config::EvalConfig,
-    evaluator::RuleEvaluator,
+    evaluator::{CheckResult, RuleEvaluator},
+    judge::LlmJudge,
     progress::{ProgressCallback, ProgressEvent},
     report::{EvalReport, ScenarioResult, VariationResult},
     scenario::{EvalScenario, EvalScenarioSuite, EvalVariation},
 };
+
+// ─── Internal trial result ────────────────────────────────────────────────────
+
+/// Raw outcome of a single subprocess invocation (one trial of one variation).
+struct TrialOutcome {
+    response:       String,
+    pipeline_error: Option<String>,
+    duration_ms:    u64,
+    checks:         Vec<CheckResult>,
+    score:          f32,
+    passed:         bool,
+    judge_score:    Option<crate::judge::JudgeScore>,
+}
 
 /// Runtime options for one eval run — agent profile + ephemeral CLI flags.
 #[derive(Clone)]
@@ -33,6 +47,9 @@ pub struct CliRunnerOptions {
     /// Optional progress callback. Fires `ProfileStarted`, `VariationDone`, and
     /// `ProfileFinished` events. When `None` the runner is zero-overhead.
     pub progress: Option<ProgressCallback>,
+    /// Optional LLM-as-judge for quality scoring. When `None` judge scores
+    /// are skipped entirely and rule-based scoring is the only signal.
+    pub judge: Option<LlmJudge>,
 }
 
 impl CliRunnerOptions {
@@ -44,6 +61,7 @@ impl CliRunnerOptions {
             dry_run: false,
             bin_override: None,
             progress: None,
+            judge: LlmJudge::from_env(),
         }
     }
 
@@ -159,10 +177,98 @@ impl CliEvalRunner {
         debug!(scenario = %scenario.id, variation = %variation.id, "variation");
         let prompt_preview = truncate(&variation.prompt, 80);
         let cfg = &self.options.eval_config;
+        let trials = cfg.execution.trials.max(1) as usize;
+
+        // ── Run N trials ──────────────────────────────────────────────────────
+        let mut outcomes: Vec<TrialOutcome> = Vec::with_capacity(trials);
+
+        for trial_idx in 0..trials {
+            if trials > 1 {
+                debug!(
+                    scenario = %scenario.id,
+                    variation = %variation.id,
+                    trial = trial_idx + 1,
+                    total = trials,
+                    "trial"
+                );
+            }
+
+            outcomes.push(self.run_trial(scenario, variation));
+
+            // Throttle between trials (same budget as inter-variation delay).
+            // Skip after the last trial — the inter-variation delay below handles that.
+            if trial_idx < trials - 1 && cfg.execution.delay_between_variations_ms > 0 {
+                thread::sleep(Duration::from_millis(cfg.execution.delay_between_variations_ms));
+            }
+        }
+
+        // ── Aggregate ─────────────────────────────────────────────────────────
+        let trial_scores: Vec<f32>    = outcomes.iter().map(|o| o.score).collect();
+        let trial_responses: Vec<String> = outcomes.iter().map(|o| o.response.clone()).collect();
+        let total_duration_ms: u64    = outcomes.iter().map(|o| o.duration_ms).sum();
+
+        let avg_score     = trial_scores.iter().sum::<f32>() / trial_scores.len() as f32;
+        let passed_trials = outcomes.iter().filter(|o| o.passed).count();
+        // Majority vote: more than half of trials must pass.
+        let passed        = passed_trials * 2 > outcomes.len();
+
+        // Representative trial: the one whose score is closest to the average.
+        // Used for `checks` and `pipeline_error` in the aggregate result.
+        let rep_idx = trial_scores
+            .iter()
+            .enumerate()
+            .min_by(|(_, a), (_, b)| {
+                (*a - avg_score).abs()
+                    .partial_cmp(&(*b - avg_score).abs())
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })
+            .map(|(i, _)| i)
+            .unwrap_or(0);
+
+        // Remove the representative outcome so we can take ownership of its fields.
+        let rep = outcomes.swap_remove(rep_idx);
+
+        let result = VariationResult {
+            variation_id:    variation.id.clone(),
+            prompt_preview,
+            response:        rep.response,
+            duration_ms:     total_duration_ms,
+            pipeline_error:  rep.pipeline_error,
+            checks:          rep.checks,
+            score:           avg_score,
+            passed,
+            trial_scores,
+            trial_responses,
+            judge_score:     rep.judge_score,
+        };
+
+        if let Some(ref cb) = self.options.progress {
+            cb(ProgressEvent::VariationDone {
+                agent_id:     cfg.agent.id.clone(),
+                scenario_id:  scenario.id.clone(),
+                variation_id: variation.id.clone(),
+                passed:       result.passed,
+                score:        result.score,
+                duration_ms:  result.duration_ms,
+            });
+        }
+
+        // Inter-variation throttle — fires after progress so the terminal shows
+        // the result immediately, then pauses before the next variation starts.
+        if cfg.execution.delay_between_variations_ms > 0 {
+            thread::sleep(Duration::from_millis(cfg.execution.delay_between_variations_ms));
+        }
+
+        result
+    }
+
+    /// Run one trial of a variation: invoke the agent with the retry loop and
+    /// evaluate the response.  Returns a raw [`TrialOutcome`] — no aggregation.
+    fn run_trial(&self, scenario: &EvalScenario, variation: &EvalVariation) -> TrialOutcome {
+        let cfg = &self.options.eval_config;
         let max_attempts = 1 + cfg.execution.retries as usize;
 
-        // Wall-clock start covers the full attempt sequence including backoff waits,
-        // giving an honest picture of how long this variation actually took.
+        // Wall-clock start: covers all retry attempts + backoff waits.
         let start = Instant::now();
 
         let (response_text, pipeline_error) = if self.options.dry_run {
@@ -180,26 +286,25 @@ impl CliEvalRunner {
                 attempt += 1;
                 let (text, err) = self.invoke_agent(scenario, variation);
 
-                // Check whether this failure was a rate-limit and we have retries left.
-                // Three detection paths:
+                // Three rate-limit detection paths:
                 //  1. stderr contained 429/rate-limit text (most agents)
                 //  2. stdout contained it (opencode exits 0 with error in stdout)
-                //  3. Silent failure: exit non-zero, stdout AND stderr both empty —
-                //     the agent crashed before writing anything; treat as transient.
+                //  3. Silent failure: exit non-zero, both stdout and stderr empty —
+                //     agent crashed before writing anything; treat as transient.
                 let is_rl = err.as_deref().map(is_rate_limit_error).unwrap_or(false)
                     || is_rate_limit_error(&text)
                     || is_silent_transient_failure(err.as_deref(), &text);
+
                 if is_rl && attempt < max_attempts {
-                    // Exponential backoff: 15 s, 30 s, 60 s, …  Capped at 120 s.
                     let wait_secs = cfg.execution.rate_limit_backoff_secs
                         .saturating_mul(1u64 << (attempt - 1).min(3));
 
                     if let Some(ref cb) = self.options.progress {
                         cb(ProgressEvent::RateLimitRetry {
-                            agent_id: cfg.agent.id.clone(),
-                            scenario_id: scenario.id.clone(),
+                            agent_id:     cfg.agent.id.clone(),
+                            scenario_id:  scenario.id.clone(),
                             variation_id: variation.id.clone(),
-                            attempt: attempt as u32,
+                            attempt:      attempt as u32,
                             max_attempts: max_attempts as u32,
                             wait_secs,
                         });
@@ -216,35 +321,19 @@ impl CliEvalRunner {
         let duration_ms = start.elapsed().as_millis() as u64;
         let eval = RuleEvaluator::evaluate(variation, &response_text);
 
-        let result = VariationResult {
-            variation_id: variation.id.clone(),
-            prompt_preview,
-            response: response_text,
-            duration_ms,
+        // LLM judge runs after rule evaluation (optional, non-fatal).
+        let judge_score = self.options.judge.as_ref()
+            .and_then(|j| j.judge(variation, &response_text));
+
+        TrialOutcome {
+            response:       response_text,
             pipeline_error,
-            checks: eval.checks,
-            score: eval.score,
-            passed: eval.passed,
-        };
-
-        if let Some(ref cb) = self.options.progress {
-            cb(ProgressEvent::VariationDone {
-                agent_id: cfg.agent.id.clone(),
-                scenario_id: scenario.id.clone(),
-                variation_id: variation.id.clone(),
-                passed: result.passed,
-                score: result.score,
-                duration_ms: result.duration_ms,
-            });
+            duration_ms,
+            checks:         eval.checks,
+            score:          eval.score,
+            passed:         eval.passed,
+            judge_score,
         }
-
-        // Inter-variation throttle — inserted after the progress event so the
-        // terminal shows the result immediately, then pauses before the next call.
-        if cfg.execution.delay_between_variations_ms > 0 {
-            thread::sleep(Duration::from_millis(cfg.execution.delay_between_variations_ms));
-        }
-
-        result
     }
 
     /// Build the prompt and invoke the agent binary as a subprocess.

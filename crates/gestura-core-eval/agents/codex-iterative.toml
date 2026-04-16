@@ -11,7 +11,7 @@
 # of the old approval-mode. All tool calls are blocked at the sandbox level
 # so no approval gate is needed.
 #
-# Invocation: codex exec --skip-git-repo-check --sandbox read-only --model gpt-4o "<prompt>"
+# Invocation: codex exec --skip-git-repo-check --sandbox read-only --model gpt-5.4 "<prompt>"
 #   exec                          non-interactive subcommand
 #   --skip-git-repo-check         skip git repo check (required in eval containers)
 #   --sandbox read-only           block all shell execution and file writes
@@ -25,14 +25,14 @@
 [agent]
 id          = "codex-iterative"
 name        = "Codex CLI (OpenAI) — Iterative Approval"
-description = "OpenAI Codex · gpt-4o, suggest-mode approval gates, step-by-step"
+description = "OpenAI Codex · gpt-5.4, suggest-mode approval gates, step-by-step"
 mode        = "iterative"
 requires_manual_auth = true
 auth_env_var         = "OPENAI_API_KEY"
 
 [model]
 provider    = "openai"
-name        = "gpt-4o"   # gpt-4.5 was a removed research preview; gpt-4o is stable
+name        = "gpt-5.4"   # gpt-4.5 was a removed research preview; gpt-5.4 is stable
 temperature = 0.7
 max_tokens  = 16384
 
@@ -54,10 +54,17 @@ retries               = 1
 
 [subprocess]
 bin         = "codex"
-args_prefix = ["exec", "--skip-git-repo-check", "--sandbox", "read-only", "--model", "gpt-4o"]
+args_prefix = [
+  "exec",
+  "-c", "forced_login_method=\"api\"",
+  "-c", "cli_auth_credentials_store=\"file\"",
+  "--skip-git-repo-check",
+  "--sandbox", "read-only",
+  "--model", "gpt-5.4",
+]
 
 [subprocess.env]
-OPENAI_MODEL = "gpt-4o"
+OPENAI_MODEL = "gpt-5.4"
 
 [thresholds]
 min_variation_score    = 0.75

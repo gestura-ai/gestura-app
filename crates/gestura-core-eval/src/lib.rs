@@ -2,10 +2,12 @@
 //!
 //! Reproducible evaluation harness for Gestura agentic response quality.
 //!
-//! Contains 8 standardised test scenarios × 3 prompt variations each, covering:
+//! Contains 14 standardised test scenarios × 3 prompt variations each, covering:
 //! simple queries, multi-turn conversation, complex planning, error handling,
-//! tool extensibility, privacy-sensitive tasks, context retention, and
-//! long-context coherence.
+//! tool extensibility, privacy-sensitive tasks, context retention, long-context
+//! coherence, code bug diagnosis, security vulnerability identification, system
+//! design trade-offs, instruction following precision, regression debugging, and
+//! calibrated technical communication.
 //!
 //! The harness is intentionally **separate from the `gestura` product binary**.
 //! It ships as the standalone `gestura-eval` binary that drives `gestura` as a
@@ -43,6 +45,7 @@ pub mod comparison;
 pub mod config;
 pub mod evaluator;
 pub mod html_report;
+pub mod judge;
 pub mod orchestrator;
 pub mod progress;
 pub mod report;
@@ -58,6 +61,7 @@ pub use config::{
     ScenarioOverride, SubprocessDef, Thresholds, VariationOverride, BUILTIN_AGENT_IDS,
 };
 pub use evaluator::{CheckResult, EvaluationResult, RuleEvaluator};
+pub use judge::{JudgeScore, LlmJudge};
 pub use orchestrator::{MultiRunOrchestrator, ProfileSelector, SuiteRunPlan, agent_family};
 pub use progress::{ProgressCallback, ProgressEvent};
 pub use report::{EvalReport, EvalSummary, ScenarioResult, VariationResult};

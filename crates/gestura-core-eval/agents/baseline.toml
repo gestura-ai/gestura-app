@@ -48,8 +48,12 @@ retries                     = 5
 rate_limit_backoff_secs     = 30
 # Minimum pause inserted after every variation call (milliseconds).
 # 2 000 ms keeps the per-minute token rate well below the 30 K TPM limit for
-# most prompt sizes. Override at runtime with --variation-delay.
+# most prompt sizes. Override at runtime with --variation-delay-ms.
 delay_between_variations_ms = 2000
+# Run each variation this many times and average the scores (majority-vote pass/fail).
+# 1 = fast single-trial runs. Use 3-5 for statistically reliable benchmarks.
+# Override at runtime with --trials N.
+trials = 1
 
 # ─── Subprocess ──────────────────────────────────────────────────────────────
 # args_prefix is prepended to every invocation: `gestura exec "<prompt>"`.

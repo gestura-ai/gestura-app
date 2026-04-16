@@ -55,6 +55,7 @@ args_prefix = ["exec"]
 GESTURA_DISABLE_KEYCHAIN    = "1"
 GESTURA_PERMISSION_LEVEL    = "restricted"
 GESTURA_REQUIRE_CONFIRMATION = "true"
+ANTHROPIC_MODEL             = "claude-sonnet-4-6"
 
 [thresholds]
 min_variation_score    = 0.75

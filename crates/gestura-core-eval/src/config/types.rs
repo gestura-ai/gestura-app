@@ -174,9 +174,18 @@ pub struct ExecutionConfig {
     /// With `retries = 3`: 15 s → 30 s → 60 s, then fail.
     #[serde(default = "default_rate_limit_backoff_secs")]
     pub rate_limit_backoff_secs: u64,
+    /// How many times to run each variation.  Scores are averaged; pass/fail
+    /// uses majority vote (> half of trials must pass).
+    ///
+    /// `1` (the default) is identical to previous single-trial behaviour.
+    /// Use `3`–`5` for statistically reliable benchmarks.  Note that each
+    /// additional trial multiplies API cost and runtime proportionally.
+    #[serde(default = "default_trials")]
+    pub trials: u32,
 }
 
 fn default_rate_limit_backoff_secs() -> u64 { 15 }
+fn default_trials() -> u32 { 1 }
 
 impl Default for ExecutionConfig {
     fn default() -> Self {
@@ -188,6 +197,7 @@ impl Default for ExecutionConfig {
             retries: 0,
             delay_between_variations_ms: 0,
             rate_limit_backoff_secs: 15,
+            trials: 1,
         }
     }
 }

@@ -6,9 +6,9 @@
 # Binary: codex   Install: npm i -g @openai/codex
 #
 # Sandboxed profile: read-only, reasoning-only. No shell execution, no file
-# writes, no network calls. Uses gpt-4o-mini for cost efficiency.
+# writes, no network calls. Uses gpt-5.4-mini for cost efficiency.
 #
-# Invocation: codex exec --skip-git-repo-check --sandbox read-only --model gpt-4o-mini "<prompt>"
+# Invocation: codex exec --skip-git-repo-check --sandbox read-only --model gpt-5.4-mini "<prompt>"
 #   exec                          non-interactive subcommand
 #   --skip-git-repo-check         skip git repo check (required in eval containers)
 #   --sandbox read-only           hard block on all shell/write operations
@@ -22,14 +22,14 @@
 [agent]
 id          = "codex-sandboxed"
 name        = "Codex CLI (OpenAI) — Sandboxed"
-description = "OpenAI Codex · gpt-4o-mini, read-only reasoning, no tool execution"
+description = "OpenAI Codex · gpt-5.4-mini, read-only reasoning, no tool execution"
 mode        = "sandboxed"
 requires_manual_auth = true
 auth_env_var         = "OPENAI_API_KEY"
 
 [model]
 provider    = "openai"
-name        = "gpt-4o-mini"
+name        = "gpt-5.4-mini"
 temperature = 0.3
 max_tokens  = 2048
 
@@ -50,10 +50,17 @@ retries               = 0
 
 [subprocess]
 bin         = "codex"
-args_prefix = ["exec", "--skip-git-repo-check", "--sandbox", "read-only", "--model", "gpt-4o-mini"]
+args_prefix = [
+  "exec",
+  "-c", "forced_login_method=\"api\"",
+  "-c", "cli_auth_credentials_store=\"file\"",
+  "--skip-git-repo-check",
+  "--sandbox", "read-only",
+  "--model", "gpt-5.4-mini",
+]
 
 [subprocess.env]
-OPENAI_MODEL = "gpt-4o-mini"
+OPENAI_MODEL = "gpt-5.4-mini"
 
 [thresholds]
 min_variation_score    = 0.70

@@ -20,6 +20,7 @@ tracing-subscriber = { workspace = true, features = ["env-filter"] }
 chrono.workspace = true
 uuid.workspace = true
 regex = "1"
+reqwest = { version = "0.12", features = ["json", "rustls-tls", "blocking"] }
 toml.workspace = true
 clap.workspace = true
 colored.workspace = true

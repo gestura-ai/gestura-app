@@ -9,7 +9,7 @@
 # sandbox and no approval gates. The agent can read/write files in the
 # working directory without pausing for confirmation.
 #
-# Invocation: codex exec --skip-git-repo-check --sandbox workspace-write --model gpt-4o "<prompt>"
+# Invocation: codex exec --skip-git-repo-check --sandbox workspace-write --model gpt-5.4 "<prompt>"
 #   exec                          non-interactive subcommand
 #   --skip-git-repo-check         skip git repo check (required in eval containers)
 #   --sandbox workspace-write     allow file writes in the workspace, block broader system access
@@ -26,7 +26,7 @@
 # Verify access: curl -s -o /dev/null -w "%{http_code}" \
 #   -H "Authorization: Bearer $OPENAI_API_KEY" \
 #   -H "Content-Type: application/json" \
-#   -d '{"model":"gpt-4o","input":"ping"}' \
+#   -d '{"model":"gpt-5.4","input":"ping"}' \
 #   https://api.openai.com/v1/responses
 # Expected: 200  |  Got 401 → account needs Responses API access
 # ─────────────────────────────────────────────────────────────────────────────
@@ -34,14 +34,14 @@
 [agent]
 id          = "codex-full"
 name        = "Codex CLI (OpenAI) — Full Permission (Autonomous)"
-description = "OpenAI Codex · gpt-4o, full-auto approval, unrestricted execution"
+description = "OpenAI Codex · gpt-5.4, full-auto approval, unrestricted execution"
 mode        = "autonomous"
 requires_manual_auth = true
 auth_env_var         = "OPENAI_API_KEY"
 
 [model]
 provider    = "openai"
-name        = "gpt-4o"         # gpt-4.5 was a removed research preview; gpt-4o is stable
+name        = "gpt-5.4"         # gpt-4.5 was a removed research preview; gpt-5.4 is stable
 temperature = 1.0
 max_tokens  = 16384
 
@@ -62,13 +62,32 @@ retries               = 1
 
 [subprocess]
 bin         = "codex"
-args_prefix = ["exec", "--skip-git-repo-check", "--sandbox", "workspace-write", "--model", "gpt-4o"]
+args_prefix = [
+  "exec",
+  "-c", "forced_login_method=\"api\"",
+  "-c", "cli_auth_credentials_store=\"file\"",
+  "--skip-git-repo-check",
+  "--sandbox", "workspace-write",
+  "--model", "gpt-5.4",
+]
 
 [subprocess.env]
-# OPENAI_API_KEY is read from the calling environment (inherited by default).
-# If it is missing or lacks Responses API access the run will 401 and produce
-# empty stdout; check pipeline_error in the report for the full error chain.
-OPENAI_MODEL = "gpt-4o"
+# OPENAI_API_KEY authentication note:
+#   Codex v0.120.0 reads its API key from ~/.codex/config.toml, NOT from the
+#   OPENAI_API_KEY env var.  The env var sets provider selection but is not
+#   forwarded to the Responses API WebSocket Authorization header.
+#
+#   entrypoint.sh (in the container image) writes a minimal config.toml from
+#   OPENAI_API_KEY at startup, so no manual codex login is required.
+#
+#   To verify your key has Responses API access outside the container:
+#     curl -s -o /dev/null -w "%{http_code}" \
+#       -H "Authorization: Bearer $OPENAI_API_KEY" \
+#       -H "Content-Type: application/json" \
+#       -d '{"model":"gpt-5.4","input":"ping"}' \
+#       https://api.openai.com/v1/responses
+#   Expected: 200. If 401, the account needs Responses API access enabled.
+OPENAI_MODEL = "gpt-5.4"
 
 [thresholds]
 min_variation_score    = 0.85

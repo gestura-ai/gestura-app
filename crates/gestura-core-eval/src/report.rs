@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::evaluator::CheckResult;
+use crate::judge::JudgeScore;
 
 /// Full evaluation report for a completed run.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -48,16 +49,31 @@ pub struct ScenarioResult {
 pub struct VariationResult {
     pub variation_id: String,
     pub prompt_preview: String,
-    /// The full LLM response (empty string in dry-run mode).
+    /// The full LLM response from the representative trial (empty in dry-run).
     pub response: String,
-    /// Wall-clock duration of the pipeline call in milliseconds.
+    /// Total wall-clock duration across all trials, in milliseconds.
     pub duration_ms: u64,
-    /// Whether the pipeline returned an error (response contains error marker).
+    /// Pipeline error from the representative trial, if any.
     pub pipeline_error: Option<String>,
-    /// Rule-based check results.
+    /// Rule-based check results from the representative trial.
     pub checks: Vec<CheckResult>,
+    /// Average score across all trials (identical to `score` when `trials = 1`).
     pub score: f32,
+    /// Majority-vote pass: true when more than half of trials passed.
     pub passed: bool,
+    /// Per-trial scores in run order.  Length 1 for single-trial runs.
+    /// Populated even when `trials = 1` so downstream consumers don't need
+    /// to special-case single vs. multi-trial reports.
+    #[serde(default)]
+    pub trial_scores: Vec<f32>,
+    /// Per-trial full response text in run order.
+    #[serde(default)]
+    pub trial_responses: Vec<String>,
+    /// Optional LLM-as-judge quality score.  `None` when the judge is not
+    /// configured (no `ANTHROPIC_API_KEY`) or when the response was empty.
+    /// Does **not** affect the rule-based `score` or `passed` fields.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub judge_score: Option<JudgeScore>,
 }
 
 /// Aggregate summary.
@@ -174,7 +190,18 @@ impl EvalReport {
 
             for v in &scenario.variations {
                 let vicon = if v.passed { "  ✓" } else { "  ✗" };
-                println!("      {} {} — {:.0}%", vicon, v.variation_id, v.score * 100.0);
+                let trial_note = if v.trial_scores.len() > 1 {
+                    let min = v.trial_scores.iter().cloned().fold(f32::INFINITY, f32::min);
+                    let max = v.trial_scores.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+                    let passed_n = v.trial_scores.iter().filter(|&&s| s >= 0.5).count();
+                    format!(
+                        " ({}/{} trials, range {:.0}–{:.0}%)",
+                        passed_n, v.trial_scores.len(), min * 100.0, max * 100.0
+                    )
+                } else {
+                    String::new()
+                };
+                println!("      {} {} — {:.0}%{}", vicon, v.variation_id, v.score * 100.0, trial_note);
                 println!("        Prompt : {}", v.prompt_preview);
 
                 // ── Pipeline / subprocess error ─────────────────────────────

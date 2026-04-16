@@ -107,12 +107,13 @@ impl RuleEvaluator {
             "no_price_hallucination" => check_no_price_hallucination(response),
             "has_verification_step" => check_has_verification_step(response),
             "has_structured_sections" => check_has_structured_sections(response),
-            "builds_on_context" => check_builds_on_context(response),
+            "builds_on_context" => check_builds_on_context(v, response),
             "no_external_api_suggestion" => check_no_external_api_suggestion(response),
-            "summarizes_provided_content" => check_summarizes_provided_content(response),
-            "no_invented_detail" => check_no_invented_detail(response, &v.expected_keywords),
+            "summarizes_provided_content" => check_summarizes_provided_content(v, response),
+            "no_invented_detail" => check_no_invented_detail(v, response),
             "root_cause_explained" => check_root_cause_explained(response),
             "suggests_test" => check_suggests_test(response),
+            "has_recommendation" => check_has_recommendation(response),
             "no_fabricated_live_output" => check_no_fabricated_live_output(response),
             "cites_source_material" => check_cites_source_material(response),
             "confidence_declared" => check_confidence_declared(response),
@@ -199,9 +200,11 @@ fn check_no_forbidden_patterns(response: &str, patterns: &[String]) -> CheckResu
 }
 
 fn check_acknowledges_uncertainty(response: &str) -> CheckResult {
+    // Only match phrases that are meaningful epistemic signals.
+    // Removed "may", "might", "could", "though", "however", "based on" —
+    // these are grammatical filler present in virtually every response and
+    // produce near-zero variance across agents.
     let hedges = [
-        // Modal / softening language
-        "may", "might", "could", "though", "however",
         // Attribution phrasing (historical/factual uncertainty)
         "often credited", "commonly attributed", "generally attributed",
         "widely credited", "widely regarded", "typically credited",
@@ -211,12 +214,13 @@ fn check_acknowledges_uncertainty(response: &str) -> CheckResult {
         "some sources", "depending on", "it depends",
         // Contrast phrasing (e.g. "while other inventors…")
         "while other", "while some",
-        // Document-grounded hedging (long-context scenarios)
-        "based on", "not mentioned", "not stated", "not listed",
+        // Document-grounded absence markers (long-context scenarios)
+        "not mentioned", "not stated", "not listed", "not specified",
+        "no mention", "doesn't mention", "does not mention",
     ];
     let lower = response.to_lowercase();
     if hedges.iter().any(|h| lower.contains(h)) {
-        pass("acknowledges_uncertainty", "Response contains uncertainty hedging language")
+        pass("acknowledges_uncertainty", "Response contains meaningful uncertainty hedging language")
     } else {
         fail(
             "acknowledges_uncertainty",
@@ -267,18 +271,53 @@ fn check_has_structured_sections(response: &str) -> CheckResult {
     }
 }
 
-fn check_builds_on_context(response: &str) -> CheckResult {
-    // Minimal heuristic: the response is not just re-explaining from scratch (≥20 words, not a definition).
-    let wc = word_count(response);
+fn check_builds_on_context(v: &EvalVariation, response: &str) -> CheckResult {
+    if v.history.is_empty() {
+        // No history to anchor against — fall back to a length check.
+        return if word_count(response) >= 15 {
+            pass("builds_on_context", "Response is substantive (no conversation history to anchor against)")
+        } else {
+            fail("builds_on_context", "Response is too short to demonstrate context retention")
+        };
+    }
+
+    // Common stop words that carry no topical signal.
+    let stop_words = [
+        "about", "after", "also", "been", "before", "being", "between",
+        "could", "each", "from", "have", "here", "into", "just", "like",
+        "might", "more", "other", "over", "should", "some", "than", "that",
+        "their", "them", "there", "these", "they", "this", "those", "through",
+        "very", "were", "what", "when", "where", "which", "while", "will",
+        "with", "would", "your",
+    ];
+
+    // Collect unique content words (len > 4) from every history message.
+    let mut history_keywords: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for msg in &v.history {
+        let lower_msg = msg.content.to_lowercase();
+        for word in lower_msg.split(|c: char| !c.is_alphanumeric()) {
+            if word.len() > 4 && !stop_words.iter().any(|&s| s == word) {
+                history_keywords.insert(word.to_string());
+            }
+        }
+    }
+
     let lower = response.to_lowercase();
-    let re_explains = lower.starts_with("a ") || lower.starts_with("the ") || lower.starts_with("in ");
-    if wc >= 15 && !re_explains {
-        pass("builds_on_context", "Response appears to advance the conversation")
-    } else if wc >= 15 {
-        // Soft pass — length is ok even if it starts with a definition phrase.
-        pass("builds_on_context", "Response is substantive (length check passed)")
+    let matches = history_keywords.iter().filter(|kw| lower.contains(kw.as_str())).count();
+
+    if matches >= 3 {
+        pass(
+            "builds_on_context",
+            &format!("Response references {matches} term(s) from conversation history"),
+        )
     } else {
-        fail("builds_on_context", "Response is too short to demonstrate context retention")
+        fail(
+            "builds_on_context",
+            &format!(
+                "Response references only {matches} term(s) from conversation history; \
+                 expected ≥ 3 — response may not be building on prior context"
+            ),
+        )
     }
 }
 
@@ -308,33 +347,111 @@ fn check_no_external_api_suggestion(response: &str) -> CheckResult {
     pass("no_external_api_suggestion", "Response respects local-only constraint")
 }
 
-fn check_summarizes_provided_content(response: &str) -> CheckResult {
-    // The prompt contains "[CONTENT: ...]"; a good response should echo or paraphrase some of it.
-    let wc = word_count(response);
-    if wc >= 10 {
-        pass("summarizes_provided_content", "Response is long enough to be a summary")
+fn check_summarizes_provided_content(v: &EvalVariation, response: &str) -> CheckResult {
+    // Extract the [CONTENT: ...] block from the prompt and verify the response
+    // echoes or paraphrases at least 2 of its meaningful words.
+    let prompt = &v.prompt;
+    if let Some(block_start) = prompt.find("[CONTENT:") {
+        let inner_start = block_start + "[CONTENT:".len();
+        if let Some(end_offset) = prompt[inner_start..].find(']') {
+            let content = &prompt[inner_start..inner_start + end_offset];
+            let content_lower = content.to_lowercase();
+
+            let stop_words = [
+                "about", "after", "also", "been", "before", "being", "each",
+                "from", "have", "into", "just", "like", "more", "other", "over",
+                "some", "than", "that", "their", "them", "there", "these", "they",
+                "this", "those", "with", "were", "without", "using",
+            ];
+
+            // Unique meaningful words from the content block.
+            let mut content_words: std::collections::HashSet<&str> =
+                std::collections::HashSet::new();
+            for word in content_lower.split(|c: char| !c.is_alphanumeric()) {
+                if word.len() > 3 && !stop_words.iter().any(|&s| s == word) {
+                    content_words.insert(word);
+                }
+            }
+
+            let lower = response.to_lowercase();
+            let matches = content_words.iter().filter(|&&w| lower.contains(w)).count();
+
+            return if matches >= 2 {
+                pass(
+                    "summarizes_provided_content",
+                    &format!("Response references {matches} term(s) from the [CONTENT] block"),
+                )
+            } else {
+                fail(
+                    "summarizes_provided_content",
+                    &format!(
+                        "Response contains only {matches} term(s) from the [CONTENT] block; \
+                         expected ≥ 2 — response may not be summarizing the provided content"
+                    ),
+                )
+            };
+        }
+    }
+
+    // No [CONTENT:] block found — fall back to a length check.
+    if word_count(response) >= 10 {
+        pass("summarizes_provided_content", "Response is long enough to be a summary (no CONTENT block in prompt)")
     } else {
         fail("summarizes_provided_content", "Response is too short to be a meaningful summary")
     }
 }
 
-fn check_no_invented_detail(response: &str, expected_keywords: &[String]) -> CheckResult {
-    // If an expected keyword is present, the model answered from the given facts.
-    // If not, and the response is assertive, flag it.
+fn check_no_invented_detail(v: &EvalVariation, response: &str) -> CheckResult {
     let lower = response.to_lowercase();
+    let expected_keywords = &v.expected_keywords;
+
+    // Check 1 (existing): Response is grounded in the provided facts.
     let answered_from_facts = expected_keywords
         .iter()
         .any(|kw| lower.contains(&kw.to_lowercase()));
-    let uncertainty_phrases = ["not stated", "not mentioned", "not provided", "i don't know", "unclear"];
+    let uncertainty_phrases = [
+        "not stated", "not mentioned", "not provided", "i don't know",
+        "unclear", "not listed", "not specified",
+    ];
     let acknowledged_gap = uncertainty_phrases.iter().any(|p| lower.contains(p));
-    if answered_from_facts || acknowledged_gap {
-        pass("no_invented_detail", "Response is grounded in provided facts or acknowledges gap")
-    } else {
-        fail(
+
+    if !answered_from_facts && !acknowledged_gap {
+        return fail(
             "no_invented_detail",
             "Response may have invented details not present in the provided facts",
-        )
+        );
     }
+
+    // Check 2 (new): Detect fabricated years.
+    // If the response contains a 4-digit year (19xx or 20xx) that was not
+    // present anywhere in the prompt or history, flag it as a likely hallucination.
+    let year_re = Regex::new(r"\b(19|20)\d{2}\b").unwrap();
+
+    let mut source_text = v.prompt.clone();
+    for msg in &v.history {
+        source_text.push(' ');
+        source_text.push_str(&msg.content);
+    }
+
+    let source_years: std::collections::HashSet<&str> = year_re
+        .find_iter(&source_text)
+        .map(|m| m.as_str())
+        .collect();
+
+    for m in year_re.find_iter(response) {
+        let year = m.as_str();
+        if !source_years.contains(year) {
+            return fail(
+                "no_invented_detail",
+                &format!(
+                    "Response contains year '{year}' not present in the source context — \
+                     possible hallucinated detail"
+                ),
+            );
+        }
+    }
+
+    pass("no_invented_detail", "Response is grounded in provided facts or acknowledges gap")
 }
 
 fn check_root_cause_explained(response: &str) -> CheckResult {
@@ -396,6 +513,26 @@ fn check_cites_source_material(response: &str) -> CheckResult {
         pass("cites_source_material", "Response references the provided source material")
     } else {
         fail("cites_source_material", "Response does not anchor its answer to the provided document")
+    }
+}
+
+fn check_has_recommendation(response: &str) -> CheckResult {
+    // Checks that the agent commits to a concrete recommendation rather than
+    // giving a pure trade-off list with no conclusion.  Appropriate for system
+    // design questions that explicitly ask "which would you recommend?".
+    let markers = [
+        "recommend", "suggestion", "suggest ", "go with", "prefer ",
+        "would choose", "better suited", "better fit", "better choice",
+        "i would use", "i'd use", "start with", "opt for",
+    ];
+    let lower = response.to_lowercase();
+    if markers.iter().any(|m| lower.contains(m)) {
+        pass("has_recommendation", "Response includes a concrete recommendation")
+    } else {
+        fail(
+            "has_recommendation",
+            "Response does not commit to a recommendation — lists trade-offs without a conclusion",
+        )
     }
 }
 

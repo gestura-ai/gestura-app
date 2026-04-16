@@ -126,7 +126,6 @@ COPY . .
 
 # Compile the two binaries we ship in the runtime image.
 RUN cargo build --release \
-    --no-default-features \
     -p gestura-cli \
     -p gestura-core-eval
 
@@ -192,12 +191,21 @@ RUN npm install -g \
 COPY --from=builder /src/target/release/gestura      /usr/local/bin/gestura
 COPY --from=builder /src/target/release/gestura-eval /usr/local/bin/gestura-eval
 
+# ── Entrypoint script ─────────────────────────────────────────────────────────
+# Writes agent CLI config files from runtime env vars before exec-ing
+# gestura-eval. Required for Codex: v0.120.0 reads its OpenAI API key from
+# ~/.codex/config.toml rather than from the OPENAI_API_KEY env var directly.
+COPY crates/gestura-core-eval/entrypoint.sh /usr/local/bin/entrypoint.sh
+RUN chmod +x /usr/local/bin/entrypoint.sh
+
 RUN gestura      --version \
     && gestura-eval --version
 
 # ── Non-root user ─────────────────────────────────────────────────────────────
 # All subprocesses (gestura, claude, codex, opencode) run as this user.
-# Credentials are injected via environment variables — never stored on disk.
+# Credentials are injected via environment variables at runtime.
+# entrypoint.sh may write ephemeral config files (e.g. ~/.codex/config.toml)
+# from those env vars — they live only for the lifetime of the container.
 RUN useradd --create-home --uid 1000 --shell /bin/bash eval
 
 # ── Report output directory ───────────────────────────────────────────────────
@@ -222,6 +230,14 @@ ENV EVAL_OUTPUT_DIR="/reports"
 # Always disable the macOS Keychain in Gestura subprocesses — the keychain
 # daemon is not available inside a container and the subprocess would hang.
 ENV GESTURA_DISABLE_KEYCHAIN="1"
+
+# ── Codex home directory ───────────────────────────────────────────────────────
+# CODEX_HOME controls where the Codex CLI looks for config.toml, auth.json,
+# logs, and its SQLite state DB. Without this, "~/.codex" resolves relative
+# to whatever $HOME happens to be inside the container, which can differ
+# between base images. Setting it explicitly ensures entrypoint.sh writes the
+# config to exactly the path Codex will read.
+ENV CODEX_HOME="/home/eval/.codex"
 
 # ── API key placeholders — supply at runtime via -e or --env-file ─────────────
 #
@@ -294,10 +310,13 @@ ENV AUGMENT_DISABLE_AUTO_UPDATE="1"
 ENV RUST_LOG="warn"
 
 # ── Entrypoint ────────────────────────────────────────────────────────────────
-# Default: print built-in agent profiles and exit.
+# entrypoint.sh configures agent CLIs from env vars (e.g. writes the Codex
+# config file from OPENAI_API_KEY), then exec-s gestura-eval with all args.
+#
+# Default CMD: print built-in agent profiles and exit.
 # Override CMD or pass args directly:
-#   podman run gestura-eval --agent gestura-full
-#   podman run gestura-eval suite --families gestura,claude-code --output-dir /reports
-#   podman run gestura-eval report --from /reports --format html --output-dir /reports
-ENTRYPOINT ["gestura-eval"]
+#   docker run gestura-eval --agent gestura-full
+#   docker run gestura-eval suite --families gestura,claude-code --output-dir /reports
+#   docker run gestura-eval report --from /reports --format html --output-dir /reports
+ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
 CMD ["--list-agents"]

@@ -48,6 +48,7 @@ GESTURA_DISABLE_KEYCHAIN  = "1"
 GESTURA_PERMISSION_LEVEL  = "full"
 GESTURA_TOOLS_ENABLED     = "true"
 GESTURA_SHELL_ENABLED     = "true"
+ANTHROPIC_MODEL           = "claude-sonnet-4-6"
 
 [thresholds]
 min_variation_score    = 0.85

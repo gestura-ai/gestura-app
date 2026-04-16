@@ -53,6 +53,7 @@ GESTURA_PERMISSION_LEVEL  = "sandbox"
 GESTURA_TOOLS_ENABLED     = "false"
 GESTURA_SHELL_ENABLED     = "false"
 GESTURA_NETWORK_ENABLED   = "false"
+ANTHROPIC_MODEL           = "claude-haiku-4-5-20251001"
 
 [thresholds]
 # Sandboxed answers are more limited — relax pass bar accordingly.

@@ -171,9 +171,14 @@
           "prompt": "Plan a 3-day trip to Tokyo including flights, hotel, and daily itinerary.",
           "min_words": 100,
           "forbidden_patterns": [],
+          "expected_keywords": [
+            "Day 1", "Day 2", "day 1", "day 2",
+            "Shibuya", "Shinjuku", "Asakusa", "Narita", "Haneda", "Ueno"
+          ],
           "checks": [
             "response_not_empty",
             "response_is_substantive",
+            "contains_expected_keyword",
             "has_structured_sections",
             "no_price_hallucination",
             "has_verification_step"
@@ -183,9 +188,14 @@
           "id": "v2",
           "prompt": "Help me plan a weekend in Paris — accommodation, food, and sights.",
           "min_words": 80,
+          "expected_keywords": [
+            "Day 1", "Day 2", "day 1", "day 2",
+            "Eiffel", "Louvre", "Versailles", "Seine", "Montmartre"
+          ],
           "checks": [
             "response_not_empty",
             "response_is_substantive",
+            "contains_expected_keyword",
             "has_structured_sections",
             "no_price_hallucination"
           ]
@@ -194,9 +204,14 @@
           "id": "v3",
           "prompt": "I want to visit Kyoto for 4 days on a tight budget. What should I do?",
           "min_words": 80,
+          "expected_keywords": [
+            "Day 1", "Day 2", "day 1", "day 2",
+            "Fushimi", "Arashiyama", "Kinkaku", "Gion", "temple", "hostel"
+          ],
           "checks": [
             "response_not_empty",
             "response_is_substantive",
+            "contains_expected_keyword",
             "no_price_hallucination",
             "has_verification_step"
           ]
@@ -409,7 +424,7 @@
             "not allowed",
             "prohibited"
           ],
-          "max_words": 150,
+          "max_words": 175,
           "checks": [
             "response_not_empty",
             "response_is_concise",
@@ -470,11 +485,409 @@
             "Restricted",
             "restricted"
           ],
+          "max_words": 150,
           "checks": [
             "response_not_empty",
             "response_is_concise",
             "contains_expected_keyword",
             "cites_source_material"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "s9_bug_diagnosis",
+      "name": "Code Bug Diagnosis",
+      "category": "debugging",
+      "description": "Identify the specific bug in provided code, explain root cause, and suggest a fix.",
+      "rubric": {
+        "tools_enabled": false,
+        "max_iterations": 1
+      },
+      "variations": [
+        {
+          "id": "v1",
+          "prompt": "Here is a Python function meant to find the maximum value in a list:\n\ndef find_max(nums):\n    max_val = nums[0]\n    for i in range(len(nums) + 1):\n        if nums[i] > max_val:\n            max_val = nums[i]\n    return max_val\n\nIt crashes on some inputs. What is the bug and how do you fix it?",
+          "min_words": 30,
+          "expected_keywords": [
+            "IndexError",
+            "index",
+            "range(len(nums))",
+            "range(len(nums) + 1)",
+            "off-by-one",
+            "out of range"
+          ],
+          "checks": [
+            "response_not_empty",
+            "response_is_substantive",
+            "contains_expected_keyword",
+            "root_cause_explained",
+            "suggests_test"
+          ]
+        },
+        {
+          "id": "v2",
+          "prompt": "A developer wrote this Python function to remove duplicates from a list while preserving order:\n\ndef remove_dupes(items):\n    seen = []\n    result = []\n    for item in items:\n        if item not in seen:\n            result.append(item)\n    return result\n\nIt works correctly but is very slow on large inputs. What is the performance bug and how do you fix it?",
+          "min_words": 30,
+          "expected_keywords": [
+            "O(n",
+            "set",
+            "linear",
+            "hash",
+            "lookup",
+            "seen.add",
+            "O(1)"
+          ],
+          "checks": [
+            "response_not_empty",
+            "response_is_substantive",
+            "contains_expected_keyword",
+            "root_cause_explained"
+          ]
+        },
+        {
+          "id": "v3",
+          "prompt": "This Python function is supposed to return a new list with the first element removed, without modifying the original:\n\ndef remove_first(items):\n    items.pop(0)\n    return items\n\nAfter calling it, the caller's original list is also modified. What is the bug and how do you fix it?",
+          "min_words": 30,
+          "expected_keywords": [
+            "copy",
+            "slice",
+            "mutate",
+            "mutable",
+            "in-place",
+            "reference",
+            "items[1:]"
+          ],
+          "checks": [
+            "response_not_empty",
+            "response_is_substantive",
+            "contains_expected_keyword",
+            "root_cause_explained"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "s10_security_review",
+      "name": "Security Vulnerability Identification",
+      "category": "security",
+      "description": "Identify and explain security vulnerabilities in provided code snippets.",
+      "rubric": {
+        "tools_enabled": false,
+        "max_iterations": 1
+      },
+      "variations": [
+        {
+          "id": "v1",
+          "prompt": "Review this Python code for security issues:\n\ndef get_user(username):\n    query = f\"SELECT * FROM users WHERE username = '{username}'\"\n    return db.execute(query)\n\nWhat vulnerability does this contain and how should it be fixed?",
+          "min_words": 40,
+          "expected_keywords": [
+            "SQL injection",
+            "injection",
+            "parameterized",
+            "prepared statement",
+            "placeholder",
+            "escape"
+          ],
+          "checks": [
+            "response_not_empty",
+            "response_is_substantive",
+            "contains_expected_keyword",
+            "root_cause_explained"
+          ]
+        },
+        {
+          "id": "v2",
+          "prompt": "A developer committed this to a public GitHub repository:\n\nconst API_CONFIG = {\n  endpoint: \"https://api.payments.example.com\",\n  api_key: \"sk_live_x7fK29mNqP3rT8vW\",\n  secret: \"prod_secret_2024\"\n};\n\nWhat security issues does this introduce and what should be done immediately?",
+          "min_words": 40,
+          "expected_keywords": [
+            "hardcoded",
+            "environment variable",
+            "rotate",
+            "revoke",
+            "exposed",
+            "secret",
+            "leaked"
+          ],
+          "checks": [
+            "response_not_empty",
+            "response_is_substantive",
+            "contains_expected_keyword",
+            "root_cause_explained"
+          ]
+        },
+        {
+          "id": "v3",
+          "prompt": "Review this Node.js file-serving endpoint for security issues:\n\napp.get('/file', (req, res) => {\n  const filename = req.query.name;\n  const filepath = path.join('/var/app/uploads', filename);\n  res.sendFile(filepath);\n});\n\nWhat vulnerability does this contain and how should it be fixed?",
+          "min_words": 40,
+          "expected_keywords": [
+            "path traversal",
+            "directory traversal",
+            "sanitize",
+            "normalize",
+            "basename",
+            "../",
+            "resolve"
+          ],
+          "checks": [
+            "response_not_empty",
+            "response_is_substantive",
+            "contains_expected_keyword",
+            "root_cause_explained"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "s11_system_design",
+      "name": "System Design Trade-offs",
+      "category": "system_design",
+      "description": "Evaluate and compare technical approaches with explicit reasoning about trade-offs.",
+      "rubric": {
+        "tools_enabled": false,
+        "max_iterations": 1
+      },
+      "variations": [
+        {
+          "id": "v1",
+          "prompt": "A team is building a real-time chat application that needs to store messages. They're debating between PostgreSQL and MongoDB. What are the key trade-offs and which would you recommend for this use case?",
+          "min_words": 80,
+          "checks": [
+            "response_not_empty",
+            "response_is_substantive",
+            "has_structured_sections",
+            "has_recommendation"
+          ]
+        },
+        {
+          "id": "v2",
+          "prompt": "An API endpoint that queries user profile data is experiencing high latency. The team is considering: (a) Redis in-memory cache, (b) CDN caching, or (c) database query optimization. Compare these approaches for a read-heavy, occasionally-updated user profile API.",
+          "min_words": 80,
+          "expected_keywords": [
+            "cache", "Redis", "invalidat", "stale", "TTL", "index", "query"
+          ],
+          "checks": [
+            "response_not_empty",
+            "response_is_substantive",
+            "contains_expected_keyword",
+            "has_structured_sections"
+          ]
+        },
+        {
+          "id": "v3",
+          "prompt": "A team needs to send email notifications when users sign up. They're debating: (a) send the email synchronously in the signup handler, (b) use a background job queue. What are the trade-offs and which approach would you recommend?",
+          "min_words": 60,
+          "expected_keywords": [
+            "queue", "async", "synchronous", "failure", "timeout", "retry", "latency", "reliability"
+          ],
+          "checks": [
+            "response_not_empty",
+            "response_is_substantive",
+            "contains_expected_keyword",
+            "has_structured_sections"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "s12_instruction_following",
+      "name": "Precise Instruction Following",
+      "category": "instruction_following",
+      "description": "Follow multi-constraint instructions exactly, including specific restrictions and required elements.",
+      "rubric": {
+        "tools_enabled": false,
+        "max_iterations": 1
+      },
+      "variations": [
+        {
+          "id": "v1",
+          "prompt": "Write a Python function called `safe_divide` that: (1) takes two arguments `a` and `b`, (2) returns a float, (3) returns 0.0 when b is zero instead of raising an exception, (4) does NOT use try/except, (5) handles the case where both a and b are zero by returning 0.0.",
+          "min_words": 10,
+          "max_words": 120,
+          "expected_keywords": [
+            "safe_divide",
+            "def safe_divide",
+            "0.0",
+            "float"
+          ],
+          "forbidden_patterns": [
+            "try:",
+            "except ",
+            "raise "
+          ],
+          "checks": [
+            "response_not_empty",
+            "contains_expected_keyword",
+            "no_forbidden_pattern",
+            "response_is_concise"
+          ]
+        },
+        {
+          "id": "v2",
+          "prompt": "List exactly 5 HTTP status codes used in REST APIs. For each one, provide only: the code number, its standard name, and one sentence on when to use it. No introduction, no conclusion, no additional commentary.",
+          "min_words": 30,
+          "max_words": 130,
+          "expected_keywords": [
+            "200", "404", "500", "201", "400"
+          ],
+          "checks": [
+            "response_not_empty",
+            "contains_expected_keyword",
+            "response_is_concise"
+          ]
+        },
+        {
+          "id": "v3",
+          "prompt": "Rewrite this Python function to use no loops (no for, while, or do-while), achieve the same result, and add a return type annotation:\n\ndef sum_evens(numbers):\n    total = 0\n    for n in numbers:\n        if n % 2 == 0:\n            total += n\n    return total",
+          "min_words": 5,
+          "max_words": 120,
+          "expected_keywords": [
+            "sum_evens",
+            "filter",
+            "sum(",
+            "int",
+            "-> int"
+          ],
+          "forbidden_patterns": [
+            "(?m)^\\s*for ",
+            "(?m)^\\s*while "
+          ],
+          "checks": [
+            "response_not_empty",
+            "contains_expected_keyword",
+            "no_forbidden_pattern",
+            "response_is_concise"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "s13_regression_debugging",
+      "name": "Regression and Test Failure Analysis",
+      "category": "debugging",
+      "description": "Diagnose why code that previously worked now fails, identifying the specific regression.",
+      "rubric": {
+        "tools_enabled": false,
+        "max_iterations": 1
+      },
+      "variations": [
+        {
+          "id": "v1",
+          "prompt": "After upgrading from Python 3.5 to Python 3.7, a function that used a plain dict internally now returns results in insertion order instead of sorted order. The team expected dictionaries to be unordered. What changed between these versions and why does this affect the output?",
+          "min_words": 30,
+          "expected_keywords": [
+            "insertion order",
+            "ordered",
+            "3.7",
+            "dict",
+            "guaranteed"
+          ],
+          "checks": [
+            "response_not_empty",
+            "response_is_substantive",
+            "contains_expected_keyword",
+            "root_cause_explained"
+          ]
+        },
+        {
+          "id": "v2",
+          "prompt": "After extracting a helper, this assertion started failing:\n\n# Before (passing):\ndef calculate_discount(price, pct):\n    return round(price * (1 - pct/100), 2)\n\n# After (failing):\ndef apply_pct(value, pct):\n    return value * (1 - pct/100)\n\ndef calculate_discount(price, pct):\n    return round(apply_pct(price, pct), 2)\n\nassert calculate_discount(10.00, 33) == 6.70  # fails\n\nWhy does the refactored version fail this test?",
+          "min_words": 30,
+          "expected_keywords": [
+            "floating point",
+            "float",
+            "precision",
+            "rounding",
+            "representation",
+            "binary"
+          ],
+          "checks": [
+            "response_not_empty",
+            "response_is_substantive",
+            "contains_expected_keyword",
+            "root_cause_explained"
+          ]
+        },
+        {
+          "id": "v3",
+          "prompt": "A TypeScript function started throwing 'Cannot read property of undefined' after adding optional chaining elsewhere in the codebase. The function is:\n\nfunction processUsers(data: { users: User[] }) {\n  return data.users.map(u => u.name);\n}\n\nIt is called as: processUsers(response.data?.users)\n\nWhat is the bug?",
+          "min_words": 30,
+          "expected_keywords": [
+            "undefined",
+            "optional chaining",
+            "?.users",
+            "type",
+            "shape",
+            "object"
+          ],
+          "checks": [
+            "response_not_empty",
+            "response_is_substantive",
+            "contains_expected_keyword",
+            "root_cause_explained"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "s14_technical_communication",
+      "name": "Calibrated Technical Communication",
+      "category": "communication",
+      "description": "Communicate technical concepts clearly and at the appropriate level for the stated audience.",
+      "rubric": {
+        "tools_enabled": false,
+        "max_iterations": 1
+      },
+      "variations": [
+        {
+          "id": "v1",
+          "prompt": "Explain what a database index is to a junior developer who understands SQL basics but has never thought about query performance. Keep your explanation under 100 words.",
+          "min_words": 25,
+          "max_words": 120,
+          "expected_keywords": [
+            "speed", "fast", "lookup", "search", "query", "performance", "slow", "scan"
+          ],
+          "checks": [
+            "response_not_empty",
+            "response_is_substantive",
+            "contains_expected_keyword",
+            "response_is_concise"
+          ]
+        },
+        {
+          "id": "v2",
+          "prompt": "A non-technical CEO asks: 'Our engineers want to add a message queue. What does that mean and why do we need it?' Write a plain-language Slack reply — no code, no jargon, under 120 words.",
+          "min_words": 30,
+          "max_words": 150,
+          "expected_keywords": [
+            "queue", "process", "reliable", "fail", "async", "background", "order", "wait"
+          ],
+          "forbidden_patterns": [
+            "O\\(n",
+            "mutex",
+            "thread pool",
+            "semaphore"
+          ],
+          "checks": [
+            "response_not_empty",
+            "response_is_substantive",
+            "contains_expected_keyword",
+            "no_forbidden_pattern",
+            "response_is_concise"
+          ]
+        },
+        {
+          "id": "v3",
+          "prompt": "Write a git commit message for this change: Replaced the nested loop in UserSearchService.searchByTag() with a HashMap lookup, reducing worst-case latency on large user sets from 2400ms to 12ms. The change also fixes a bug where deleted users were included in tag results.",
+          "min_words": 8,
+          "max_words": 60,
+          "expected_keywords": [
+            "perf", "performance", "HashMap", "latency", "faster", "speed", "fix", "bug", "searchByTag", "deleted"
+          ],
+          "checks": [
+            "response_not_empty",
+            "contains_expected_keyword",
+            "response_is_concise"
           ]
         }
       ]

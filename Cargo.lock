@@ -3012,6 +3012,7 @@ dependencies = [
  "console",
  "indicatif",
  "regex",
+ "reqwest",
  "serde",
  "serde_json",
  "toml 0.8.2",

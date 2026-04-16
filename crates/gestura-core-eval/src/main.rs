@@ -171,6 +171,13 @@ struct SuiteArgs {
     /// Example: --variation-delay-ms 3000  (3 s between calls ≈ safe for most tiers)
     #[arg(long, value_name = "MS")]
     variation_delay_ms: Option<u64>,
+
+    /// Number of times each variation is run. Scores are averaged; pass/fail
+    /// uses majority vote (more than half of trials must pass).
+    /// Overrides `execution.trials` in every profile.
+    /// Example: --trials 3  (recommended for statistically reliable benchmarks)
+    #[arg(long, value_name = "N")]
+    trials: Option<u32>,
 }
 
 // ─── `report` args ────────────────────────────────────────────────────────────
@@ -353,6 +360,7 @@ fn run_single_agent(args: Cli, suite: EvalScenarioSuite) {
         dry_run: args.dry_run,
         bin_override: args.bin_override,
         progress: Some(single_agent_progress),
+        ..CliRunnerOptions::new()
     };
 
     let bin = opts.eval_config.resolve_bin(opts.bin_override.as_ref());
@@ -413,11 +421,16 @@ fn run_suite(args: SuiteArgs, suite: EvalScenarioSuite) {
         }
     };
 
-    // Apply CLI delay override to every profile so the caller doesn't have to
-    // edit TOML files just to add a throttle.
+    // Apply CLI overrides to every profile so the caller doesn't have to
+    // edit TOML files for common runtime tuning.
     if let Some(delay_ms) = args.variation_delay_ms {
         for cfg in &mut profiles {
             cfg.execution.delay_between_variations_ms = delay_ms;
+        }
+    }
+    if let Some(trials) = args.trials {
+        for cfg in &mut profiles {
+            cfg.execution.trials = trials.max(1);
         }
     }
 
@@ -463,6 +476,9 @@ fn run_suite(args: SuiteArgs, suite: EvalScenarioSuite) {
         }
         if !args.scenario.is_empty() {
             println!("  Scenarios: {}", args.scenario.join(", ").cyan());
+        }
+        if let Some(t) = args.trials.filter(|&n| n > 1) {
+            println!("  Trials   : {} per variation", t.to_string().yellow());
         }
         if args.dry_run {
             println!("  Run      : {}", "DRY-RUN (no subprocess calls)".yellow());
