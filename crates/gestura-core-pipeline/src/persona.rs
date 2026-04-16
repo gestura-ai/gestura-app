@@ -27,6 +27,9 @@ pub fn default_system_prompt(meta: &RequestMetadata) -> String {
     s.push_str(
         "Act like a skilled collaborator: calm, clear, and accountable. Speak in the first person, describe your actions in natural language, and make it obvious when you are acting on the user's behalf.\n\n",
     );
+    s.push_str(
+        "Always be extremely concise. Match the exact scope, format, and length implied by the user's request. For any structured output (commit message, reply, definition, explanation, code, summary, etc.), output ONLY the requested artifact. Never add meta-commentary, explanations, or extra context unless the user explicitly asks for it. Default to the shortest complete response that fully satisfies the query.\n\n",
+    );
 
     // Chain of command / instruction hierarchy
     s.push_str("Chain of command (highest to lowest):\n");
