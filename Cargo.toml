@@ -54,10 +54,10 @@ default-members = [
 version = "0.11.0"
 edition = "2024"
 license = "LicenseRef-Gestura-Prosperity-1.0"
-authors = ["Gestura LLC <dev@gestura.ai>"]
+authors = ["Gestura AI LLC <dev@gestura.ai>"]
 repository = "https://github.com/gestura-ai/gestura-app"
 homepage = "https://gestura.ai"
-description = "Voice-first AI assistant with GUI and CLI interfaces"
+description = "Intent-first AI assistant with GUI and CLI interfaces"
 
 [workspace.dependencies]
 # Core dependencies shared across crates
