@@ -311,27 +311,26 @@ impl PersonalizedRecommendationEngine {
                         confidence += 0.1;
                     }
                 }
-                RecommendationCondition::ErrorRateAbove { threshold } => {
-                    if user_pattern.session_patterns.error_rate > *threshold {
-                        conditions_met += 1;
-                        confidence += 0.15;
-                    }
+                RecommendationCondition::ErrorRateAbove { threshold }
+                    if user_pattern.session_patterns.error_rate > *threshold =>
+                {
+                    conditions_met += 1;
+                    confidence += 0.15;
                 }
-                RecommendationCondition::SessionDurationBelow { threshold_minutes } => {
+                RecommendationCondition::SessionDurationBelow { threshold_minutes }
                     if user_pattern
                         .session_patterns
                         .average_session_duration_minutes
-                        < *threshold_minutes
-                    {
-                        conditions_met += 1;
-                        confidence += 0.1;
-                    }
+                        < *threshold_minutes =>
+                {
+                    conditions_met += 1;
+                    confidence += 0.1;
                 }
-                RecommendationCondition::HasNotUsedFeature { feature } => {
-                    if !user_pattern.feature_usage.contains_key(feature) {
-                        conditions_met += 1;
-                        confidence += 0.2;
-                    }
+                RecommendationCondition::HasNotUsedFeature { feature }
+                    if !user_pattern.feature_usage.contains_key(feature) =>
+                {
+                    conditions_met += 1;
+                    confidence += 0.2;
                 }
                 RecommendationCondition::UsesFeatureFrequently { feature, min_usage } => {
                     let usage = user_pattern.feature_usage.get(feature).unwrap_or(&0);
