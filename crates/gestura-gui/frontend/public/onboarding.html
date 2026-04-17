@@ -1960,8 +1960,6 @@
                         </div>
                     </div>
                     <div id="llmQuickSummary" class="inline-status"></div>
-                    <div id="llmConfig"></div>
-                    <div id="llmValidationStatus" class="inline-status provider-validation-status"></div>
                     <div id="llmAdvancedPanel" style="display:none; margin-top:0.35rem;">
                         <div class="config-section compact-inline-field">
                             <label for="llmProvider">AI provider</label>
@@ -1974,6 +1972,8 @@
                             </select>
                         </div>
                     </div>
+                    <div id="llmConfig"></div>
+                    <div id="llmValidationStatus" class="inline-status provider-validation-status"></div>
                 `
             },
             {
@@ -2663,7 +2663,7 @@
                 try { await loadMicrophoneDevices(); } catch (e) { console.error('[Onboarding] loadMicrophoneDevices failed:', e); }
             }
             if (step.id === 'llm') {
-                try { await loadLLMConfig(); } catch (e) { console.error('[Onboarding] loadLLMConfig failed:', e); }
+                try { await loadLLMConfig({ initialLoad: true }); } catch (e) { console.error('[Onboarding] loadLLMConfig failed:', e); }
             }
             if (step.id === 'default-tools') {
                 try { await loadDefaultToolsStep(); } catch (e) { console.error('[Onboarding] loadDefaultToolsStep failed:', e); }
@@ -4977,6 +4977,8 @@
 
             if (!apiKey && !hasKeychainKey) {
                 setCloudSelectedModel('');
+                const selectContainer = document.getElementById('cloudModelSelectContainer');
+                if (selectContainer) selectContainer.style.display = 'none';
                 setInlineStatusMessage(statusElementId, `Add a ${llmApiKeyLabel(provider)} to verify the connection.`, 'warning');
                 return '';
             }
@@ -4989,20 +4991,39 @@
                 }
 
                 const models = await invoke(listCmd, { api_key: apiKey });
-                const selectedModel = selectPreferredCloudModelId(models, onboardingResolvedCloudModel);
+                const preferredModel = selectPreferredCloudModelId(models, onboardingResolvedCloudModel);
 
-                if (!selectedModel) {
+                if (!preferredModel) {
                     setCloudSelectedModel('');
+                    const selectContainer = document.getElementById('cloudModelSelectContainer');
+                    if (selectContainer) selectContainer.style.display = 'none';
                     setInlineStatusMessage(statusElementId, 'No models were returned for this provider.', 'warning');
                     return '';
                 }
 
-                setCloudSelectedModel(selectedModel);
-                setInlineStatusMessage(statusElementId, `✓ Verified — Gestura will use ${selectedModel} automatically.`, 'success');
-                return selectedModel;
+                const modelIds = (Array.isArray(models) ? models : [])
+                    .map(m => String(m?.id || m?.name || '').trim())
+                    .filter(Boolean);
+
+                const selectEl = document.getElementById('cloudModelSelect');
+                const selectContainer = document.getElementById('cloudModelSelectContainer');
+                if (selectEl && selectContainer) {
+                    selectEl.innerHTML = modelIds.map(id =>
+                        `<option value="${id}"${id === preferredModel ? ' selected' : ''}>${id}</option>`
+                    ).join('');
+                    selectEl.value = preferredModel;
+                    selectEl.onchange = () => setCloudSelectedModel(selectEl.value);
+                    selectContainer.style.display = '';
+                }
+
+                setCloudSelectedModel(preferredModel);
+                setInlineStatusMessage(statusElementId, '');
+                return preferredModel;
             } catch (error) {
                 console.error(`Failed to fetch ${provider} models:`, error);
                 setCloudSelectedModel('');
+                const selectContainer = document.getElementById('cloudModelSelectContainer');
+                if (selectContainer) selectContainer.style.display = 'none';
                 const errorMessage = error?.message || String(error);
                 setInlineStatusMessage(statusElementId, `We could not verify ${provider} models yet. ${errorMessage}`, 'error');
                 return '';
@@ -5050,8 +5071,11 @@
                         <div class="help-text" style="margin-top:0.35rem;">${llmApiKeyHelpText(provider)}</div>
                         <div class="help-text" style="margin-top:0.25rem;">Keys are stored securely in your OS keychain. Leave blank to keep your existing key.</div>
                     </div>
-                    <div class="help-text" style="margin-top:0.55rem;">Gestura will verify your key and choose an available model automatically.</div>
-                    <div id="cloudModelStatus" class="inline-status" style="margin-top:0.35rem;"></div>
+                    <div id="cloudModelStatus" class="inline-status" style="margin-top:0.55rem;"></div>
+                    <div id="cloudModelSelectContainer" style="display:none;margin-top:0.55rem;">
+                        <label for="cloudModelSelect" style="display:block;margin-bottom:0.3rem;font-size:0.85rem;font-weight:500;">Default Model</label>
+                        <select id="cloudModelSelect" class="onb-input"></select>
+                    </div>
                 `;
             } else {
                 setResolvedOllamaModel('');
@@ -5111,49 +5135,32 @@
         }
 
         // Load LLM config from saved settings and render
-        async function loadLLMConfig() {
+        async function loadLLMConfig({ initialLoad = false } = {}) {
             try {
                 const config = await invoke('get_config');
-                const llmPrimary = config?.llm?.primary || 'ollama';
                 const ollamaConfig = config?.llm?.ollama;
-                const hasSavedCloudConfig = Boolean(
-                    config?.llm?.openai ||
-                    config?.llm?.anthropic ||
-                    config?.llm?.gemini ||
-                    config?.llm?.grok
-                );
-                const shouldPreferSimpleLocalOnboarding = llmPrimary === 'anthropic' && !hasSavedCloudConfig && !ollamaConfig;
-                const effectivePrimary = shouldPreferSimpleLocalOnboarding ? 'ollama' : llmPrimary;
-                onboardingLlmMode = inferLlmSetupMode(effectivePrimary);
 
-                // Set the provider dropdown
-                const providerSelect = document.getElementById('llmProvider');
-                if (providerSelect) {
-                    providerSelect.value = effectivePrimary;
-                }
-                syncLlmQuickSetupUi(effectivePrimary);
-
-                const savedCloudModel = (config?.llm?.[effectivePrimary]?.model || '').trim();
-
-                // Render config UI without auto-fetch so we can hydrate saved values first.
-                renderLLMConfig({
-                    fetchOllamaModels: false,
-                    fetchCloudModels: false,
-                    preferredCloudModel: savedCloudModel,
-                });
-
-                // Populate Ollama fields if applicable.
-                if (effectivePrimary === 'ollama') {
+                if (initialLoad) {
+                    // Always open the LLM step in simple/Ollama mode on first load.
+                    syncLlmQuickSetupUi('ollama');
                     onboardingOllamaEndpoint = (ollamaConfig?.base_url || '').trim() || DEFAULT_OLLAMA_BASE_URL;
                     setResolvedOllamaModel((ollamaConfig?.model || '').trim());
-                    try {
-                        await fetchOllamaModels();
-                    } catch (_) { }
-                }
-
-                if (effectivePrimary === 'openai' || effectivePrimary === 'anthropic' || effectivePrimary === 'gemini' || effectivePrimary === 'grok') {
-                    setCloudSelectedModel(savedCloudModel);
-                    await fetchCloudModels(effectivePrimary);
+                    renderLLMConfig({ fetchOllamaModels: false, fetchCloudModels: false });
+                    try { await fetchOllamaModels(); } catch (_) { }
+                } else {
+                    // Re-hydration after a provider change: respect current mode/provider.
+                    const provider = document.getElementById('llmProvider')?.value || 'ollama';
+                    const savedCloudModel = (config?.llm?.[provider]?.model || '').trim();
+                    if (provider === 'ollama') {
+                        onboardingOllamaEndpoint = (ollamaConfig?.base_url || '').trim() || DEFAULT_OLLAMA_BASE_URL;
+                        setResolvedOllamaModel((ollamaConfig?.model || '').trim());
+                        renderLLMConfig({ fetchOllamaModels: false, fetchCloudModels: false });
+                        try { await fetchOllamaModels(); } catch (_) { }
+                    } else {
+                        renderLLMConfig({ fetchOllamaModels: false, fetchCloudModels: false, preferredCloudModel: savedCloudModel });
+                        setCloudSelectedModel(savedCloudModel);
+                        await fetchCloudModels(provider);
+                    }
                 }
             } catch (error) {
                 console.error('Error loading LLM config:', error);

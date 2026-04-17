@@ -25,7 +25,8 @@ describe('public onboarding workflow', () => {
     expect(onboardingHtml).toContain('OLLAMA_AGENTIC_MODEL_MARKERS');
     expect(onboardingHtml).toContain('isAgenticOllamaModelName');
     expect(onboardingHtml).not.toContain('id="ollamaModel"');
-    expect(onboardingHtml).not.toContain('id="cloudModelSelect"');
+    expect(onboardingHtml).toContain('id="cloudModelSelect"');
+    expect(onboardingHtml).toContain('id="cloudModelSelectContainer"');
   });
 
   it('keeps tools and knowledge simple-first while preserving advanced flows', () => {
