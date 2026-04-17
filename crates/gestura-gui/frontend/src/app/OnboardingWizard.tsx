@@ -9,6 +9,15 @@ import { registerConsent } from '../services/tauri/consent';
 import { pairRing as pairRingIpc, scanForRings as scanForRingsIpc } from '../services/tauri/ring';
 import { completeOnboarding } from '../services/tauri/appLifecycle';
 import { testVoice } from '../services/tauri/voice';
+import {
+  getApiKey,
+  listAnthropicModels,
+  listGeminiModels,
+  listGrokModels,
+  listOllamaModels,
+  listOpenAiModels,
+  updateLlmProvider,
+} from '../services/tauri/agent';
 import { Button } from '../shared/components/Button';
 import { FormGroup } from '../shared/components/FormGroup';
 
@@ -280,6 +289,275 @@ const VoiceSetupStep: React.FC<OnboardingStepProps> = ({ onPrevious, onComplete 
   );
 };
 
+interface ProviderState {
+  apiKey: string;
+  baseUrl: string;
+  model: string;
+  models: Array<{ id: string; label: string }>;
+  modelsLoading: boolean;
+  modelsError: boolean;
+}
+
+type ProvidersState = Record<string, ProviderState>;
+
+const CLOUD_PROVIDERS = [
+  { id: 'openai', name: 'OpenAI', placeholder: 'sk-...' },
+  { id: 'anthropic', name: 'Anthropic', placeholder: 'sk-ant-...' },
+  { id: 'gemini', name: 'Gemini (Google)', placeholder: 'AIza...' },
+  { id: 'grok', name: 'Grok (xAI)', placeholder: 'xai-...' },
+] as const;
+
+const parseModelOption = (model: unknown): { id: string; label: string } | null => {
+  if (typeof model === 'string' && model.length > 0) return { id: model, label: model };
+  if (model && typeof model === 'object') {
+    const entry = model as Record<string, unknown>;
+    const id =
+      (typeof entry.id === 'string' && entry.id.length > 0 ? entry.id : null)
+      ?? (typeof entry.name === 'string' && entry.name.length > 0 ? entry.name : null)
+      ?? '';
+    if (!id) return null;
+    const label =
+      (typeof entry.name === 'string' && entry.name.length > 0 ? entry.name : null) ?? id;
+    return { id, label };
+  }
+  return null;
+};
+
+const makeEmptyProvider = (baseUrl = ''): ProviderState => ({
+  apiKey: '',
+  baseUrl,
+  model: '',
+  models: [],
+  modelsLoading: false,
+  modelsError: false,
+});
+
+const LlmSetupStep: React.FC<OnboardingStepProps> = ({ onPrevious, onComplete }) => {
+  const [providers, setProviders] = useState<ProvidersState>({
+    openai: makeEmptyProvider(),
+    anthropic: makeEmptyProvider(),
+    gemini: makeEmptyProvider(),
+    grok: makeEmptyProvider(),
+    ollama: makeEmptyProvider('http://localhost:11434'),
+  });
+  const [saving, setSaving] = useState(false);
+
+  const updateProvider = (id: string, patch: Partial<ProviderState>) => {
+    setProviders((prev) => ({ ...prev, [id]: { ...prev[id], ...patch } }));
+  };
+
+  const fetchModels = async (providerId: string, apiKey: string) => {
+    updateProvider(providerId, { modelsLoading: true, modelsError: false });
+    try {
+      let raw: unknown[] = [];
+      if (providerId === 'anthropic') raw = await listAnthropicModels(apiKey);
+      else if (providerId === 'openai') raw = await listOpenAiModels(apiKey);
+      else if (providerId === 'gemini') raw = await listGeminiModels(apiKey);
+      else if (providerId === 'grok') raw = await listGrokModels(apiKey);
+
+      const models = raw.map(parseModelOption).filter((m): m is { id: string; label: string } => m !== null);
+      setProviders((prev) => ({
+        ...prev,
+        [providerId]: {
+          ...prev[providerId],
+          models,
+          model: prev[providerId].model || models[0]?.id || '',
+          modelsLoading: false,
+        },
+      }));
+    } catch {
+      updateProvider(providerId, { modelsLoading: false, modelsError: true, models: [] });
+    }
+  };
+
+  const fetchOllamaModels = async (endpoint: string) => {
+    updateProvider('ollama', { modelsLoading: true, modelsError: false });
+    try {
+      const raw = await listOllamaModels(endpoint);
+      const models = raw.map(parseModelOption).filter((m): m is { id: string; label: string } => m !== null);
+      setProviders((prev) => ({
+        ...prev,
+        ollama: {
+          ...prev.ollama,
+          models,
+          model: prev.ollama.model || models[0]?.id || '',
+          modelsLoading: false,
+        },
+      }));
+    } catch {
+      updateProvider('ollama', { modelsLoading: false, modelsError: true, models: [] });
+    }
+  };
+
+  useEffect(() => {
+    const loadExisting = async () => {
+      await Promise.all(
+        CLOUD_PROVIDERS.map(async ({ id }) => {
+          const key = await getApiKey(id).catch(() => null);
+          if (key) {
+            setProviders((prev) => ({ ...prev, [id]: { ...prev[id], apiKey: key } }));
+            await fetchModels(id, key);
+          }
+        }),
+      );
+      await fetchOllamaModels('http://localhost:11434');
+    };
+    void loadExisting();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const handleApiKeyBlur = async (providerId: string) => {
+    const key = providers[providerId].apiKey.trim();
+    if (!key) {
+      updateProvider(providerId, { models: [], model: '' });
+      return;
+    }
+    await fetchModels(providerId, key);
+  };
+
+  const handleOllamaEndpointBlur = async () => {
+    const endpoint = providers.ollama.baseUrl.trim() || 'http://localhost:11434';
+    await fetchOllamaModels(endpoint);
+  };
+
+  const handleSave = async () => {
+    setSaving(true);
+    try {
+      for (const { id } of CLOUD_PROVIDERS) {
+        const state = providers[id];
+        if (!state.apiKey.trim()) continue;
+        const settings: Record<string, unknown> = { api_key: state.apiKey.trim() };
+        if (state.model) settings.model = state.model;
+        if (state.baseUrl) settings.base_url = state.baseUrl;
+        await updateLlmProvider(id, settings);
+      }
+
+      const ollama = providers.ollama;
+      if (ollama.model) {
+        await updateLlmProvider('ollama', {
+          base_url: ollama.baseUrl || 'http://localhost:11434',
+          model: ollama.model,
+        });
+      }
+
+      onComplete({ providers });
+    } catch (error) {
+      console.error('[LlmSetupStep] Failed to save provider settings:', error);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className="onboarding-step">
+      <h2>AI Provider Setup</h2>
+      <p>Configure API keys for the AI providers you want to use. You can skip and set these up later in Settings.</p>
+
+      {CLOUD_PROVIDERS.map(({ id, name, placeholder }) => {
+        const state = providers[id];
+        const hasKey = state.apiKey.trim().length > 0;
+        return (
+          <div key={id} className="llm-provider-section">
+            <h3>{name}</h3>
+            <FormGroup label="API Key">
+              <input
+                type="password"
+                value={state.apiKey}
+                placeholder={placeholder}
+                onChange={(e) => updateProvider(id, { apiKey: e.target.value, models: [], model: '' })}
+                onBlur={() => void handleApiKeyBlur(id)}
+              />
+            </FormGroup>
+
+            {hasKey && (
+              <FormGroup label="Default Model">
+                {state.modelsLoading ? (
+                  <select disabled>
+                    <option>Loading models…</option>
+                  </select>
+                ) : state.modelsError ? (
+                  <p className="help-text" style={{ color: 'var(--color-danger, #f87171)' }}>
+                    Could not load models — check your API key.
+                  </p>
+                ) : state.models.length === 0 ? (
+                  <select disabled>
+                    <option>No models available</option>
+                  </select>
+                ) : (
+                  <select
+                    value={state.model}
+                    onChange={(e) => updateProvider(id, { model: e.target.value })}
+                  >
+                    {state.models.map((m) => (
+                      <option key={m.id} value={m.id}>{m.label}</option>
+                    ))}
+                  </select>
+                )}
+              </FormGroup>
+            )}
+          </div>
+        );
+      })}
+
+      <div className="llm-provider-section">
+        <h3>Ollama (Local)</h3>
+        <FormGroup label="Endpoint">
+          <input
+            type="text"
+            value={providers.ollama.baseUrl}
+            placeholder="http://localhost:11434"
+            onChange={(e) => updateProvider('ollama', { baseUrl: e.target.value, models: [], model: '' })}
+            onBlur={() => void handleOllamaEndpointBlur()}
+          />
+        </FormGroup>
+
+        {providers.ollama.baseUrl.trim().length > 0 && (
+          <FormGroup label="Default Model">
+            {providers.ollama.modelsLoading ? (
+              <select disabled>
+                <option>Loading models…</option>
+              </select>
+            ) : providers.ollama.modelsError ? (
+              <p className="help-text" style={{ color: 'var(--color-danger, #f87171)' }}>
+                Could not reach Ollama — check your endpoint.
+              </p>
+            ) : providers.ollama.models.length === 0 ? (
+              <select disabled>
+                <option>No models found</option>
+              </select>
+            ) : (
+              <select
+                value={providers.ollama.model}
+                onChange={(e) => updateProvider('ollama', { model: e.target.value })}
+              >
+                {providers.ollama.models.map((m) => (
+                  <option key={m.id} value={m.id}>{m.label}</option>
+                ))}
+              </select>
+            )}
+          </FormGroup>
+        )}
+      </div>
+
+      <div className="button-group">
+        <Button tone="secondary" onClick={onPrevious}>
+          Previous
+        </Button>
+        <Button tone="primary" onClick={() => void handleSave()} disabled={saving}>
+          {saving ? 'Saving…' : 'Save & Continue'}
+        </Button>
+      </div>
+
+      <p className="permissions-note">
+        <small>You can configure providers later in Settings.</small>
+        <button className="btn-link" onClick={() => onComplete({})}>
+          Skip for now
+        </button>
+      </p>
+    </div>
+  );
+};
+
 const RingSetupStep: React.FC<OnboardingStepProps> = ({ onNext, onPrevious, onComplete }) => {
   const [scanning, setScanning] = useState(false);
   const [rings, setRings] = useState<string[]>([]);
@@ -523,6 +801,13 @@ const OnboardingWizard: React.FC<{ onComplete: () => void | Promise<void> }> = (
       title: 'Voice Setup',
       description: 'Configure voice processing',
       component: VoiceSetupStep,
+      isComplete: false,
+    },
+    {
+      id: 'llm',
+      title: 'AI Providers',
+      description: 'Configure AI provider API keys and default models',
+      component: LlmSetupStep,
       isComplete: false,
     },
     {
