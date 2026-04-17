@@ -183,13 +183,13 @@ impl ThirdPartyIntegrationManager {
 
         // Validate endpoint URL for API integrations
         match integration.integration_type {
-            IntegrationType::RestApi | IntegrationType::GraphQL | IntegrationType::Webhook => {
-                if integration.config.endpoint_url.is_none() {
-                    return Err(AppError::Io(std::io::Error::new(
-                        std::io::ErrorKind::InvalidInput,
-                        "Endpoint URL required for API integrations",
-                    )));
-                }
+            IntegrationType::RestApi | IntegrationType::GraphQL | IntegrationType::Webhook
+                if integration.config.endpoint_url.is_none() =>
+            {
+                return Err(AppError::Io(std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    "Endpoint URL required for API integrations",
+                )));
             }
             _ => {}
         }
