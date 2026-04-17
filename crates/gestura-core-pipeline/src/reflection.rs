@@ -413,9 +413,21 @@ pub fn detect_missing_debug_structure(response: &str) -> bool {
     let lower = response.to_lowercase();
 
     let is_debug_context = [
-        "error", "bug", "fix", "crash", "failure", "exception", "traceback",
-        "stack trace", "panicked", "undefined", "null pointer", "segfault",
-        "diagnos", "debug", "root cause",
+        "error",
+        "bug",
+        "fix",
+        "crash",
+        "failure",
+        "exception",
+        "traceback",
+        "stack trace",
+        "panicked",
+        "undefined",
+        "null pointer",
+        "segfault",
+        "diagnos",
+        "debug",
+        "root cause",
     ]
     .iter()
     .any(|p| lower.contains(p));
@@ -425,15 +437,31 @@ pub fn detect_missing_debug_structure(response: &str) -> bool {
     }
 
     let has_root_cause = [
-        "root cause", "caused by", "because", "the reason", "this happens when",
-        "this is because", "due to", "stems from", "originates from",
+        "root cause",
+        "caused by",
+        "because",
+        "the reason",
+        "this happens when",
+        "this is because",
+        "due to",
+        "stems from",
+        "originates from",
     ]
     .iter()
     .any(|p| lower.contains(p));
 
     let has_verification = [
-        "verify", "verif", "to confirm", "run ", "check ", "test ", "validate",
-        "you can confirm", "to verify", "make sure", "ensure",
+        "verify",
+        "verif",
+        "to confirm",
+        "run ",
+        "check ",
+        "test ",
+        "validate",
+        "you can confirm",
+        "to verify",
+        "make sure",
+        "ensure",
     ]
     .iter()
     .any(|p| lower.contains(p));
