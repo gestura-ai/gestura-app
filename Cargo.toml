@@ -50,13 +50,13 @@ default-members = [
 ]
 
 [workspace.package]
-version = "0.11.0"
+version = "0.11.1"
 edition = "2024"
 license = "LicenseRef-Gestura-Prosperity-1.0"
-authors = ["Gestura LLC <dev@gestura.ai>"]
+authors = ["Gestura AI LLC <dev@gestura.ai>"]
 repository = "https://github.com/gestura-ai/gestura-app"
 homepage = "https://gestura.ai"
-description = "Voice-first AI assistant with GUI and CLI interfaces"
+description = "Intent-first AI assistant with GUI and CLI interfaces"
 
 [workspace.dependencies]
 # Core dependencies shared across crates
@@ -112,7 +112,7 @@ keyring = "2.3"
 nix = { version = "0.29", features = ["signal", "process"] }
 
 # NATS messaging
-async-nats = "0.42"
+async-nats = "0.47"
 
 # Utilities
 lazy_static = "1.4"

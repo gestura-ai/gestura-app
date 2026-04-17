@@ -298,7 +298,9 @@ pub fn quality_signals_for_response(
         iterations_used: response.iterations,
         max_iterations,
         was_truncated: response.truncated,
-        has_failure_patterns: detect_failure_patterns(&response.content),
+        has_failure_patterns: detect_failure_patterns(&response.content)
+            || detect_assertive_uncertainty(&response.content)
+            || detect_missing_debug_structure(&response.content),
         is_empty_response: response.content.trim().is_empty(),
     }
 }
@@ -374,8 +376,97 @@ pub fn detect_failure_patterns(text: &str) -> bool {
         "i'm not able to",
         "error occurred",
         "failed to execute",
+        "i was not able to",
+        "i was unable to",
+        "as an ai, i",
     ];
     patterns.iter().any(|p| lower.contains(p))
+}
+
+/// Check if response text contains overconfident, unhedged assertions on
+/// factual or contested topics.
+///
+/// These patterns indicate the agent stated something as absolute fact when
+/// appropriate hedging language should have been used. Used as an additional
+/// quality signal alongside [`detect_failure_patterns`].
+pub fn detect_assertive_uncertainty(text: &str) -> bool {
+    let lower = text.to_lowercase();
+    let patterns = [
+        "the fact is that",
+        "it is a fact that",
+        "it is definitely the case",
+        "there is no question that",
+        "it is absolutely certain",
+        "without any doubt",
+    ];
+    patterns.iter().any(|p| lower.contains(p))
+}
+
+/// Check whether a response to a debugging or diagnostic query is missing
+/// explicit root-cause or verification structure.
+///
+/// Returns `true` when the response text looks like a technical/debugging
+/// answer (contains error, bug, fix, crash, or failure language) but lacks
+/// any root-cause marker or verification instruction. Used as an additional
+/// quality signal to trigger reflection on structurally incomplete answers.
+pub fn detect_missing_debug_structure(response: &str) -> bool {
+    let lower = response.to_lowercase();
+
+    let is_debug_context = [
+        "error",
+        "bug",
+        "fix",
+        "crash",
+        "failure",
+        "exception",
+        "traceback",
+        "stack trace",
+        "panicked",
+        "undefined",
+        "null pointer",
+        "segfault",
+        "diagnos",
+        "debug",
+        "root cause",
+    ]
+    .iter()
+    .any(|p| lower.contains(p));
+
+    if !is_debug_context {
+        return false;
+    }
+
+    let has_root_cause = [
+        "root cause",
+        "caused by",
+        "because",
+        "the reason",
+        "this happens when",
+        "this is because",
+        "due to",
+        "stems from",
+        "originates from",
+    ]
+    .iter()
+    .any(|p| lower.contains(p));
+
+    let has_verification = [
+        "verify",
+        "verif",
+        "to confirm",
+        "run ",
+        "check ",
+        "test ",
+        "validate",
+        "you can confirm",
+        "to verify",
+        "make sure",
+        "ensure",
+    ]
+    .iter()
+    .any(|p| lower.contains(p));
+
+    !has_root_cause || !has_verification
 }
 
 /// Build the reflection prompt that asks the LLM to analyze a suboptimal turn.
@@ -803,6 +894,42 @@ mod tests {
         ));
         assert!(!detect_failure_patterns(
             "Here is the file content you requested"
+        ));
+    }
+
+    #[test]
+    fn test_detect_missing_debug_structure() {
+        // Debug context with neither root-cause nor verification → flag it
+        assert!(detect_missing_debug_structure(
+            "There is a bug in the config parser."
+        ));
+        // Debug context with root-cause but no verification → flag it
+        assert!(detect_missing_debug_structure(
+            "The crash is caused by a null pointer in the config parser."
+        ));
+        // Debug context with both → do not flag
+        assert!(!detect_missing_debug_structure(
+            "The crash is caused by a null pointer. To verify, run `cargo test` and check the output."
+        ));
+        // Non-debug context → do not flag regardless
+        assert!(!detect_missing_debug_structure(
+            "The deployment was successful and all services are running."
+        ));
+    }
+
+    #[test]
+    fn test_detect_assertive_uncertainty() {
+        assert!(detect_assertive_uncertainty(
+            "The fact is that Python was invented in 1989."
+        ));
+        assert!(detect_assertive_uncertainty(
+            "There is no question that this is the correct approach."
+        ));
+        assert!(!detect_assertive_uncertainty(
+            "Python is generally credited as a language designed for readability."
+        ));
+        assert!(!detect_assertive_uncertainty(
+            "The file was found at the expected path."
         ));
     }
 

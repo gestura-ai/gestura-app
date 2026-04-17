@@ -2769,10 +2769,10 @@ fn basic_mode_managed_browser(
             .flatten();
 
         match (&entry.action, action) {
-            (ManagedCommandAction::Execute(command), Some(0)) => {
-                if !dispatch_basic_mode_managed_command(command, config, session) {
-                    println!("{} Run manually: {}", "ℹ".blue(), command.cyan());
-                }
+            (ManagedCommandAction::Execute(command), Some(0))
+                if !dispatch_basic_mode_managed_command(command, config, session) =>
+            {
+                println!("{} Run manually: {}", "ℹ".blue(), command.cyan());
             }
             (ManagedCommandAction::Execute(command), Some(idx)) if idx == show_index => {
                 println!("{} {}", "Suggested command:".dimmed(), command.cyan());

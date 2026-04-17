@@ -387,7 +387,7 @@ impl UsageAnalytics {
         }
 
         let mut most_used_features: Vec<(String, usize)> = feature_counts.into_iter().collect();
-        most_used_features.sort_by(|a, b| b.1.cmp(&a.1));
+        most_used_features.sort_by_key(|b| std::cmp::Reverse(b.1));
         most_used_features.truncate(10);
 
         // Usage patterns
@@ -431,7 +431,7 @@ impl UsageAnalytics {
         }
 
         let mut peak_hours: Vec<(u8, usize)> = hour_counts.into_iter().collect();
-        peak_hours.sort_by(|a, b| b.1.cmp(&a.1));
+        peak_hours.sort_by_key(|b| std::cmp::Reverse(b.1));
         let peak_usage_hours = peak_hours.into_iter().take(3).map(|(h, _)| h).collect();
 
         // Session duration analysis
@@ -458,7 +458,7 @@ impl UsageAnalytics {
         }
 
         let mut most_common_gestures: Vec<(String, usize)> = gesture_counts.into_iter().collect();
-        most_common_gestures.sort_by(|a, b| b.1.cmp(&a.1));
+        most_common_gestures.sort_by_key(|b| std::cmp::Reverse(b.1));
         most_common_gestures.truncate(5);
 
         // Voice command frequency
@@ -576,7 +576,7 @@ impl UsageAnalytics {
         }
 
         let mut most_common_errors: Vec<(String, usize)> = error_counts.into_iter().collect();
-        most_common_errors.sort_by(|a, b| b.1.cmp(&a.1));
+        most_common_errors.sort_by_key(|b| std::cmp::Reverse(b.1));
         most_common_errors.truncate(5);
 
         // Error trends (daily)

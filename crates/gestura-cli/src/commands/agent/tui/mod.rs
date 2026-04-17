@@ -1112,10 +1112,8 @@ fn run_main_loop(
                     } else if let Some(action) = handle_command(app, &cmd, rt)? {
                         match action {
                             Action::Quit => break,
-                            Action::ResumeSession => {
-                                if streaming.is_none() {
-                                    streaming = start_resume_streaming(app, rt)?;
-                                }
+                            Action::ResumeSession if streaming.is_none() => {
+                                streaming = start_resume_streaming(app, rt)?;
                             }
                             Action::SendMessage(msg) => {
                                 if streaming.is_none() {

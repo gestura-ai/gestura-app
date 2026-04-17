@@ -29,8 +29,12 @@ pub fn run(prompt: Option<&str>, file: Option<&Path>, model: Option<&str>) -> Re
         );
     }
 
-    // Load config and apply optional CLI model override in core
-    let mut config = AppConfig::load();
+    // Load config with env-var overrides applied so that GESTURA_ANTHROPIC_API_KEY,
+    // GESTURA_OPENAI_API_KEY, etc. are picked up in headless / container contexts
+    // where no ~/.gestura/config.yaml exists.  `exec` is a non-interactive command
+    // designed for automation; it must respect the full precedence hierarchy:
+    //   env vars > config file > defaults
+    let mut config = AppConfig::load_with_env();
     let effective = gestura_core::llm_overrides::apply_cli_model_arg_overrides(&mut config, model);
     if !effective.model.trim().is_empty() {
         tracing::debug!(

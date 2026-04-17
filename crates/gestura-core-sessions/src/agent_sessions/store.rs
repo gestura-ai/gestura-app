@@ -232,7 +232,7 @@ impl AgentSessionStore for FileAgentSessionStore {
             }
         }
 
-        sessions.sort_by(|a, b| b.last_active.cmp(&a.last_active));
+        sessions.sort_by_key(|s| std::cmp::Reverse(s.last_active));
         Ok(sessions)
     }
 

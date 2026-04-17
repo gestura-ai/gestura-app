@@ -87,7 +87,7 @@ fn run_map(path: Option<&Path>, depth: Option<usize>) -> Result<()> {
 
     // Sort by count
     let mut sorted: Vec<_> = map.file_types.into_iter().collect();
-    sorted.sort_by(|a, b| b.1.cmp(&a.1));
+    sorted.sort_by_key(|b| std::cmp::Reverse(b.1));
 
     println!("{}", "File Types:".dimmed());
     let max = sorted.first().map(|x| x.1).unwrap_or(1).max(1);
@@ -302,7 +302,7 @@ fn run_stats(path: Option<&Path>) -> Result<()> {
     println!();
 
     let mut sorted: Vec<_> = stats.by_language.into_iter().collect();
-    sorted.sort_by(|a, b| b.1.lines.cmp(&a.1.lines));
+    sorted.sort_by_key(|b| std::cmp::Reverse(b.1.lines));
 
     println!("{}", "By language:".dimmed());
     for (lang, lang_stats) in sorted.iter().take(10) {

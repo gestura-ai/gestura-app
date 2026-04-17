@@ -535,16 +535,14 @@ async fn maintenance_browser(context: &mut MemoryCommandContext) -> Result<()> {
             );
             pause()?;
         }
-        2 => {
-            if Confirm::with_theme(&ColorfulTheme::default())
-                .with_prompt("Clear all durable memory entries for this workspace?")
-                .default(false)
-                .interact()?
-            {
-                let deleted = clear_memory_console(&context.workspace_dir).await?;
-                println!("Cleared {deleted} entries.");
-                pause()?;
-            }
+        2 if Confirm::with_theme(&ColorfulTheme::default())
+            .with_prompt("Clear all durable memory entries for this workspace?")
+            .default(false)
+            .interact()? =>
+        {
+            let deleted = clear_memory_console(&context.workspace_dir).await?;
+            println!("Cleared {deleted} entries.");
+            pause()?;
         }
         _ => {}
     }
