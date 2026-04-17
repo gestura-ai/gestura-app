@@ -264,23 +264,19 @@ impl PluginManager {
     ) -> Result<(), AppError> {
         for permission in permissions {
             match permission {
-                PluginPermission::FileSystem(path) => {
-                    // Validate file system access patterns.
-                    if path.contains("..") || path.starts_with('/') {
-                        return Err(AppError::Io(std::io::Error::new(
-                            std::io::ErrorKind::PermissionDenied,
-                            "Invalid file system permission pattern",
-                        )));
-                    }
+                PluginPermission::FileSystem(path)
+                    if path.contains("..") || path.starts_with('/') =>
+                {
+                    return Err(AppError::Io(std::io::Error::new(
+                        std::io::ErrorKind::PermissionDenied,
+                        "Invalid file system permission pattern",
+                    )));
                 }
-                PluginPermission::Network(host) => {
-                    // Validate network access patterns.
-                    if host == "*" {
-                        return Err(AppError::Io(std::io::Error::new(
-                            std::io::ErrorKind::PermissionDenied,
-                            "Wildcard network access not allowed",
-                        )));
-                    }
+                PluginPermission::Network(host) if host == "*" => {
+                    return Err(AppError::Io(std::io::Error::new(
+                        std::io::ErrorKind::PermissionDenied,
+                        "Wildcard network access not allowed",
+                    )));
                 }
                 PluginPermission::ProcessSpawn => {
                     // High-risk permission, require explicit approval.
