@@ -144,6 +144,10 @@ test.describe('@smoke Gestura App', () => {
     // Microphone -> AI Provider
     await page.click('#nextBtn');
     await expect(page.locator('#stepName')).toHaveText('AI Provider');
+    // Wait for loadLLMConfig to finish rendering (hydrateStepListeners runs before it,
+    // but the evaluate must fire after listeners are attached — #ollamaStatus is
+    // injected by renderLLMConfig inside loadLLMConfig, so its presence confirms readiness).
+    await expect(page.locator('#ollamaStatus')).toBeAttached();
 
     await page.locator('input[name="llmSetupMode"][value="advanced"]').evaluate((input) => {
       const radio = input as HTMLInputElement;
