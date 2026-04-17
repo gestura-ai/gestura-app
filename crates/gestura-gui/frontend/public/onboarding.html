@@ -2663,7 +2663,7 @@
                 try { await loadMicrophoneDevices(); } catch (e) { console.error('[Onboarding] loadMicrophoneDevices failed:', e); }
             }
             if (step.id === 'llm') {
-                try { await loadLLMConfig(); } catch (e) { console.error('[Onboarding] loadLLMConfig failed:', e); }
+                try { await loadLLMConfig({ initialLoad: true }); } catch (e) { console.error('[Onboarding] loadLLMConfig failed:', e); }
             }
             if (step.id === 'default-tools') {
                 try { await loadDefaultToolsStep(); } catch (e) { console.error('[Onboarding] loadDefaultToolsStep failed:', e); }
@@ -5135,19 +5135,33 @@
         }
 
         // Load LLM config from saved settings and render
-        async function loadLLMConfig() {
+        async function loadLLMConfig({ initialLoad = false } = {}) {
             try {
                 const config = await invoke('get_config');
                 const ollamaConfig = config?.llm?.ollama;
 
-                // Always open the LLM step in simple/Ollama mode regardless of saved config.
-                syncLlmQuickSetupUi('ollama');
-
-                onboardingOllamaEndpoint = (ollamaConfig?.base_url || '').trim() || DEFAULT_OLLAMA_BASE_URL;
-                setResolvedOllamaModel((ollamaConfig?.model || '').trim());
-
-                renderLLMConfig({ fetchOllamaModels: false, fetchCloudModels: false });
-                try { await fetchOllamaModels(); } catch (_) { }
+                if (initialLoad) {
+                    // Always open the LLM step in simple/Ollama mode on first load.
+                    syncLlmQuickSetupUi('ollama');
+                    onboardingOllamaEndpoint = (ollamaConfig?.base_url || '').trim() || DEFAULT_OLLAMA_BASE_URL;
+                    setResolvedOllamaModel((ollamaConfig?.model || '').trim());
+                    renderLLMConfig({ fetchOllamaModels: false, fetchCloudModels: false });
+                    try { await fetchOllamaModels(); } catch (_) { }
+                } else {
+                    // Re-hydration after a provider change: respect current mode/provider.
+                    const provider = document.getElementById('llmProvider')?.value || 'ollama';
+                    const savedCloudModel = (config?.llm?.[provider]?.model || '').trim();
+                    if (provider === 'ollama') {
+                        onboardingOllamaEndpoint = (ollamaConfig?.base_url || '').trim() || DEFAULT_OLLAMA_BASE_URL;
+                        setResolvedOllamaModel((ollamaConfig?.model || '').trim());
+                        renderLLMConfig({ fetchOllamaModels: false, fetchCloudModels: false });
+                        try { await fetchOllamaModels(); } catch (_) { }
+                    } else {
+                        renderLLMConfig({ fetchOllamaModels: false, fetchCloudModels: false, preferredCloudModel: savedCloudModel });
+                        setCloudSelectedModel(savedCloudModel);
+                        await fetchCloudModels(provider);
+                    }
+                }
             } catch (error) {
                 console.error('Error loading LLM config:', error);
                 onboardingLlmMode = 'simple';
