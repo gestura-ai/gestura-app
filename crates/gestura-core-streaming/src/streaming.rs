@@ -1576,22 +1576,22 @@ async fn stream_openai_responses(
                                 }
                             }
                         }
-                        "response.output_item.added" | "response.output_item.done" => {
-                            if json["item"]["type"].as_str() == Some("function_call") {
-                                merge_openai_responses_tool_item(
-                                    &mut pending_tool_calls,
-                                    &mut tool_call_indices,
-                                    &json,
-                                    fallback_index,
-                                );
-                                emit_ready_openai_responses_tool_calls(
-                                    &tx,
-                                    &mut pending_tool_calls,
-                                    &mut emitted_tool_call_ids,
-                                    false,
-                                )
-                                .await;
-                            }
+                        "response.output_item.added" | "response.output_item.done"
+                            if json["item"]["type"].as_str() == Some("function_call") =>
+                        {
+                            merge_openai_responses_tool_item(
+                                &mut pending_tool_calls,
+                                &mut tool_call_indices,
+                                &json,
+                                fallback_index,
+                            );
+                            emit_ready_openai_responses_tool_calls(
+                                &tx,
+                                &mut pending_tool_calls,
+                                &mut emitted_tool_call_ids,
+                                false,
+                            )
+                            .await;
                         }
                         "response.function_call_arguments.delta" => {
                             merge_openai_responses_tool_argument_delta(
@@ -1840,11 +1840,9 @@ pub async fn stream_anthropic(req: AnthropicStreamRequest<'_>) -> Result<(), App
                                 in_tool_block = true;
                             }
                         }
-                        Some("content_block_stop") => {
-                            if in_tool_block {
-                                let _ = tx.send(StreamChunk::ToolCallEnd).await;
-                                in_tool_block = false;
-                            }
+                        Some("content_block_stop") if in_tool_block => {
+                            let _ = tx.send(StreamChunk::ToolCallEnd).await;
+                            in_tool_block = false;
                         }
                         _ => {}
                     }
