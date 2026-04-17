@@ -555,7 +555,7 @@ pub fn build_team_threads_with_options(
     let mut threads = groups
         .into_iter()
         .filter_map(|(thread_id, mut thread_messages)| {
-            thread_messages.sort_by(|left, right| left.created_at.cmp(&right.created_at));
+            thread_messages.sort_by_key(|left| left.created_at);
             let first = thread_messages.first()?.clone();
             let last = thread_messages.last()?.clone();
             let latest_action_request = thread_messages
@@ -642,7 +642,7 @@ pub fn build_team_threads_with_options(
         })
         .collect::<Vec<_>>();
 
-    threads.sort_by(|left, right| right.updated_at.cmp(&left.updated_at));
+    threads.sort_by_key(|right| std::cmp::Reverse(right.updated_at));
     threads
 }
 
