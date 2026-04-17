@@ -1761,7 +1761,7 @@ pub async fn list_memory_bank(
     }
 
     // Sort by timestamp, newest first
-    entries.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
+    entries.sort_by_key(|b| std::cmp::Reverse(b.timestamp));
 
     Ok(entries)
 }
