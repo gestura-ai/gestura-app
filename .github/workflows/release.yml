@@ -606,3 +606,11 @@ jobs:
               "${prerelease_flag[@]}"
             gh release edit "$TAG" --draft=false
           fi
+
+      - name: Trigger agent-evaluation eval-pages
+        uses: peter-evans/repository-dispatch@v3
+        with:
+          token: ${{ secrets.AGENT_EVAL_DISPATCH_TOKEN }}
+          repository: gestura-ai/agent-evaluation
+          event-type: gestura-released
+          client-payload: '{"tag": "${{ github.ref_name }}"}'
