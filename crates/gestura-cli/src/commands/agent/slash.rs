@@ -4035,7 +4035,7 @@ fn format_supervisor_run_tree_lines(runs: &[SupervisorRun]) -> Vec<String> {
         .iter()
         .filter(|run| run.parent_run.is_none())
         .collect::<Vec<_>>();
-    roots.sort_by(|left, right| right.updated_at.cmp(&left.updated_at));
+    roots.sort_by_key(|right| std::cmp::Reverse(right.updated_at));
 
     for root in roots {
         lines.push(format!(

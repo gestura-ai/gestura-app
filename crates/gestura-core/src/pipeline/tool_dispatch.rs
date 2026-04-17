@@ -4822,19 +4822,15 @@ impl AgentPipeline {
 
                 // Enforce tool-specific allowed operations.
                 match tool_name {
-                    "screenshot" => {
-                        if !matches!(operation, "screenshot" | "capture") {
-                            return ToolResult::Error(format!(
-                                "Tool 'screenshot' does not support operation '{operation}'. Supported operations: screenshot, capture"
-                            ));
-                        }
+                    "screenshot" if !matches!(operation, "screenshot" | "capture") => {
+                        return ToolResult::Error(format!(
+                            "Tool 'screenshot' does not support operation '{operation}'. Supported operations: screenshot, capture"
+                        ));
                     }
-                    "screen_record" => {
-                        if !matches!(operation, "start" | "stop") {
-                            return ToolResult::Error(format!(
-                                "Tool 'screen_record' does not support operation '{operation}'. Supported operations: start, stop"
-                            ));
-                        }
+                    "screen_record" if !matches!(operation, "start" | "stop") => {
+                        return ToolResult::Error(format!(
+                            "Tool 'screen_record' does not support operation '{operation}'. Supported operations: start, stop"
+                        ));
                     }
                     _ => {}
                 }

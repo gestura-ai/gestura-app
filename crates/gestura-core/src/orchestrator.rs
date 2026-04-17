@@ -1963,7 +1963,7 @@ impl<M: OrchestratorAgentManager> AgentOrchestrator<M> {
         ));
         attach_checkpoint_summaries(&mut runs, checkpoints);
         synchronize_run_hierarchy_snapshots(&mut runs);
-        runs.sort_by(|left, right| right.updated_at.cmp(&left.updated_at));
+        runs.sort_by_key(|right| std::cmp::Reverse(right.updated_at));
         runs
     }
 
@@ -2089,7 +2089,7 @@ impl<M: OrchestratorAgentManager> AgentOrchestrator<M> {
                 for task in run.tasks {
                     messages.extend(task.messages);
                 }
-                messages.sort_by(|left, right| left.created_at.cmp(&right.created_at));
+                messages.sort_by_key(|left| left.created_at);
                 messages
             })
             .unwrap_or_default()
@@ -4222,7 +4222,7 @@ fn collect_team_messages(run: &SupervisorRun) -> Vec<TeamMessage> {
     for task in &run.tasks {
         messages.extend(task.messages.clone());
     }
-    messages.sort_by(|left, right| left.created_at.cmp(&right.created_at));
+    messages.sort_by_key(|left| left.created_at);
     messages
 }
 

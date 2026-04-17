@@ -182,7 +182,7 @@ impl<M: OrchestratorAgentManager> AgentOrchestrator<M> {
             })
             .cloned()
             .collect();
-        records.sort_by(|left, right| right.updated_at.cmp(&left.updated_at));
+        records.sort_by_key(|right| std::cmp::Reverse(right.updated_at));
         records
     }
 

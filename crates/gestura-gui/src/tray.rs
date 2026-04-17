@@ -410,10 +410,10 @@ fn build_sessions_submenu(app: &AppHandle) -> tauri::Result<Submenu<tauri::Wry>>
 
     // Filter and sort sessions by last_active (most recent first)
     let mut active_sessions: Vec<_> = all_sessions.iter().filter(|s| s.is_open).collect();
-    active_sessions.sort_by(|a, b| b.last_active.cmp(&a.last_active));
+    active_sessions.sort_by_key(|b| std::cmp::Reverse(b.last_active));
 
     let mut closed_sessions: Vec<_> = all_sessions.iter().filter(|s| !s.is_open).collect();
-    closed_sessions.sort_by(|a, b| b.last_active.cmp(&a.last_active));
+    closed_sessions.sort_by_key(|b| std::cmp::Reverse(b.last_active));
 
     tracing::info!(
         "Session breakdown: {} active, {} closed",

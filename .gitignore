@@ -28,3 +28,5 @@ dist
 
 # Temp files
 .tmp/
+my-reports
+.claude

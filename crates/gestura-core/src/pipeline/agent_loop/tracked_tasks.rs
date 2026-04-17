@@ -400,10 +400,7 @@ impl AgentPipeline {
             }
         }
 
-        loop {
-            let Some((_, descendants)) = load_descendants() else {
-                break;
-            };
+        while let Some((_, descendants)) = load_descendants() {
             let open_descendants = descendants
                 .iter()
                 .filter(|task| !task.is_terminal())
