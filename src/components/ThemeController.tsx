@@ -10,7 +10,7 @@ interface ThemeControllerProps {
   onUpdate: (settings: UiSettings) => void;
 }
 
-const ThemeController: React.FC<ThemeControllerProps> = ({ uiSettings, onUpdate }) => {
+const ThemeController: React.FC<ThemeControllerProps> = ({ uiSettings }) => {
   useEffect(() => {
     // Apply theme on mount and when settings change
     applyTheme(uiSettings.theme_mode, uiSettings.accent || 'blue');

@@ -1,12 +1,12 @@
 [package]
-name = "gestura-app"
+name = "gestura"
 version = "0.1.0"
 edition = "2024"
 description = "Gestura desktop app (Tauri v2)"
 license = "MIT"
 
 # Tauri expects to run from the src-tauri folder
-default-run = "gestura-app"
+default-run = "gestura"
 
 [build-dependencies]
 # Keep aligned with the tauri dependency below

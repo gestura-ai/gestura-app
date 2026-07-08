@@ -8,6 +8,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Comprehensive GitHub release workflow with multi-platform builds
+- Automated package manager publishing (Homebrew, Chocolatey, Winget, Snap)
+- Professional release script with version synchronization (`scripts/release.sh`)
+- Release workflow documentation (`docs/RELEASE_WORKFLOW.md`)
+- AppImage creation for universal Linux compatibility
+- Professional release notes with comprehensive feature descriptions
+- Version synchronization across Cargo.toml, package.json, and tauri.conf.json
+
+### Changed
+- Updated package.json to reflect gestura-app instead of homepage project
+- Added version field to tauri.conf.json for proper Tauri versioning
+- Synchronized versions across all configuration files (currently 0.1.0)
+
+### Fixed
+- Duplicate system tray icons issue resolved through configuration cleanup
+- Listening functionality working correctly with proper error handling
+- System permissions monitoring and validation implemented
+- Configuration persistence and state management improved
+
+## [0.1.0] - 2025-08-17
+
+### Added
 - Initial Tauri v2 application structure
 - Basic configuration management with JSON persistence
 - Voice processing interface with whisper-rs integration
@@ -24,6 +46,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - BLE detector trait with mock implementation
 - KV store wrapper for NATS JetStream
 - Comprehensive documentation and README
+- Complete speech-to-text-to-AI workflow implementation
+- Professional configuration interface with organized settings
+- System permissions monitoring and status display
+- Chat interface for AI interactions with voice integration
+- Multi-provider AI integration with fallback support
 
 ### Planned
 - Faster-Whisper integration (voice-faster-whisper feature)
@@ -49,20 +76,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Add comprehensive unit tests
 - Implement integration tests
 
-## [0.1.0] - TBD
-
-### Added
-- Initial release with core functionality
-- Local voice processing
-- Basic agent management
-- MCP tool configuration
-- System integration (tray, hotkeys)
-- Cross-platform support
-
 ### Security
-- Local-first architecture
-- No external data transmission without consent
-- Encrypted local storage (planned)
+- API keys encrypted at rest using system keychain
+- System permission validation before accessing microphone/files
+- Comprehensive logging of security-relevant events
+- Local processing options for privacy protection
+- Clear permission requests with detailed explanations
+- Local-first architecture with optional cloud integration
+- No external data transmission without explicit user consent
 
 ## Development Guidelines
 

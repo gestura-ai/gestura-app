@@ -126,9 +126,9 @@ fi
 cd ..
 
 # Verify Tauri build
-BINARY_NAME="gestura-app"
+BINARY_NAME="gestura"
 if [[ "$OSTYPE" == "msys" || "$OSTYPE" == "win32" ]]; then
-    BINARY_NAME="gestura-app.exe"
+    BINARY_NAME="gestura.exe"
 fi
 
 BINARY_PATH="$TAURI_BUILD_DIR/$BINARY_NAME"
@@ -179,7 +179,7 @@ cat > $PACKAGE_DIR/install.sh << 'EOF'
 set -e
 
 INSTALL_DIR="/opt/gestura"
-BINARY_NAME="gestura-app"
+BINARY_NAME="gestura"
 
 echo "Installing Gestura.app..."
 

@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 
 interface OnboardingStep {
@@ -46,7 +46,7 @@ const WelcomeStep: React.FC<OnboardingStepProps> = ({ onNext }) => (
   </div>
 );
 
-const VoiceSetupStep: React.FC<OnboardingStepProps> = ({ onNext, onPrevious, onComplete }) => {
+const VoiceSetupStep: React.FC<OnboardingStepProps> = ({ onPrevious, onComplete }) => {
   const [provider, setProvider] = useState('local');
   const [modelPath, setModelPath] = useState('');
   const [testing, setTesting] = useState(false);
@@ -184,7 +184,7 @@ const RingSetupStep: React.FC<OnboardingStepProps> = ({ onNext, onPrevious, onCo
   );
 };
 
-const PrivacyConsentStep: React.FC<OnboardingStepProps> = ({ onNext, onPrevious, onComplete }) => {
+const PrivacyConsentStep: React.FC<OnboardingStepProps> = ({ onPrevious, onComplete }) => {
   const [consents, setConsents] = useState({
     voice: false,
     device: false,
@@ -318,7 +318,7 @@ const CompletionStep: React.FC<OnboardingStepProps> = ({ onComplete }) => {
 
 const OnboardingWizard: React.FC<{ onComplete: () => void }> = ({ onComplete }) => {
   const [currentStep, setCurrentStep] = useState(0);
-  const [stepData, setStepData] = useState<any>({});
+  const [, setStepData] = useState<any>({});
 
   const steps: OnboardingStep[] = [
     {
@@ -371,7 +371,7 @@ const OnboardingWizard: React.FC<{ onComplete: () => void }> = ({ onComplete }) 
   };
 
   const handleStepComplete = (data: any) => {
-    setStepData(prev => ({ ...prev, [steps[currentStep].id]: data }));
+    setStepData((prev: any) => ({ ...prev, [steps[currentStep].id]: data }));
     
     if (currentStep === steps.length - 1) {
       // Final step completed

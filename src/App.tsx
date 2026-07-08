@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import { useState, useEffect } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import './App.css';
 import ThemeController from './components/ThemeController';
@@ -9,26 +9,9 @@ import StatusBar from './components/StatusBar';
 import OnboardingWizard from './components/OnboardingWizard';
 import HelpSystem from './components/HelpSystem';
 import SimulatorPanel from './components/SimulatorPanel';
+import { AppConfig, UiSettings } from './types/config';
 
-interface UiSettings {
-  theme_mode: string;
-  accent?: string;
-}
 
-interface AppConfig {
-  hotkey_listen: string;
-  grace_period_secs: number;
-  voice: {
-    provider: string;
-    input_path?: string;
-    local_model_path?: string;
-    openai_api_key?: string;
-  };
-  llm: {
-    primary: string;
-  };
-  ui: UiSettings;
-}
 
 function App() {
   const [config, setConfig] = useState<AppConfig | null>(null);

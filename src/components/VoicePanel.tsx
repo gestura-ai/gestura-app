@@ -1,21 +1,10 @@
 import React, { useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
-
-interface VoiceConfig {
-  provider: string;
-  input_path?: string;
-  local_model_path?: string;
-  openai_api_key?: string;
-}
-
-interface AppConfig {
-  voice: VoiceConfig;
-  [key: string]: any;
-}
+import { AppConfig, VoiceSettings } from '../types/config';
 
 interface VoicePanelProps {
   config: AppConfig;
-  onConfigUpdate: (config: AppConfig) => void;
+  onConfigUpdate: (config: AppConfig) => Promise<void>;
 }
 
 const VoicePanel: React.FC<VoicePanelProps> = ({ config, onConfigUpdate }) => {
@@ -50,7 +39,7 @@ const VoicePanel: React.FC<VoicePanelProps> = ({ config, onConfigUpdate }) => {
     }
   };
 
-  const updateVoiceConfig = (updates: Partial<VoiceConfig>) => {
+  const updateVoiceConfig = (updates: Partial<VoiceSettings>) => {
     const newConfig = {
       ...config,
       voice: { ...config.voice, ...updates }

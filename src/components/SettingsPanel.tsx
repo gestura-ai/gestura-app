@@ -1,28 +1,9 @@
 import React from 'react';
-
-interface UiSettings {
-  theme_mode: string;
-  accent?: string;
-}
-
-interface AppConfig {
-  hotkey_listen: string;
-  grace_period_secs: number;
-  ui: UiSettings;
-  voice: {
-    provider: string;
-    [key: string]: any;
-  };
-  llm: {
-    primary: string;
-    [key: string]: any;
-  };
-  [key: string]: any;
-}
+import { AppConfig, UiSettings } from '../types/config';
 
 interface SettingsPanelProps {
   config: AppConfig;
-  onConfigUpdate: (config: AppConfig) => void;
+  onConfigUpdate: (config: AppConfig) => Promise<void>;
 }
 
 const SettingsPanel: React.FC<SettingsPanelProps> = ({ config, onConfigUpdate }) => {

@@ -7,13 +7,13 @@ use tauri::Builder;
 #[allow(unused_imports)]
 use std::sync::Arc;
 
-use gestura_app::{AppConfig, AppState};
-use gestura_app::agents::AgentManager;
-use gestura_app::kv::KvStore;
-use gestura_app::hotkeys::register_hotkey;
-use gestura_app::commands;
+use gestura::{AppConfig, AppState};
+use gestura::agents::AgentManager;
+use gestura::kv::KvStore;
+use gestura::hotkeys::register_hotkey;
+use gestura::commands;
 #[allow(unused_imports)]
-use gestura_app::dispatcher::EventDispatcher;
+use gestura::dispatcher::EventDispatcher;
 #[cfg(not(feature = "nats"))]
 // use gestura_app::nats_mq as _; // intentionally unused import removed
 
@@ -25,10 +25,10 @@ use gestura_app::dispatcher::EventDispatcher;
 async fn main() {
     // Load configuration and spawn embedded NATS
     let config = AppConfig::load();
-    let _nats_child = gestura_app::nats_mq::spawn_nats_server().ok();
+    let _nats_child = gestura::nats_mq::spawn_nats_server().ok();
 
     // Try to connect to NATS; continue even if it fails
-    let nats_conn = match gestura_app::nats_mq::connect_with_retry(&config.nats_url).await {
+    let nats_conn = match gestura::nats_mq::connect_with_retry(&config.nats_url).await {
         Ok(c) => {
             tracing::info!("Connected to NATS at {}", config.nats_url);
             Some(c)
@@ -47,7 +47,7 @@ async fn main() {
 
 
     // Create ring manager
-    let ring_manager: Option<std::sync::Arc<dyn gestura_app::ble::RingManager>> = Some(std::sync::Arc::from(gestura_app::ble::create_ring_manager()));
+    let ring_manager: Option<std::sync::Arc<dyn gestura::ble::RingManager>> = Some(std::sync::Arc::from(gestura::ble::create_ring_manager()));
 
     // Build shared state and wire event forwarding
     let state = AppState {
@@ -62,7 +62,7 @@ async fn main() {
     if let Some(nc) = &state.nats {
         let dispatcher = EventDispatcher::new(std::sync::Arc::new(state.agents.clone()));
         let dispatcher_clone = dispatcher.clone();
-        let _ = gestura_app::nats_mq::subscribe_wildcard(nc, "events.*", move |subject: String, data: Vec<u8>| {
+        let _ = gestura::nats_mq::subscribe_wildcard(nc, "events.*", move |subject: String, data: Vec<u8>| {
             let dispatcher = dispatcher_clone.clone();
             tauri::async_runtime::spawn(async move {
                 if let Err(e) = dispatcher.dispatch(&subject, data).await {
@@ -72,7 +72,7 @@ async fn main() {
         }).await;
 
         // Initialize JetStream KV buckets
-        let _ = gestura_app::nats_mq::init_jetstream(nc, "agents_state").await;
+        let _ = gestura::nats_mq::init_jetstream(nc, "agents_state").await;
 
         // Spawn the default agent if missing
         tauri::async_runtime::spawn({
@@ -92,64 +92,64 @@ async fn main() {
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .manage(state)
         .invoke_handler(tauri::generate_handler![
-            gestura_app::api::get_config,
-            gestura_app::api::save_config,
-            gestura_app::api::list_mcp_tools,
-            gestura_app::api::add_mcp_tool,
-            gestura_app::api::remove_mcp_tool,
-            gestura_app::api::get_mdh_pointers,
-            gestura_app::api::set_mdh_pointer,
-            gestura_app::api::remove_mdh_pointer,
-            gestura_app::api::test_llm,
-            gestura_app::api::test_voice,
-            gestura_app::api::run_voice_once,
-            gestura_app::api::get_ui_prefs,
-            gestura_app::api::set_ui_prefs,
-            gestura_app::api::scan_for_rings,
-            gestura_app::api::get_ring_status,
-            gestura_app::api::pair_ring,
-            gestura_app::api::send_haptic_feedback,
-            gestura_app::api::start_gesture_monitoring,
-            gestura_app::api::stop_gesture_monitoring,
-            gestura_app::api::get_system_health,
-            gestura_app::api::get_metrics_summary,
-            gestura_app::api::get_recent_metrics,
-            gestura_app::api::clear_metrics,
-            gestura_app::api::export_user_data,
-            gestura_app::api::delete_user_data,
-            gestura_app::api::get_user_consents,
-            gestura_app::api::register_consent,
+            gestura::api::get_config,
+            gestura::api::save_config,
+            gestura::api::list_mcp_tools,
+            gestura::api::add_mcp_tool,
+            gestura::api::remove_mcp_tool,
+            gestura::api::get_mdh_pointers,
+            gestura::api::set_mdh_pointer,
+            gestura::api::remove_mdh_pointer,
+            gestura::api::test_llm,
+            gestura::api::test_voice,
+            gestura::api::run_voice_once,
+            gestura::api::get_ui_prefs,
+            gestura::api::set_ui_prefs,
+            gestura::api::scan_for_rings,
+            gestura::api::get_ring_status,
+            gestura::api::pair_ring,
+            gestura::api::send_haptic_feedback,
+            gestura::api::start_gesture_monitoring,
+            gestura::api::stop_gesture_monitoring,
+            gestura::api::get_system_health,
+            gestura::api::get_metrics_summary,
+            gestura::api::get_recent_metrics,
+            gestura::api::clear_metrics,
+            gestura::api::export_user_data,
+            gestura::api::delete_user_data,
+            gestura::api::get_user_consents,
+            gestura::api::register_consent,
             // Chat and agent commands
-            gestura_app::api::send_agent_message,
-            gestura_app::api::get_agent_status,
+            gestura::api::send_agent_message,
+            gestura::api::get_agent_status,
             // Permission management commands
-            gestura_app::api::check_permission,
-            gestura_app::api::request_permission,
+            gestura::api::check_permission,
+            gestura::api::request_permission,
             // UI testing commands
-            gestura_app::api::test_open_window,
-            gestura_app::api::capture_window_screenshot,
-            gestura_app::api::validate_window_content,
-            gestura_app::api::get_window_list,
-            gestura_app::api::close_test_windows,
+            gestura::api::test_open_window,
+            gestura::api::capture_window_screenshot,
+            gestura::api::validate_window_content,
+            gestura::api::get_window_list,
+            gestura::api::close_test_windows,
             // Automated testing commands
-            gestura_app::automated_testing::run_automated_tests,
-            gestura_app::automated_testing::test_specific_window,
+            gestura::automated_testing::run_automated_tests,
+            gestura::automated_testing::test_specific_window,
             // Listening state management
-            gestura_app::api::get_listening_state,
-            gestura_app::api::set_listening_timeout,
-            gestura_app::api::toggle_listening,
+            gestura::api::get_listening_state,
+            gestura::api::set_listening_timeout,
+            gestura::api::toggle_listening,
             // Speech processing
-            gestura_app::api::update_speech_config,
-            gestura_app::api::get_speech_status,
+            gestura::api::update_speech_config,
+            gestura::api::get_speech_status,
             // System permissions
-            gestura_app::api::check_system_permissions,
+            gestura::api::check_system_permissions,
             // Tray diagnostics
-            gestura_app::api::get_tray_diagnostic_info,
+            gestura::api::get_tray_diagnostic_info,
             // Window management
-            gestura_app::commands::set_window_size
+            gestura::commands::set_window_size
         ])
         .setup(move |app| {
-            gestura_app::tray::init_tray(app.handle())?;
+            gestura::tray::init_tray(app.handle())?;
             register_hotkey(app.handle(), &config.hotkey_listen);
             tracing::info!("Gestura app initialized");
             Ok(())
