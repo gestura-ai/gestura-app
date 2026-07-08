@@ -3,25 +3,36 @@
 use crate::AppError;
 use crate::ble::{
     BleEvent, GestureType, RingManager, RingStatus, SimulatorStatus, TestHapticPattern,
-    ring_constants,
 };
 use crate::haptics::{HapticPattern, HapticRequest};
 use btleplug::api::{
-    Central, Characteristic, Manager as _, Peripheral as _, ScanFilter, ValueNotification,
-    WriteType,
+    Central, CharPropFlags, Characteristic, Manager as _, Peripheral as _, ScanFilter,
+    ValueNotification, WriteType,
 };
 use btleplug::platform::{Adapter, Manager, Peripheral};
 use futures::StreamExt;
-use serde::{Deserialize, Serialize};
+// Wire types come from the canonical contract (gestura-core-ring::protocol,
+// v0.3.0) — this file no longer defines any protocol shapes of its own
+// (dedup approved by user 2026-07-02).
+use gestura_core_ring::protocol::{
+    self as ring_protocol, BleBatteryData, BleGestureData, DeviceStateSnapshot,
+    HapticCommandPayload, ProtocolEnvelope, RingConfig, SemanticGesture, SemanticHapticPattern,
+    SemanticRotateDirection, SemanticSlideDirection, SemanticSwipeDirection, SimulatorCommand,
+    SimulatorEvent, ring_uuids,
+};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 use tokio::sync::RwLock;
 use tokio::task::JoinHandle;
 use uuid::Uuid;
 
-const PROTOCOL_VERSION: &str = "0.1.0";
 const EXTERNAL_SCAN_WINDOW: Duration = Duration::from_secs(2);
+
+/// Monotonic command sequence (v0.3.0). Starts at 1 — sequence 0 means
+/// "unsequenced" in the protocol. Correlates with `BleEvent::CommandAck`.
+static NEXT_COMMAND_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Clone)]
 struct CachedPeripheral {
@@ -29,90 +40,6 @@ struct CachedPeripheral {
     name: Option<String>,
     is_simulator: bool,
     last_seen: chrono::DateTime<chrono::Utc>,
-}
-
-#[derive(Debug, Deserialize)]
-struct BleGestureFrame {
-    gesture_type: String,
-    data: Vec<u8>,
-}
-
-#[derive(Debug, Deserialize)]
-struct BleBatteryFrame {
-    level: u8,
-}
-
-#[derive(Debug, Deserialize)]
-struct StateSnapshotFrame {
-    firmware_version: String,
-    degraded_modes: Vec<serde_json::Value>,
-    revocation_reason: Option<String>,
-    privileged_actions_enabled: bool,
-}
-
-#[derive(Debug, Deserialize)]
-struct ProtocolEnvelope<T> {
-    payload: T,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(tag = "event_kind", content = "event", rename_all = "snake_case")]
-enum SimulatorEventFrame {
-    Gesture(SemanticGestureEventFrame),
-}
-
-#[derive(Debug, Deserialize)]
-struct SemanticGestureEventFrame {
-    gesture: SemanticGestureFrame,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(tag = "gesture_kind", rename_all = "snake_case")]
-enum SemanticGestureFrame {
-    Tap,
-    DoubleTap,
-    Hold { duration_ms: u64 },
-    Slide { direction: SemanticSlideDirection },
-    Tilt { angle_degrees: f32 },
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "snake_case")]
-enum SemanticSlideDirection {
-    Up,
-    Down,
-    Left,
-    Right,
-}
-
-#[derive(Debug, Serialize)]
-struct CommandEnvelope<'a, T> {
-    protocol_version: &'a str,
-    message_kind: &'a str,
-    message_id: String,
-    sequence: u64,
-    timestamp_ms: u64,
-    payload: T,
-}
-
-#[derive(Debug, Serialize)]
-#[serde(tag = "command_kind", content = "command", rename_all = "snake_case")]
-enum SimulatorCommandPayload {
-    Haptic(HapticCommandPayload),
-}
-
-#[derive(Debug, Serialize)]
-struct HapticCommandPayload {
-    pattern: SemanticHapticPattern,
-}
-
-#[derive(Debug, Serialize)]
-#[serde(tag = "pattern_kind", rename_all = "snake_case")]
-enum SemanticHapticPattern {
-    Notify,
-    Success,
-    Error,
-    Custom { intensity: f32, duration_ms: u64 },
 }
 
 /// BLE central manager backed by `btleplug`.
@@ -233,10 +160,12 @@ impl ExternalBleRingManager {
             .ok_or_else(|| AppError::Ble(format!("Unknown BLE device: {device_id}")))?;
 
         let peripheral = cached.peripheral.clone();
+        let mut freshly_connected = false;
         if !peripheral.is_connected().await.map_err(map_ble_error)? {
             self.record_log(device_id, "Connecting to BLE peripheral".to_string())
                 .await;
             peripheral.connect().await.map_err(map_ble_error)?;
+            freshly_connected = true;
         }
 
         peripheral
@@ -245,6 +174,14 @@ impl ExternalBleRingManager {
             .map_err(map_ble_error)?;
         self.record_log(device_id, "Discovered BLE services".to_string())
             .await;
+
+        if freshly_connected {
+            // Takeover: suppress the ring's HID projection while Gestura.app
+            // owns the connection (approved 2026-07-07; HID ships ON by
+            // default). Restored on release in reset_simulator. Trust-gated
+            // device-side, so an unenrolled link leaves HID untouched.
+            self.write_hid_enabled(device_id, &peripheral, false).await;
+        }
 
         Ok(cached)
     }
@@ -255,7 +192,7 @@ impl ExternalBleRingManager {
         peripheral: &Peripheral,
     ) -> Result<(Option<u8>, Option<String>, Option<SimulatorStatus>), AppError> {
         let battery_level = if let Some(characteristic) =
-            find_characteristic(peripheral, ring_constants::BATTERY_LEVEL_UUID)
+            find_characteristic(peripheral, ring_uuids::BATTERY_LEVEL_UUID)
         {
             match peripheral.read(&characteristic).await {
                 Ok(bytes) => parse_battery_level(&bytes),
@@ -270,7 +207,7 @@ impl ExternalBleRingManager {
         };
 
         let state = if let Some(characteristic) =
-            find_characteristic(peripheral, ring_constants::STATE_SNAPSHOT_UUID)
+            find_characteristic(peripheral, ring_uuids::STATE_SNAPSHOT_UUID)
         {
             match peripheral.read(&characteristic).await {
                 Ok(bytes) => parse_state_snapshot(&bytes),
@@ -293,6 +230,45 @@ impl ExternalBleRingManager {
         ))
     }
 
+    /// Writes the Config characteristic (C2) with the HID projection flag,
+    /// when the characteristic exists. Uses clobber-free read-modify-write
+    /// when C2 is readable (readable-C2, ratified 2026-07-08); falls back to
+    /// defaults against pre-read firmware. Best-effort: failures are logged,
+    /// not fatal — a trust-gate refusal is expected on unbonded links.
+    async fn write_hid_enabled(&self, device_id: &str, peripheral: &Peripheral, enabled: bool) {
+        let Some(characteristic) = find_characteristic(peripheral, ring_uuids::CONFIG_UUID) else {
+            return;
+        };
+        let base = if characteristic.properties.contains(CharPropFlags::READ) {
+            match peripheral.read(&characteristic).await {
+                Ok(bytes) => RingConfig::from_bytes(&bytes),
+                Err(_) => RingConfig::default(),
+            }
+        } else {
+            RingConfig::default()
+        };
+        let config = base.hid_set(enabled).to_bytes();
+        match peripheral
+            .write(&characteristic, &config, WriteType::WithResponse)
+            .await
+        {
+            Ok(()) => {
+                self.record_log(
+                    device_id,
+                    format!(
+                        "HID projection {}",
+                        if enabled { "restored" } else { "suppressed (app takeover)" }
+                    ),
+                )
+                .await;
+            }
+            Err(error) => {
+                self.record_log(device_id, format!("HID config write refused: {error}"))
+                    .await;
+            }
+        }
+    }
+
     async fn write_haptic_request(
         &self,
         device_id: &str,
@@ -300,7 +276,7 @@ impl ExternalBleRingManager {
     ) -> Result<(), AppError> {
         let cached = self.ensure_connected(device_id).await?;
         let characteristic =
-            find_characteristic(&cached.peripheral, ring_constants::HAPTIC_COMMAND_UUID)
+            find_characteristic(&cached.peripheral, ring_uuids::HAPTIC_COMMAND_UUID)
                 .ok_or_else(|| {
                     AppError::Ble("Haptic command characteristic not found".to_string())
                 })?;
@@ -391,7 +367,7 @@ impl RingManager for ExternalBleRingManager {
     ) -> Result<(), AppError> {
         let cached = self.ensure_connected(device_id).await?;
         let characteristic =
-            find_characteristic(&cached.peripheral, ring_constants::OTA_UPDATE_UUID)
+            find_characteristic(&cached.peripheral, ring_uuids::OTA_UPDATE_UUID)
                 .ok_or_else(|| AppError::Ble("OTA characteristic not found".to_string()))?;
         cached
             .peripheral
@@ -422,13 +398,13 @@ impl RingManager for ExternalBleRingManager {
         }
 
         let gesture_characteristic =
-            find_characteristic(&peripheral, ring_constants::GESTURE_EVENT_UUID).ok_or_else(
+            find_characteristic(&peripheral, ring_uuids::GESTURE_EVENT_UUID).ok_or_else(
                 || AppError::Ble("Gesture event characteristic not found".to_string()),
             )?;
         let battery_characteristic =
-            find_characteristic(&peripheral, ring_constants::BATTERY_LEVEL_UUID);
+            find_characteristic(&peripheral, ring_uuids::BATTERY_LEVEL_UUID);
         let state_characteristic =
-            find_characteristic(&peripheral, ring_constants::STATE_SNAPSHOT_UUID);
+            find_characteristic(&peripheral, ring_uuids::STATE_SNAPSHOT_UUID);
 
         let mut notifications = peripheral.notifications().await.map_err(map_ble_error)?;
         peripheral
@@ -466,9 +442,9 @@ impl RingManager for ExternalBleRingManager {
 
         if let Some(cached) = self.get_cached_peripheral(device_id).await? {
             for uuid in [
-                ring_constants::GESTURE_EVENT_UUID,
-                ring_constants::BATTERY_LEVEL_UUID,
-                ring_constants::STATE_SNAPSHOT_UUID,
+                ring_uuids::GESTURE_EVENT_UUID,
+                ring_uuids::BATTERY_LEVEL_UUID,
+                ring_uuids::STATE_SNAPSHOT_UUID,
             ] {
                 if let Some(characteristic) = find_characteristic(&cached.peripheral, uuid) {
                     let _ = cached.peripheral.unsubscribe(&characteristic).await;
@@ -490,6 +466,10 @@ impl RingManager for ExternalBleRingManager {
                 .await
                 .map_err(map_ble_error)?
         {
+            // Release: restore the ring's HID projection before dropping the
+            // link so it keeps working as a standalone HID remote.
+            self.write_hid_enabled(device_id, &cached.peripheral, true)
+                .await;
             cached
                 .peripheral
                 .disconnect()
@@ -737,15 +717,14 @@ fn map_ble_error(error: impl std::fmt::Display) -> AppError {
 }
 
 fn haptic_service_uuid() -> Uuid {
-    Uuid::parse_str(ring_constants::HAPTIC_SERVICE_UUID).expect("valid BLE service UUID")
+    ring_uuids::HAPTIC_SERVICE_UUID
 }
 
-fn find_characteristic(peripheral: &Peripheral, uuid: &str) -> Option<Characteristic> {
-    let target_uuid = Uuid::parse_str(uuid).ok()?;
+fn find_characteristic(peripheral: &Peripheral, uuid: Uuid) -> Option<Characteristic> {
     peripheral
         .characteristics()
         .into_iter()
-        .find(|characteristic| characteristic.uuid == target_uuid)
+        .find(|characteristic| characteristic.uuid == uuid)
 }
 
 fn is_ring_name(name: &str) -> bool {
@@ -775,17 +754,29 @@ fn dedup_strings(items: Vec<String>) -> Vec<String> {
 }
 
 fn parse_battery_level(bytes: &[u8]) -> Option<u8> {
-    serde_json::from_slice::<BleBatteryFrame>(bytes)
+    serde_json::from_slice::<BleBatteryData>(bytes)
         .map(|frame| frame.level)
         .ok()
-        .or_else(|| bytes.first().copied())
+        .or_else(|| (bytes.len() == 1).then(|| bytes[0]))
 }
 
-fn parse_state_snapshot(bytes: &[u8]) -> Option<StateSnapshotFrame> {
+fn parse_state_snapshot(bytes: &[u8]) -> Option<DeviceStateSnapshot> {
     serde_json::from_slice(bytes).ok()
 }
 
-fn snapshot_to_status(snapshot: StateSnapshotFrame) -> SimulatorStatus {
+/// Acks ride the state-snapshot characteristic as full envelopes (v0.3.0
+/// projection decision); try this when a payload isn't a snapshot.
+fn parse_ack_envelope(bytes: &[u8]) -> Option<ring_protocol::AckPayload> {
+    match serde_json::from_slice::<ProtocolEnvelope<SimulatorEvent>>(bytes) {
+        Ok(envelope) => match envelope.payload {
+            SimulatorEvent::Ack(ack) => Some(ack),
+            _ => None,
+        },
+        Err(_) => None,
+    }
+}
+
+fn snapshot_to_status(snapshot: DeviceStateSnapshot) -> SimulatorStatus {
     if let Some(reason) = snapshot.revocation_reason {
         return SimulatorStatus::Error(reason);
     }
@@ -796,33 +787,47 @@ fn snapshot_to_status(snapshot: StateSnapshotFrame) -> SimulatorStatus {
 }
 
 fn parse_gesture_event(bytes: &[u8]) -> Option<GestureType> {
-    let frame: BleGestureFrame = serde_json::from_slice(bytes).ok()?;
-    if let Ok(envelope) =
-        serde_json::from_slice::<ProtocolEnvelope<SimulatorEventFrame>>(&frame.data)
+    let frame: BleGestureData = serde_json::from_slice(bytes).ok()?;
+
+    // Prefer the embedded canonical envelope; parse leniently (payload only)
+    // so partial/older peers don't get dropped for missing envelope metadata.
+    if let Ok(value) = serde_json::from_slice::<serde_json::Value>(&frame.data)
+        && let Some(payload) = value.get("payload")
+        && let Ok(SimulatorEvent::Gesture(gesture)) =
+            serde_json::from_value::<SimulatorEvent>(payload.clone())
     {
-        let SimulatorEventFrame::Gesture(gesture) = envelope.payload;
         return semantic_gesture_to_app(&gesture.gesture);
     }
 
     legacy_gesture_to_app(&frame.gesture_type)
 }
 
-fn semantic_gesture_to_app(gesture: &SemanticGestureFrame) -> Option<GestureType> {
+fn semantic_gesture_to_app(gesture: &SemanticGesture) -> Option<GestureType> {
     match gesture {
-        SemanticGestureFrame::Tap => Some(GestureType::Tap),
-        SemanticGestureFrame::DoubleTap => Some(GestureType::DoubleTap),
-        SemanticGestureFrame::Slide { direction } => Some(match direction {
+        SemanticGesture::Tap => Some(GestureType::Tap),
+        SemanticGesture::DoubleTap => Some(GestureType::DoubleTap),
+        // Device-truth kinds (v0.3.0): swipes map to the GUI's tilt events,
+        // rotations to the rotate events.
+        SemanticGesture::Swipe { direction } => Some(match direction {
+            SemanticSwipeDirection::Left => GestureType::TiltLeft,
+            SemanticSwipeDirection::Right => GestureType::TiltRight,
+        }),
+        SemanticGesture::Rotate { direction } => Some(match direction {
+            SemanticRotateDirection::Cw => GestureType::RotateCw,
+            SemanticRotateDirection::Ccw => GestureType::RotateCcw,
+        }),
+        SemanticGesture::Slide { direction } => Some(match direction {
             SemanticSlideDirection::Up => GestureType::TiltUp,
             SemanticSlideDirection::Down => GestureType::TiltDown,
             SemanticSlideDirection::Left => GestureType::TiltLeft,
             SemanticSlideDirection::Right => GestureType::TiltRight,
         }),
-        SemanticGestureFrame::Tilt { angle_degrees } => Some(if *angle_degrees >= 0.0 {
+        SemanticGesture::Tilt { angle_degrees } => Some(if *angle_degrees >= 0.0 {
             GestureType::TiltRight
         } else {
             GestureType::TiltLeft
         }),
-        SemanticGestureFrame::Hold { duration_ms } => {
+        SemanticGesture::Hold { duration_ms } => {
             let _ = duration_ms;
             None
         }
@@ -837,22 +842,26 @@ fn legacy_gesture_to_app(gesture_type: &str) -> Option<GestureType> {
         "tilt_right" | "slide_right" => Some(GestureType::TiltRight),
         "tilt_up" | "slide_up" => Some(GestureType::TiltUp),
         "tilt_down" | "slide_down" => Some(GestureType::TiltDown),
+        "rotate_cw" | "twist_cw" => Some(GestureType::RotateCw),
+        "rotate_ccw" | "twist_ccw" => Some(GestureType::RotateCcw),
         _ => None,
     }
 }
 
 fn encode_haptic_request(request: &HapticRequest) -> Result<Vec<u8>, AppError> {
-    let payload = CommandEnvelope {
-        protocol_version: PROTOCOL_VERSION,
-        message_kind: "command",
-        message_id: Uuid::new_v4().to_string(),
-        sequence: 0,
-        timestamp_ms: chrono::Utc::now().timestamp_millis() as u64,
-        payload: SimulatorCommandPayload::Haptic(HapticCommandPayload {
+    // Canonical envelope from the SDK contract, with a monotonic sequence so
+    // acks can be correlated back to the command that triggered them.
+    let payload = ring_protocol::command_envelope(
+        NEXT_COMMAND_SEQUENCE.fetch_add(1, Ordering::Relaxed),
+        SimulatorCommand::Haptic(HapticCommandPayload {
+            // GUI-request → ratified-vocabulary mapping. Feel judgment calls
+            // (flagged as tunable in the 2026-07-02 platform handoff):
+            // a Click is a single Tick; a Notification is a DoubleTick;
+            // an Alert is the Error pattern.
             pattern: match request.pattern {
-                HapticPattern::Notification => SemanticHapticPattern::Notify,
+                HapticPattern::Notification => SemanticHapticPattern::DoubleTick,
                 HapticPattern::Alert => SemanticHapticPattern::Error,
-                HapticPattern::Click => SemanticHapticPattern::Success,
+                HapticPattern::Click => SemanticHapticPattern::Tick,
                 HapticPattern::Pulse
                 | HapticPattern::Ramp
                 | HapticPattern::Heartbeat
@@ -862,7 +871,7 @@ fn encode_haptic_request(request: &HapticRequest) -> Result<Vec<u8>, AppError> {
                 },
             },
         }),
-    };
+    );
     serde_json::to_vec(&payload).map_err(Into::into)
 }
 
@@ -915,32 +924,49 @@ async fn handle_notification(
     event_tx: &tokio::sync::broadcast::Sender<BleEvent>,
     logs: &Arc<RwLock<HashMap<String, Vec<String>>>>,
 ) {
-    let uuid = notification.uuid.to_string();
-    append_log(logs, device_id, format!("Notification received on {uuid}")).await;
+    append_log(
+        logs,
+        device_id,
+        format!("Notification received on {}", notification.uuid),
+    )
+    .await;
 
-    match uuid.as_str() {
-        ring_constants::GESTURE_EVENT_UUID => {
-            if let Some(event) =
-                parse_gesture_event(&notification.value).map(BleEvent::GestureDetected)
-            {
-                let _ = event_tx.send(event);
-            }
+    if notification.uuid == ring_uuids::GESTURE_EVENT_UUID {
+        if let Some(event) = parse_gesture_event(&notification.value).map(BleEvent::GestureDetected)
+        {
+            let _ = event_tx.send(event);
         }
-        ring_constants::BATTERY_LEVEL_UUID => {
-            if let Some(level) = parse_battery_level(&notification.value) {
-                let _ = event_tx.send(BleEvent::BatteryLevel(level));
-            }
+    } else if notification.uuid == ring_uuids::BATTERY_LEVEL_UUID {
+        if let Some(level) = parse_battery_level(&notification.value) {
+            let _ = event_tx.send(BleEvent::BatteryLevel(level));
         }
-        ring_constants::STATE_SNAPSHOT_UUID => {
-            if let Some(snapshot) = parse_state_snapshot(&notification.value) {
-                let _ = event_tx.send(BleEvent::FirmwareVersion(snapshot.firmware_version.clone()));
-                let _ = event_tx.send(BleEvent::SimulatorStatus(
-                    device_id.to_string(),
-                    snapshot_to_status(snapshot),
-                ));
-            }
+    } else if notification.uuid == ring_uuids::STATE_SNAPSHOT_UUID {
+        if let Some(snapshot) = parse_state_snapshot(&notification.value) {
+            let _ = event_tx.send(BleEvent::FirmwareVersion(snapshot.firmware_version.clone()));
+            let _ = event_tx.send(BleEvent::SimulatorStatus(
+                device_id.to_string(),
+                snapshot_to_status(snapshot),
+            ));
+        } else if let Some(ack) = parse_ack_envelope(&notification.value) {
+            // Acks ride the snapshot characteristic (v0.3.0).
+            append_log(
+                logs,
+                device_id,
+                format!(
+                    "Command ack: seq={} status={:?} reason={}",
+                    ack.sequence,
+                    ack.status,
+                    ack.reason.as_deref().unwrap_or("-")
+                ),
+            )
+            .await;
+            let _ = event_tx.send(BleEvent::CommandAck {
+                device_id: device_id.to_string(),
+                sequence: ack.sequence,
+                ok: ack.status == ring_protocol::AckStatus::Ok,
+                reason: ack.reason,
+            });
         }
-        _ => {}
     }
 }
 
@@ -978,19 +1004,29 @@ mod tests {
         .unwrap();
         let json: serde_json::Value = serde_json::from_slice(&payload).unwrap();
 
-        assert_eq!(json["protocol_version"], PROTOCOL_VERSION);
+        assert_eq!(
+            json["protocol_version"],
+            ring_protocol::SHARED_PROTOCOL_VERSION
+        );
         assert_eq!(json["message_kind"], "command");
+        // Commands are sequenced (v0.3.0): 0 means unsequenced and is never emitted.
+        assert!(json["sequence"].as_u64().unwrap() >= 1);
         assert_eq!(json["payload"]["command_kind"], "haptic");
+        // Ratified vocabulary: a Notification request rides as double_tick.
         assert_eq!(
             json["payload"]["command"]["pattern"]["pattern_kind"],
-            "notify"
+            "double_tick"
         );
     }
 
     #[test]
     fn parse_gesture_event_maps_shared_slide_direction() {
+        // Full BleGestureData + SemanticGestureEvent wire shapes, as the
+        // simulator's BleProtocolAdapter actually emits them.
         let bytes = serde_json::json!({
             "gesture_type": "slide",
+            "timestamp": 10,
+            "confidence": 0.93,
             "data": serde_json::to_vec(&serde_json::json!({
                 "payload": {
                     "event_kind": "gesture",
@@ -998,7 +1034,9 @@ mod tests {
                         "gesture": {
                             "gesture_kind": "slide",
                             "direction": "left"
-                        }
+                        },
+                        "confidence": 0.93,
+                        "timestamp_ms": 10
                     }
                 }
             }))
@@ -1009,5 +1047,53 @@ mod tests {
             parse_gesture_event(&serde_json::to_vec(&bytes).unwrap()),
             Some(GestureType::TiltLeft)
         );
+    }
+
+    #[test]
+    fn parse_gesture_event_maps_device_truth_swipe() {
+        let bytes = serde_json::json!({
+            "gesture_type": "swipe",
+            "timestamp": 11,
+            "confidence": 0.9,
+            "data": serde_json::to_vec(&serde_json::json!({
+                "payload": {
+                    "event_kind": "gesture",
+                    "event": {
+                        "gesture": {
+                            "gesture_kind": "swipe",
+                            "direction": "right"
+                        },
+                        "confidence": 0.9,
+                        "timestamp_ms": 11
+                    }
+                }
+            }))
+            .unwrap(),
+        });
+
+        assert_eq!(
+            parse_gesture_event(&serde_json::to_vec(&bytes).unwrap()),
+            Some(GestureType::TiltRight)
+        );
+    }
+
+    #[test]
+    fn parse_ack_envelope_extracts_denial() {
+        let envelope = ProtocolEnvelope {
+            protocol_version: ring_protocol::SHARED_PROTOCOL_VERSION.to_string(),
+            message_kind: ring_protocol::ProtocolMessageKind::Event,
+            message_id: "test".to_string(),
+            sequence: 9,
+            timestamp_ms: 1,
+            payload: SimulatorEvent::Ack(ring_protocol::AckPayload {
+                sequence: 9,
+                status: ring_protocol::AckStatus::Denied,
+                reason: Some("device is not enrolled".to_string()),
+            }),
+        };
+        let bytes = serde_json::to_vec(&envelope).unwrap();
+        let ack = parse_ack_envelope(&bytes).expect("ack must parse");
+        assert_eq!(ack.status, ring_protocol::AckStatus::Denied);
+        assert_eq!(ack.sequence, 9);
     }
 }

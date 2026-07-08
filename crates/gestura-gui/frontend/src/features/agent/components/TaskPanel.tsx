@@ -76,7 +76,11 @@ export function TaskPanel({
   const [saving, setSaving] = useState(false);
   const [showBreakdown, setShowBreakdown] = useState(false);
   const taskItemRefs = useRef(new Map<string, HTMLDivElement>());
-  const focusTimerRef = useRef<ReturnType<typeof window.setTimeout> | null>(null);
+  // `number`, not ReturnType<typeof window.setTimeout>: with @types/node in
+  // the tree, ReturnType resolves through Node's overloads to NodeJS.Timeout
+  // while the DOM call returns number — this is a browser context, so pin the
+  // DOM type explicitly and pair with window.setTimeout/window.clearTimeout.
+  const focusTimerRef = useRef<number | null>(null);
   const previousIsOpenRef = useRef(false);
 
   const allTasks = flattenTasks(tasks);
@@ -87,7 +91,7 @@ export function TaskPanel({
     previousIsOpenRef.current = isOpen;
 
     if (focusTimerRef.current) {
-      clearTimeout(focusTimerRef.current);
+      window.clearTimeout(focusTimerRef.current);
       focusTimerRef.current = null;
     }
 
@@ -102,7 +106,7 @@ export function TaskPanel({
 
     return () => {
       if (focusTimerRef.current) {
-        clearTimeout(focusTimerRef.current);
+        window.clearTimeout(focusTimerRef.current);
         focusTimerRef.current = null;
       }
     };
