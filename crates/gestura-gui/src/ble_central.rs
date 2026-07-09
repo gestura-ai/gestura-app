@@ -258,9 +258,7 @@ impl ExternalBleRingManager {
                 Err(error) => {
                     self.record_log(
                         device_id,
-                        format!(
-                            "Config read failed ({error}); restoring HID via defaults write"
-                        ),
+                        format!("Config read failed ({error}); restoring HID via defaults write"),
                     )
                     .await;
                     RingConfig::default()
