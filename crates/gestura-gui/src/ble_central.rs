@@ -15,10 +15,9 @@ use futures::StreamExt;
 // v0.3.0) — this file no longer defines any protocol shapes of its own
 // (dedup approved by user 2026-07-02).
 use gestura_core_ring::protocol::{
-    self as ring_protocol, BleBatteryData, BleGestureData, DeviceStateSnapshot,
-    HapticCommandPayload, ProtocolEnvelope, RingConfig, SemanticGesture, SemanticHapticPattern,
-    SemanticRotateDirection, SemanticSlideDirection, SemanticSwipeDirection, SimulatorCommand,
-    SimulatorEvent, ring_uuids,
+    self as ring_protocol, BleBatteryData, DeviceStateSnapshot, HapticCommandPayload,
+    ProtocolEnvelope, RingConfig, SemanticGesture, SemanticHapticPattern, SemanticRotateDirection,
+    SemanticSlideDirection, SemanticSwipeDirection, SimulatorCommand, SimulatorEvent, ring_uuids,
 };
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -233,8 +232,14 @@ impl ExternalBleRingManager {
     /// Writes the Config characteristic (C2) with the HID projection flag,
     /// when the characteristic exists. Uses clobber-free read-modify-write
     /// when C2 is readable (readable-C2, ratified 2026-07-08); falls back to
-    /// defaults against pre-read firmware. Best-effort: failures are logged,
-    /// not fatal — a trust-gate refusal is expected on unbonded links.
+    /// defaults only against pre-read firmware (no READ property).
+    ///
+    /// Read-failure policy is ASYMMETRIC by design: suppressing (takeover)
+    /// skips the write — a transient read error must not become a defaults
+    /// write that clobbers non-HID config bytes. Restoring (release) falls
+    /// back to a defaults write — skipping would strand the ring
+    /// HID-suppressed after the app disconnects. Best-effort: failures are
+    /// logged, not fatal — a trust-gate refusal is expected on unbonded links.
     async fn write_hid_enabled(&self, device_id: &str, peripheral: &Peripheral, enabled: bool) {
         let Some(characteristic) = find_characteristic(peripheral, ring_uuids::CONFIG_UUID) else {
             return;
@@ -242,7 +247,24 @@ impl ExternalBleRingManager {
         let base = if characteristic.properties.contains(CharPropFlags::READ) {
             match peripheral.read(&characteristic).await {
                 Ok(bytes) => RingConfig::from_bytes(&bytes),
-                Err(_) => RingConfig::default(),
+                Err(error) if !enabled => {
+                    self.record_log(
+                        device_id,
+                        format!("Config read failed ({error}); HID-suppress write skipped"),
+                    )
+                    .await;
+                    return;
+                }
+                Err(error) => {
+                    self.record_log(
+                        device_id,
+                        format!(
+                            "Config read failed ({error}); restoring HID via defaults write"
+                        ),
+                    )
+                    .await;
+                    RingConfig::default()
+                }
             }
         } else {
             RingConfig::default()
@@ -790,7 +812,18 @@ fn snapshot_to_status(snapshot: DeviceStateSnapshot) -> SimulatorStatus {
 }
 
 fn parse_gesture_event(bytes: &[u8]) -> Option<GestureType> {
-    let frame: BleGestureData = serde_json::from_slice(bytes).ok()?;
+    // Lenient mirror of `BleGestureData`: older peers send only
+    // `{gesture_type, data}` (or bare `{gesture_type}`), so every field
+    // beyond `gesture_type` is defaulted rather than required — a strict
+    // parse would drop those frames before the legacy fallback could run.
+    #[derive(serde::Deserialize)]
+    struct LenientGestureFrame {
+        gesture_type: String,
+        #[serde(default)]
+        data: Vec<u8>,
+    }
+
+    let frame: LenientGestureFrame = serde_json::from_slice(bytes).ok()?;
 
     // Prefer the embedded canonical envelope; parse leniently (payload only)
     // so partial/older peers don't get dropped for missing envelope metadata.
@@ -1020,6 +1053,15 @@ mod tests {
             json["payload"]["command"]["pattern"]["pattern_kind"],
             "double_tick"
         );
+    }
+
+    #[test]
+    fn parse_gesture_event_accepts_legacy_minimal_frame() {
+        // Older peers send only {gesture_type} (no timestamp/confidence/data);
+        // they must reach the legacy_gesture_to_app fallback, not be dropped
+        // by a strict wrapper parse.
+        let bytes = serde_json::to_vec(&serde_json::json!({ "gesture_type": "tap" })).unwrap();
+        assert_eq!(parse_gesture_event(&bytes), Some(GestureType::Tap));
     }
 
     #[test]

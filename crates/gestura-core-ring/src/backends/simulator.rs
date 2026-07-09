@@ -321,39 +321,65 @@ impl SimulatorBackend {
 
     /// Sets the HID projection flag via clobber-free read-modify-write when
     /// the Config characteristic is readable (readable-C2, ratified
-    /// 2026-07-08), falling back to a defaults-based write when it isn't
-    /// (pre-read firmware).
+    /// 2026-07-08), falling back to a defaults-based write only when the
+    /// characteristic has no READ property at all (pre-read firmware).
+    ///
+    /// Read-failure policy is ASYMMETRIC by design:
+    /// - Suppressing (takeover, `hid_enabled=false`): skip the write — a
+    ///   transient read error must not become a defaults write that clobbers
+    ///   non-HID config bytes; worst case HID stays on briefly.
+    /// - Restoring (release, `hid_enabled=true`): fall back to a defaults
+    ///   write — skipping would leave the ring HID-suppressed after the app
+    ///   disconnects, killing its standalone-remote function until the next
+    ///   connection. Restoring HID outweighs preserving bytes 0–2 here.
     async fn write_hid_config(&self, hid_enabled: bool) {
-        let p_lock = self.peripheral.lock().await;
-        let c_lock = self.config_char.lock().await;
-        if let (Some(peripheral), Some(char)) = (&*p_lock, &*c_lock) {
-            let base = if char.properties.contains(CharPropFlags::READ) {
-                match peripheral.read(char).await {
-                    Ok(bytes) => RingConfig::from_bytes(&bytes),
-                    Err(e) => {
-                        tracing::debug!(
-                            "Config read failed ({}); writing defaults-based config",
-                            e
-                        );
-                        RingConfig::default()
-                    }
-                }
-            } else {
-                RingConfig::default()
-            };
-            let config = base.hid_set(hid_enabled);
-
-            let write_type = if char
-                .properties
-                .contains(CharPropFlags::WRITE_WITHOUT_RESPONSE)
-            {
-                btleplug::api::WriteType::WithoutResponse
-            } else {
-                btleplug::api::WriteType::WithResponse
-            };
-            if let Err(e) = peripheral.write(char, &config.to_bytes(), write_type).await {
-                tracing::warn!("Failed to write ring config: {}", e);
+        // Clone the handles out so the guards aren't held across BLE awaits.
+        let (peripheral, char) = {
+            let p_lock = self.peripheral.lock().await;
+            let c_lock = self.config_char.lock().await;
+            match (&*p_lock, &*c_lock) {
+                (Some(peripheral), Some(char)) => (peripheral.clone(), char.clone()),
+                _ => return,
             }
+        };
+        let base = if char.properties.contains(CharPropFlags::READ) {
+            match peripheral.read(&char).await {
+                Ok(bytes) => RingConfig::from_bytes(&bytes),
+                Err(e) if !hid_enabled => {
+                    tracing::warn!(
+                        "Config read failed ({}); skipping HID-suppress write to avoid \
+                         clobbering device state",
+                        e
+                    );
+                    return;
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        "Config read failed ({}); restoring HID with a defaults-based \
+                         write (bytes 0-2 may reset) rather than leaving it suppressed",
+                        e
+                    );
+                    RingConfig::default()
+                }
+            }
+        } else {
+            RingConfig::default()
+        };
+        let config = base.hid_set(hid_enabled);
+
+        let write_type = if char
+            .properties
+            .contains(CharPropFlags::WRITE_WITHOUT_RESPONSE)
+        {
+            btleplug::api::WriteType::WithoutResponse
+        } else {
+            btleplug::api::WriteType::WithResponse
+        };
+        if let Err(e) = peripheral
+            .write(&char, &config.to_bytes(), write_type)
+            .await
+        {
+            tracing::warn!("Failed to write ring config: {}", e);
         }
     }
 

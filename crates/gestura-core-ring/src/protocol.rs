@@ -232,7 +232,10 @@ pub enum SemanticHapticPattern {
     Tick,
     DoubleTick,
     Waveform {
-        /// Base64-encoded samples (8-bit PCM proposed; firmware to confirm).
+        /// Base64-encoded samples: 12-bit two's-complement sent as int16
+        /// (BOS1921 datasheet pass, 2026-07-07 — see PROTOCOL.md). Firmware
+        /// rejects >1024 samples (device FIFO) until streaming refill lands;
+        /// the protocol-level cap stays 4 KiB.
         data: String,
         sample_rate_hz: u32,
         intensity: f32,
@@ -280,13 +283,15 @@ pub struct BleBatteryData {
 /// Ring configuration, written to the Config characteristic (C2).
 ///
 /// Wire layout (all bytes optional from byte 1 onward — firmware treats
-/// shorter writes as leaving trailing fields unchanged... **caveat: that
-/// semantic is asserted by the 2026-07-07 firmware note ("byte 3 optional /
-/// backward-compatible") but there is no config READ path, so the SDK cannot
-/// know current device state. Until a read-back or delta-write is specified,
-/// this struct's defaults mirror firmware defaults and a full 4-byte write
-/// may clobber out-of-band config changes — flagged for firmware cross-check
-/// in PROTOCOL.md.**
+/// shorter writes as leaving trailing fields unchanged, per the 2026-07-07
+/// firmware note "byte 3 optional / backward-compatible").
+///
+/// **Config READ path (readable-C2, ratified 2026-07-08):** current firmware
+/// exposes C2 as readable, so hosts preserve device state via clobber-free
+/// read-modify-write (`from_bytes` → mutate → `to_bytes`). Only against
+/// pre-read firmware (no READ property on C2) do writers fall back to this
+/// struct's defaults, which mirror firmware defaults — in that mode a full
+/// 4-byte write may still clobber out-of-band config changes.
 ///
 /// | byte | field | default |
 /// |---|---|---|
