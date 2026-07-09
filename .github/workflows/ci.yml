@@ -12,6 +12,11 @@ env:
   NODE_VERSION: 'lts/*'
   # Pin Rust version for reproducible builds
   RUST_VERSION: stable
+  # CI disk hygiene: incremental caches and debuginfo balloon the target dir
+  # (the test job compiles ~8 feature combinations into one target dir and
+  # has exhausted the ubuntu runner's disk). Neither helps in CI.
+  CARGO_INCREMENTAL: 0
+  CARGO_PROFILE_DEV_DEBUG: 0
 
 jobs:
   test:
@@ -35,6 +40,15 @@ jobs:
 
     steps:
     - uses: actions/checkout@v4
+
+    - name: Free disk space (Ubuntu)
+      if: matrix.os == 'ubuntu-latest'
+      run: |
+        # The full-workspace test matrix needs more disk than the runner's
+        # default free space; drop preinstalled toolchains we never use (~25GB)
+        sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+        sudo docker image prune --all --force > /dev/null 2>&1 || true
+        df -h /
 
     - name: Install Rust
       uses: dtolnay/rust-toolchain@stable
