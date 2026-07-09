@@ -632,7 +632,7 @@ impl AgentManager {
         let mut to_shutdown: Vec<mpsc::Sender<AgentCommand>> = Vec::new();
         {
             let inner = self.inner.lock().await;
-            for (_id, rec) in inner.agents.iter() {
+            for rec in inner.agents.values() {
                 to_shutdown.push(rec.tx.clone());
             }
         }

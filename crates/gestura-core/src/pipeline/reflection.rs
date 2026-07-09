@@ -1088,7 +1088,7 @@ impl AgentPipeline {
                         .as_ref()
                         .map(TaskReflectionLink::decision_summary)
                         .unwrap_or_else(|| {
-                            format!("Reflection: {}", &reflection.corrective_strategy)
+                            format!("Reflection: {}", reflection.corrective_strategy)
                         });
                     let rationale = link
                         .as_ref()

@@ -152,7 +152,7 @@ impl GesturePatternLearner {
         let mut scores = Vec::new();
 
         // Compare with all learned patterns
-        for (_pattern_id, pattern) in patterns.iter() {
+        for pattern in patterns.values() {
             // Skip user-specific patterns if not matching user
             if let Some(pattern_user) = &pattern.user_id
                 && *pattern_user != sequence.user_id

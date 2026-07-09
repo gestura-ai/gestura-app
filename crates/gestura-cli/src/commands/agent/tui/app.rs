@@ -2411,7 +2411,7 @@ impl TuiApp {
     /// Set error message with timestamp for auto-dismiss
     pub fn set_error(&mut self, error: impl Into<String>) {
         let err = error.into();
-        self.status = format!("Error: {}", &err);
+        self.status = format!("Error: {}", err);
         self.error = Some(err);
         self.error_timestamp = Some(std::time::Instant::now());
     }
