@@ -257,7 +257,11 @@ impl ExternalBleRingManager {
                     device_id,
                     format!(
                         "HID projection {}",
-                        if enabled { "restored" } else { "suppressed (app takeover)" }
+                        if enabled {
+                            "restored"
+                        } else {
+                            "suppressed (app takeover)"
+                        }
                     ),
                 )
                 .await;
@@ -276,10 +280,9 @@ impl ExternalBleRingManager {
     ) -> Result<(), AppError> {
         let cached = self.ensure_connected(device_id).await?;
         let characteristic =
-            find_characteristic(&cached.peripheral, ring_uuids::HAPTIC_COMMAND_UUID)
-                .ok_or_else(|| {
-                    AppError::Ble("Haptic command characteristic not found".to_string())
-                })?;
+            find_characteristic(&cached.peripheral, ring_uuids::HAPTIC_COMMAND_UUID).ok_or_else(
+                || AppError::Ble("Haptic command characteristic not found".to_string()),
+            )?;
         let payload = encode_haptic_request(&request)?;
         cached
             .peripheral
@@ -398,9 +401,9 @@ impl RingManager for ExternalBleRingManager {
         }
 
         let gesture_characteristic =
-            find_characteristic(&peripheral, ring_uuids::GESTURE_EVENT_UUID).ok_or_else(
-                || AppError::Ble("Gesture event characteristic not found".to_string()),
-            )?;
+            find_characteristic(&peripheral, ring_uuids::GESTURE_EVENT_UUID).ok_or_else(|| {
+                AppError::Ble("Gesture event characteristic not found".to_string())
+            })?;
         let battery_characteristic =
             find_characteristic(&peripheral, ring_uuids::BATTERY_LEVEL_UUID);
         let state_characteristic =

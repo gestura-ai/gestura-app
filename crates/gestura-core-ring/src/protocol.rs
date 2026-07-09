@@ -237,7 +237,10 @@ pub enum SemanticHapticPattern {
         sample_rate_hz: u32,
         intensity: f32,
     },
-    Custom { intensity: f32, duration_ms: u64 },
+    Custom {
+        intensity: f32,
+        duration_ms: u64,
+    },
 }
 
 /// Semantic haptic command payload.
@@ -509,9 +512,10 @@ mod tests {
 
     #[test]
     fn v0_3_gesture_kinds_parse() {
-        let swipe: SemanticGesture =
-            serde_json::from_value(serde_json::json!({ "gesture_kind": "swipe", "direction": "left" }))
-                .unwrap();
+        let swipe: SemanticGesture = serde_json::from_value(
+            serde_json::json!({ "gesture_kind": "swipe", "direction": "left" }),
+        )
+        .unwrap();
         assert_eq!(
             swipe,
             SemanticGesture::Swipe {
@@ -519,9 +523,10 @@ mod tests {
             }
         );
 
-        let rotate: SemanticGesture =
-            serde_json::from_value(serde_json::json!({ "gesture_kind": "rotate", "direction": "cw" }))
-                .unwrap();
+        let rotate: SemanticGesture = serde_json::from_value(
+            serde_json::json!({ "gesture_kind": "rotate", "direction": "cw" }),
+        )
+        .unwrap();
         assert_eq!(
             rotate,
             SemanticGesture::Rotate {

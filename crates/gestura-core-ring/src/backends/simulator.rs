@@ -3,9 +3,9 @@ use crate::protocol::{
     SemanticGesture, SemanticHapticPattern, SemanticRotateDirection, SemanticSlideDirection,
     SemanticSwipeDirection, SimulatorCommand, SimulatorEvent, ring_uuids,
 };
-use base64::Engine as _;
 use crate::{DeviceStatus, RingBackend};
 use async_trait::async_trait;
+use base64::Engine as _;
 use btleplug::api::{CharPropFlags, Characteristic, Peripheral as _};
 use btleplug::platform::{Adapter, Peripheral};
 use futures::stream::StreamExt;
@@ -90,7 +90,12 @@ impl SimulatorRawGesture {
                 }
             }
             Self::Tilt { angle } => Gesture {
-                gesture_type: if angle >= 0.0 { "tilt_right" } else { "tilt_left" }.to_string(),
+                gesture_type: if angle >= 0.0 {
+                    "tilt_right"
+                } else {
+                    "tilt_left"
+                }
+                .to_string(),
                 confidence: 1.0,
                 acceleration: None,
                 gyroscope: Some([angle, 0.0, 0.0]),
@@ -346,10 +351,7 @@ impl SimulatorBackend {
             } else {
                 btleplug::api::WriteType::WithResponse
             };
-            if let Err(e) = peripheral
-                .write(char, &config.to_bytes(), write_type)
-                .await
-            {
+            if let Err(e) = peripheral.write(char, &config.to_bytes(), write_type).await {
                 tracing::warn!("Failed to write ring config: {}", e);
             }
         }
@@ -390,11 +392,7 @@ impl SimulatorBackend {
     /// Spawns a background task that routes notifications by characteristic
     /// UUID: gesture events to the broadcast channel, battery and state
     /// snapshots into `device_state`.
-    fn spawn_event_listener(
-        &self,
-        peripheral: Peripheral,
-        subscribed: Vec<Characteristic>,
-    ) {
+    fn spawn_event_listener(&self, peripheral: Peripheral, subscribed: Vec<Characteristic>) {
         let tx = self.tx.clone();
         let device_state = self.device_state.clone();
         tokio::spawn(async move {
@@ -770,7 +768,9 @@ mod tests {
             "timestamp_ms": 5
         }));
         assert_eq!(
-            parse_gesture_notification(&bytes).expect("must parse").gesture_type,
+            parse_gesture_notification(&bytes)
+                .expect("must parse")
+                .gesture_type,
             "tilt_left"
         );
 
@@ -780,7 +780,9 @@ mod tests {
             "timestamp_ms": 6
         }));
         assert_eq!(
-            parse_gesture_notification(&bytes).expect("must parse").gesture_type,
+            parse_gesture_notification(&bytes)
+                .expect("must parse")
+                .gesture_type,
             "twist_ccw"
         );
     }
