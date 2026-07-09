@@ -513,8 +513,8 @@ impl RingBackend for SimulatorBackend {
         }
 
         let mut subscribed = vec![gesture_char];
-        subscribed.extend(battery_char.into_iter());
-        subscribed.extend(snapshot_char.into_iter());
+        subscribed.extend(battery_char);
+        subscribed.extend(snapshot_char);
         self.spawn_event_listener(peripheral, subscribed);
 
         tracing::info!("SimulatorBackend bound to protocol characteristics");
