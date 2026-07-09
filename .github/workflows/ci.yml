@@ -10,8 +10,11 @@ on:
 env:
   CARGO_TERM_COLOR: always
   NODE_VERSION: 'lts/*'
-  # Pin Rust version for reproducible builds
-  RUST_VERSION: stable
+  # Pinned Rust toolchain — the single source of truth for every job below.
+  # CI previously floated on latest stable, so new clippy lints could fail
+  # `-D warnings` on untouched code the day a new Rust shipped. Bump this
+  # deliberately (and fix any new lints in the same PR).
+  RUST_VERSION: 1.97.0
   # CI disk hygiene: incremental caches and debuginfo balloon the target dir
   # (the test job compiles ~8 feature combinations into one target dir and
   # has exhausted the ubuntu runner's disk). Neither helps in CI.
@@ -29,13 +32,10 @@ jobs:
           # Non-Linux runners exclude gestura-gui from Rust test targets because GUI compilation
           # is covered by the dedicated build matrix and release pipeline.
           - os: ubuntu-latest
-            rust: stable
             test_flags: --workspace
           - os: windows-2022
-            rust: stable
             test_flags: --workspace --exclude gestura-gui
           - os: macos-14
-            rust: stable
             test_flags: --workspace --exclude gestura-gui
 
     steps:
@@ -53,7 +53,7 @@ jobs:
     - name: Install Rust
       uses: dtolnay/rust-toolchain@stable
       with:
-        toolchain: ${{ matrix.rust }}
+        toolchain: ${{ env.RUST_VERSION }}
         components: rustfmt, clippy
         # Add cross-compilation targets for macOS universal binary validation
         targets: ${{ matrix.os == 'macos-14' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
@@ -108,7 +108,7 @@ jobs:
       uses: Swatinem/rust-cache@v2
       with:
         # Include OS, Rust version, target triple for accurate caching
-        prefix-key: "v1-rust-${{ matrix.os }}-${{ matrix.rust }}-${{ matrix.os == 'macos-14' && 'universal-apple-darwin' || matrix.os == 'windows-2022' && 'x86_64-pc-windows-msvc' || 'x86_64-unknown-linux-gnu' }}"
+        prefix-key: "v1-rust-${{ matrix.os }}-${{ env.RUST_VERSION }}-${{ matrix.os == 'macos-14' && 'universal-apple-darwin' || matrix.os == 'windows-2022' && 'x86_64-pc-windows-msvc' || 'x86_64-unknown-linux-gnu' }}"
         # Cache the target directory
         cache-targets: true
         # Also cache ~/.cargo/bin for installed tools
@@ -220,6 +220,8 @@ jobs:
 
     - name: Install Rust
       uses: dtolnay/rust-toolchain@stable
+      with:
+        toolchain: ${{ env.RUST_VERSION }}
 
     - name: Security audit
       run: |
@@ -240,6 +242,7 @@ jobs:
     - name: Install Rust
       uses: dtolnay/rust-toolchain@stable
       with:
+        toolchain: ${{ env.RUST_VERSION }}
         # Add cross-compilation targets for macOS universal binary validation
         targets: ${{ matrix.os == 'macos-14' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
 
