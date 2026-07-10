@@ -6,26 +6,48 @@
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "exports": {
-    ".": { "types": "./dist/index.d.ts", "import": "./dist/index.js" },
-    "./tauri": { "types": "./dist/transport/tauri.d.ts", "import": "./dist/transport/tauri.js" }
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./tauri": {
+      "types": "./dist/transport/tauri.d.ts",
+      "import": "./dist/transport/tauri.js"
+    }
   },
-  "files": ["dist", "src"],
+  "files": [
+    "dist",
+    "src"
+  ],
   "scripts": {
-    "build:wasm": "cd ../../crates/gestura-protocol && wasm-pack build --release --features wasm --target bundler --out-dir ../../sdk/typescript/wasm",
+    "build:wasm": "cd ../../crates/gestura-protocol && wasm-pack build --release --target bundler --out-dir ../../sdk/typescript/wasm -- --features wasm",
     "build": "npm run build:wasm && tsc",
     "typecheck": "tsc --noEmit",
     "test": "vitest run"
   },
-  "keywords": ["gestura", "haptic", "ring", "ble", "gesture", "wearable", "wasm"],
+  "keywords": [
+    "gestura",
+    "haptic",
+    "ring",
+    "ble",
+    "gesture",
+    "wearable",
+    "wasm"
+  ],
   "license": "LicenseRef-Gestura-Prosperity-1.1",
   "peerDependencies": {
     "@tauri-apps/api": ">=2.0.0"
   },
   "peerDependenciesMeta": {
-    "@tauri-apps/api": { "optional": true }
+    "@tauri-apps/api": {
+      "optional": true
+    }
   },
   "devDependencies": {
     "typescript": "^5.5.0",
     "vitest": "^2.0.0"
+  },
+  "dependencies": {
+    "@gestura/protocol-wasm": "file:./wasm"
   }
 }

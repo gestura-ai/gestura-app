@@ -37,6 +37,7 @@ members = [
     "crates/gestura-core-context",
     "crates/gestura-core-intent",
     "crates/gestura-core-ring",
+    "crates/gestura-protocol",
     "crates/gestura-core-haptics",
     "crates/gestura-core-gestures",
     "crates/gestura-core-devices",

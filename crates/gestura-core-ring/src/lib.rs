@@ -20,6 +20,9 @@ pub trait RingBackend: Send + Sync {
 }
 
 pub mod backends;
-pub mod protocol;
+/// The Shared Semantic Protocol lives in the dependency-free `gestura-protocol`
+/// crate (so it compiles to WASM for the TypeScript SDK). Re-exported here so
+/// every existing `gestura_core_ring::protocol::*` path keeps resolving.
+pub use gestura_protocol as protocol;
 
 pub use backends::simulator::SimulatorBackend;

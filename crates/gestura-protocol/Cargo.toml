@@ -1,0 +1,32 @@
+[package]
+name = "gestura-protocol"
+version.workspace = true
+edition = "2024"
+license = "LicenseRef-Gestura-Prosperity-1.1"
+description = "Haptica Harmony B1 Shared Semantic Protocol — pure codec/types, the canonical wire contract. No transport, no async: compiles to WASM untouched so the TypeScript SDK shares the exact Rust source of truth."
+
+[lib]
+# rlib for the workspace; cdylib for the wasm-bindgen artifact.
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+uuid = { version = "1.0", features = ["v4"] }
+
+# WASM bindings (feature-gated so native workspace builds stay lean).
+# On wasm32, uuid needs the `js` feature for a browser RNG.
+wasm-bindgen = { version = "0.2", optional = true }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+uuid = { version = "1.0", features = ["v4", "js"] }
+
+[features]
+default = []
+wasm = ["dep:wasm-bindgen"]
+
+# rustc emits bulk-memory ops (memory.copy) by default; wasm-pack invokes
+# wasm-opt without feature flags, so pass them explicitly or -O fails
+# validation.
+[package.metadata.wasm-pack.profile.release]
+wasm-opt = ["-O", "--enable-bulk-memory", "--enable-nontrapping-float-to-int"]

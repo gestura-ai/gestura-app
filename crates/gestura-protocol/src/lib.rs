@@ -1,11 +1,14 @@
 //! Canonical home of the Haptica Harmony B1 Shared Semantic Protocol.
 //!
 //! Per the user decision of 2026-07-02, the protocol contract is centralized
-//! in the gestura-app SDK — this module. The simulator's `protocol.rs`
-//! (v0.1.0) was the starting definition; the simulator and the ring firmware
-//! now follow this file. It remains a shared contract across the firmware and
-//! platform lanes: vocabulary/shape changes are proposed, cross-checked with
-//! the firmware lane, and confirmed by the user before landing here.
+//! in the gestura-app SDK. This crate IS that home (2026-07-10): a pure
+//! codec/types leaf with no transport and no async, so it compiles to WASM
+//! untouched and the TypeScript SDK shares the exact Rust source of truth
+//! rather than a hand-ported copy. `gestura-core-ring` re-exports it as
+//! `gestura_core_ring::protocol`, so every existing path keeps resolving.
+//! It remains a shared contract across the firmware and platform lanes:
+//! vocabulary/shape changes are proposed, cross-checked with the firmware
+//! lane, and confirmed by the user before landing here.
 //!
 //! v0.2.0 (2026-07-02): haptic vocabulary ratified as
 //! {Confirm, Error, Tick, DoubleTick, Waveform} (user decision; firmware
@@ -23,6 +26,11 @@
 //!   consumed loosely).
 
 use serde::{Deserialize, Serialize};
+
+/// WASM bindings for the TypeScript SDK (feature `wasm`). Off by default so
+/// native workspace builds don't pull `wasm-bindgen`.
+#[cfg(feature = "wasm")]
+pub mod wasm;
 
 /// Shared protocol version.
 pub const SHARED_PROTOCOL_VERSION: &str = "0.3.0";
@@ -393,9 +401,236 @@ pub fn command_envelope<T>(sequence: u64, payload: T) -> ProtocolEnvelope<T> {
     }
 }
 
+// ---- Gesture → action hint (SDK convenience) ----
+
+/// Maps a device gesture type to a semantic action label + mapping
+/// confidence. This is the lightweight lookup an SDK consumer wants without
+/// the full host-side pipeline.
+///
+/// NOTE: the AUTHORITATIVE intent normalization (multi-modality fusion of
+/// voice + chat + gesture) lives in `gestura-core-intent`. This table is the
+/// same gesture→action vocabulary, kept here so the WASM/TS SDK shares it;
+/// the two must stay in sync (follow-up: have `gestura-core-intent` import
+/// this).
+pub fn gesture_to_action(gesture_type: &str) -> (&'static str, f32) {
+    match gesture_type.to_ascii_lowercase().as_str() {
+        "tap" => ("confirm", 0.9),
+        "double_tap" => ("execute", 0.92),
+        "tilt_left" => ("previous", 0.85),
+        "tilt_right" => ("next", 0.85),
+        "tilt_up" => ("scroll_up", 0.8),
+        "tilt_down" => ("scroll_down", 0.8),
+        "twist_cw" => ("increase", 0.82),
+        "twist_ccw" => ("decrease", 0.82),
+        "shake" => ("dismiss", 0.78),
+        "hold" => ("select", 0.88),
+        _ => ("unknown_gesture", 0.5),
+    }
+}
+
+// ---- C3 raw sensor stream (binary, not enveloped) ----
+
+/// One decoded IMU/touch sample from a C3 frame. Units match the wire: accel
+/// in milli-g, gyro in **deci-dps** (mdps/100). `slider_pos` and `touched`
+/// are valid only when the frame's `touch_valid` flag is set.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SensorSample {
+    pub ax_mg: i16,
+    pub ay_mg: i16,
+    pub az_mg: i16,
+    /// Gyro X in deci-dps (multiply by 100 for milli-dps).
+    pub gx_ddps: i16,
+    pub gy_ddps: i16,
+    pub gz_ddps: i16,
+    pub slider_pos: u16,
+    pub touched: bool,
+}
+
+impl SensorSample {
+    /// Gyro X in milli-dps (the unit the tuning CSV / recorder expects).
+    pub fn gx_mdps(&self) -> i32 {
+        self.gx_ddps as i32 * 100
+    }
+    pub fn gy_mdps(&self) -> i32 {
+        self.gy_ddps as i32 * 100
+    }
+    pub fn gz_mdps(&self) -> i32 {
+        self.gz_ddps as i32 * 100
+    }
+}
+
+/// A decoded C3 raw-sensor frame. Binary, envelope-free — C3 is its own
+/// channel with its own schema (rate-mismatched with the JSON envelope).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SensorFrame {
+    pub frame_version: u8,
+    /// True when the samples' `slider_pos`/`touched` fields are meaningful.
+    pub touch_valid: bool,
+    /// Device uptime (ms) of the FIRST sample in the batch.
+    pub t0_ms: u32,
+    /// Nominal spacing between samples (ms).
+    pub period_ms: u8,
+    pub samples: Vec<SensorSample>,
+}
+
+/// Errors from decoding a C3 sensor frame.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SensorFrameError {
+    /// Buffer shorter than the 8-byte header.
+    TooShort,
+    /// `frame_version` not understood by this decoder.
+    UnsupportedVersion(u8),
+    /// Declared sample_count doesn't match the buffer length.
+    LengthMismatch { declared: usize, available: usize },
+}
+
+impl core::fmt::Display for SensorFrameError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::TooShort => write!(f, "sensor frame shorter than 8-byte header"),
+            Self::UnsupportedVersion(v) => write!(f, "unsupported sensor frame version {v:#x}"),
+            Self::LengthMismatch {
+                declared,
+                available,
+            } => write!(
+                f,
+                "sensor frame length mismatch: {declared} samples declared, {available} bytes of samples available",
+            ),
+        }
+    }
+}
+
+impl std::error::Error for SensorFrameError {}
+
+/// The C3 frame layout this decoder understands (firmware `sensor_frame.h`,
+/// ratified 2026-07-09/10).
+pub mod sensor_frame {
+    pub const VERSION: u8 = 0x01;
+    pub const HEADER_LEN: usize = 8;
+    pub const SAMPLE_LEN: usize = 16;
+    pub const MAX_SAMPLES: usize = 20;
+    /// Header flag bit0: touch fields valid.
+    pub const FLAG_TOUCH_VALID: u8 = 0x01;
+}
+
+impl SensorFrame {
+    /// Decodes a C3 frame from its wire bytes (little-endian throughout).
+    /// Matches firmware `sensor_frame.h` byte-for-byte (see the golden vector
+    /// `conformance/vectors/sensor_frame.expected`).
+    pub fn decode(buf: &[u8]) -> Result<Self, SensorFrameError> {
+        use sensor_frame::*;
+        if buf.len() < HEADER_LEN {
+            return Err(SensorFrameError::TooShort);
+        }
+        let frame_version = buf[0];
+        if frame_version != VERSION {
+            return Err(SensorFrameError::UnsupportedVersion(frame_version));
+        }
+        let flags = buf[1];
+        let touch_valid = flags & FLAG_TOUCH_VALID != 0;
+        let t0_ms = u32::from_le_bytes([buf[2], buf[3], buf[4], buf[5]]);
+        let count = buf[6] as usize;
+        let period_ms = buf[7];
+
+        let want = HEADER_LEN + count * SAMPLE_LEN;
+        if buf.len() < want {
+            return Err(SensorFrameError::LengthMismatch {
+                declared: count,
+                available: buf.len().saturating_sub(HEADER_LEN),
+            });
+        }
+
+        let rd = |b: &[u8]| i16::from_le_bytes([b[0], b[1]]);
+        let mut samples = Vec::with_capacity(count);
+        for i in 0..count {
+            let s = &buf[HEADER_LEN + i * SAMPLE_LEN..];
+            samples.push(SensorSample {
+                ax_mg: rd(&s[0..2]),
+                ay_mg: rd(&s[2..4]),
+                az_mg: rd(&s[4..6]),
+                gx_ddps: rd(&s[6..8]),
+                gy_ddps: rd(&s[8..10]),
+                gz_ddps: rd(&s[10..12]),
+                slider_pos: u16::from_le_bytes([s[12], s[13]]),
+                // s[14] = touch_flags bit0; s[15] = pad
+                touched: touch_valid && (s[14] & 0x01 != 0),
+            });
+        }
+
+        Ok(SensorFrame {
+            frame_version,
+            touch_valid,
+            t0_ms,
+            period_ms,
+            samples,
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Decodes the exact firmware golden vector
+    /// (`conformance/vectors/sensor_frame.expected`, device-core 1.1) and
+    /// checks every field — the SDK ↔ firmware C3 parity guarantee.
+    #[test]
+    fn sensor_frame_decodes_firmware_golden_vector() {
+        // FRAME_HEX from the golden vector, byte-for-byte.
+        let hex =
+            "010104030201020a640038ff2c01c2012efb00000102010000000000e80300000000000001020000";
+        let bytes: Vec<u8> = (0..hex.len())
+            .step_by(2)
+            .map(|i| u8::from_str_radix(&hex[i..i + 2], 16).unwrap())
+            .collect();
+
+        let frame = SensorFrame::decode(&bytes).expect("golden frame must decode");
+        assert_eq!(frame.frame_version, 0x01);
+        assert!(frame.touch_valid);
+        assert_eq!(frame.t0_ms, 0x0102_0304); // 16909060, matches scenario
+        assert_eq!(frame.period_ms, 10);
+        assert_eq!(frame.samples.len(), 2);
+
+        // Sample 1: 100/-200/300 mg, 45000/-123456/0 mdps, slider 513, touched.
+        let s0 = frame.samples[0];
+        assert_eq!((s0.ax_mg, s0.ay_mg, s0.az_mg), (100, -200, 300));
+        // gyro stored as deci-dps: 45000 mdps → 450; -123456 mdps → -1234 (trunc).
+        assert_eq!((s0.gx_ddps, s0.gy_ddps, s0.gz_ddps), (450, -1234, 0));
+        assert_eq!(s0.gx_mdps(), 45000);
+        assert_eq!(s0.gy_mdps(), -123400); // deci-dps round-trip (lossy by design)
+        assert_eq!(s0.slider_pos, 513);
+        assert!(s0.touched);
+
+        // Sample 2: az 1000, rest 0, slider 513, not touched.
+        let s1 = frame.samples[1];
+        assert_eq!(s1.az_mg, 1000);
+        assert_eq!((s1.ax_mg, s1.gx_ddps), (0, 0));
+        assert!(!s1.touched);
+    }
+
+    #[test]
+    fn sensor_frame_rejects_malformed() {
+        assert_eq!(SensorFrame::decode(&[]), Err(SensorFrameError::TooShort));
+        // Valid header (version 0x01), zero samples → empty frame.
+        assert_eq!(
+            SensorFrame::decode(&[0x01, 0, 0, 0, 0, 0, 0, 10]).map(|f| f.samples.len()),
+            Ok(0)
+        );
+        // version 2 unsupported
+        let mut bad = [0u8; 8];
+        bad[0] = 0x02;
+        assert_eq!(
+            SensorFrame::decode(&bad),
+            Err(SensorFrameError::UnsupportedVersion(2))
+        );
+        // declares 3 samples but only header present
+        let mut short = vec![0x01, 0x00, 0, 0, 0, 0, 3, 10];
+        short.truncate(8);
+        assert!(matches!(
+            SensorFrame::decode(&short),
+            Err(SensorFrameError::LengthMismatch { .. })
+        ));
+    }
 
     /// Byte-for-byte examples of what the simulator's `BleProtocolAdapter`
     /// produces (shapes verified against haptic-harmony-simulator
