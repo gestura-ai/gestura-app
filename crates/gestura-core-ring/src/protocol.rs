@@ -297,7 +297,9 @@ pub struct BleBatteryData {
 /// |---|---|---|
 /// | 0 | gesture sensitivity (0–255) | 0x80 |
 /// | 1 | raw sensor stream opt-in (0/1) | 0 |
-/// | 2 | enabled-gesture bitmask | 0xFF |
+/// | 2 | enabled-gesture bitmask (RATIFIED 2026-07-09: bit0 tap, bit1
+///       double_tap, bit2 swipe_left, bit3 swipe_right, bit4 rotate_cw,
+///       bit5 rotate_ccw, bit6 hold, bit7 reserved) | 0xFF |
 /// | 3 | **HID projection enable (0/1)** — firmware ships a BLE HID
 ///       consumer-control service ON by default; the SDK writes 0 on
 ///       connection takeover and 1 on release so the OS doesn't double-act

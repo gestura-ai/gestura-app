@@ -270,10 +270,18 @@ fn apply_battery_payload(state: &mut LatestDeviceState, value: &[u8]) {
     }
 }
 
-/// Applies a state-snapshot payload (`DeviceStateSnapshot` JSON, consumed
-/// loosely) to the cached device state.
+/// Applies a state-snapshot payload to the cached device state. Accepts the
+/// enveloped form real firmware notifies (`{...,"payload":{"event_kind":
+/// "state_snapshot","event":{...}}}` — golden vectors, 2026-07-08) as well as
+/// the legacy bare-snapshot form; both consumed loosely.
 fn apply_state_snapshot_payload(state: &mut LatestDeviceState, value: &[u8]) {
-    if let Ok(snapshot) = serde_json::from_slice::<serde_json::Value>(value) {
+    if let Ok(parsed) = serde_json::from_slice::<serde_json::Value>(value) {
+        // Unwrap the envelope when present; otherwise treat as bare snapshot.
+        let snapshot = parsed
+            .get("payload")
+            .and_then(|p| p.get("event"))
+            .cloned()
+            .unwrap_or(parsed);
         if let Some(trust) = snapshot.get("trust_state").and_then(|v| v.as_str()) {
             state.trust_state = Some(trust.to_string());
         }
@@ -731,6 +739,18 @@ mod tests {
         });
         apply_battery_payload(&mut state, &serde_json::to_vec(&json).unwrap());
         assert_eq!(state.battery_level, Some(42));
+        assert_eq!(state.is_charging, Some(true));
+    }
+
+    #[test]
+    fn state_snapshot_payload_accepts_firmware_envelope() {
+        // Byte-exact golden vector from the firmware conformance suite
+        // (@102f520) — the enveloped form real hardware notifies.
+        let golden = r#"{"protocol_version":"0.3.0","message_kind":"event","message_id":"fw-5","sequence":0,"timestamp_ms":0,"payload":{"event_kind":"state_snapshot","event":{"battery":{"level_percent":88,"is_charging":true,"voltage":3.987,"temperature_celsius":0.0,"health":"unknown","time_remaining_minutes":null},"trust_state":"bonded","degraded_modes":[],"firmware_version":"0.1.0-dev","protocol_version":"0.3.0","revocation_reason":null,"privileged_actions_enabled":true}}}"#;
+        let mut state = LatestDeviceState::default();
+        apply_state_snapshot_payload(&mut state, golden.as_bytes());
+        assert_eq!(state.trust_state.as_deref(), Some("bonded"));
+        assert_eq!(state.battery_level, Some(88));
         assert_eq!(state.is_charging, Some(true));
     }
 

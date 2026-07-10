@@ -784,6 +784,17 @@ fn parse_battery_level(bytes: &[u8]) -> Option<u8> {
 }
 
 fn parse_state_snapshot(bytes: &[u8]) -> Option<DeviceStateSnapshot> {
+    // Enveloped-first: real firmware notifies the FULL envelope on the state
+    // characteristic (golden vectors, 2026-07-08 — the shape whose missing
+    // closing brace the vectors caught). Bare snapshot JSON is the legacy
+    // simulator form, kept as fallback.
+    if let Ok(value) = serde_json::from_slice::<serde_json::Value>(bytes)
+        && let Some(payload) = value.get("payload")
+        && let Ok(SimulatorEvent::StateSnapshot(snapshot)) =
+            serde_json::from_value::<SimulatorEvent>(payload.clone())
+    {
+        return Some(snapshot);
+    }
     serde_json::from_slice(bytes).ok()
 }
 
@@ -810,10 +821,16 @@ fn snapshot_to_status(snapshot: DeviceStateSnapshot) -> SimulatorStatus {
 }
 
 fn parse_gesture_event(bytes: &[u8]) -> Option<GestureType> {
-    // Lenient mirror of `BleGestureData`: older peers send only
-    // `{gesture_type, data}` (or bare `{gesture_type}`), so every field
-    // beyond `gesture_type` is defaulted rather than required — a strict
-    // parse would drop those frames before the legacy fallback could run.
+    // 1. Bare envelope — what the REAL ring notifies on the gesture
+    //    characteristic (golden vectors, 2026-07-08): no wrapper, just the
+    //    ProtocolEnvelope. Must be first or firmware gestures are dropped.
+    if let Some(gesture) = parse_envelope_gesture(bytes) {
+        return Some(gesture);
+    }
+
+    // 2. Legacy simulator wrapper (`BleGestureData`) with the envelope
+    //    embedded in `data`. Lenient: older peers send only
+    //    `{gesture_type, data}` or bare `{gesture_type}`.
     #[derive(serde::Deserialize)]
     struct LenientGestureFrame {
         gesture_type: String,
@@ -822,18 +839,23 @@ fn parse_gesture_event(bytes: &[u8]) -> Option<GestureType> {
     }
 
     let frame: LenientGestureFrame = serde_json::from_slice(bytes).ok()?;
-
-    // Prefer the embedded canonical envelope; parse leniently (payload only)
-    // so partial/older peers don't get dropped for missing envelope metadata.
-    if let Ok(value) = serde_json::from_slice::<serde_json::Value>(&frame.data)
-        && let Some(payload) = value.get("payload")
-        && let Ok(SimulatorEvent::Gesture(gesture)) =
-            serde_json::from_value::<SimulatorEvent>(payload.clone())
-    {
-        return semantic_gesture_to_app(&gesture.gesture);
+    if let Some(gesture) = parse_envelope_gesture(&frame.data) {
+        return Some(gesture);
     }
 
+    // 3. Legacy gesture-type strings.
     legacy_gesture_to_app(&frame.gesture_type)
+}
+
+/// Parses a bare `ProtocolEnvelope<SimulatorEvent>` gesture, leniently
+/// (payload-only) so peers missing envelope metadata aren't dropped.
+fn parse_envelope_gesture(bytes: &[u8]) -> Option<GestureType> {
+    let value: serde_json::Value = serde_json::from_slice(bytes).ok()?;
+    let payload = value.get("payload")?;
+    match serde_json::from_value::<SimulatorEvent>(payload.clone()).ok()? {
+        SimulatorEvent::Gesture(gesture) => semantic_gesture_to_app(&gesture.gesture),
+        _ => None,
+    }
 }
 
 fn semantic_gesture_to_app(gesture: &SemanticGesture) -> Option<GestureType> {
@@ -1051,6 +1073,32 @@ mod tests {
             json["payload"]["command"]["pattern"]["pattern_kind"],
             "double_tick"
         );
+    }
+
+    #[test]
+    fn parse_gesture_event_accepts_firmware_bare_envelope() {
+        // Byte-exact golden vector line from the firmware's conformance suite
+        // (conformance/vectors/gestures.expected @ 102f520): the real ring
+        // notifies BARE envelopes — no BleGestureData wrapper.
+        let golden = r#"{"protocol_version":"0.3.0","message_kind":"event","message_id":"fw-4","sequence":3,"timestamp_ms":7000,"payload":{"event_kind":"gesture","event":{"gesture":{"gesture_kind":"swipe","direction":"left"},"confidence":0.850,"timestamp_ms":7000}}}"#;
+        assert_eq!(
+            parse_gesture_event(golden.as_bytes()),
+            Some(GestureType::TiltLeft)
+        );
+    }
+
+    #[test]
+    fn parse_state_snapshot_accepts_firmware_envelope() {
+        // Byte-exact golden vector (conformance/vectors/haptic.expected):
+        // firmware notifies the FULL envelope on the state characteristic.
+        let golden = r#"{"protocol_version":"0.3.0","message_kind":"event","message_id":"fw-5","sequence":0,"timestamp_ms":0,"payload":{"event_kind":"state_snapshot","event":{"battery":{"level_percent":88,"is_charging":true,"voltage":3.987,"temperature_celsius":0.0,"health":"unknown","time_remaining_minutes":null},"trust_state":"bonded","degraded_modes":[],"firmware_version":"0.1.0-dev","protocol_version":"0.3.0","revocation_reason":null,"privileged_actions_enabled":true}}}"#;
+        let snapshot = parse_state_snapshot(golden.as_bytes()).expect("must parse");
+        assert_eq!(snapshot.firmware_version, "0.1.0-dev");
+        assert!(snapshot.privileged_actions_enabled);
+
+        // Legacy bare form still parses.
+        let bare = serde_json::to_vec(&snapshot).unwrap();
+        assert!(parse_state_snapshot(&bare).is_some());
     }
 
     #[test]

@@ -17,6 +17,21 @@ unsequenced/legacy) and acknowledged via the `ack` event
 (`{sequence, status: ok|denied|error, reason}`), which rides the state-snapshot
 characteristic as a full envelope.
 
+**`timestamp_ms` is DEVICE UPTIME milliseconds, not epoch time** — the ring
+has no wall clock (boots near 0, monotonic). Hosts must not interpret it as
+Unix time; correlate to wall-clock host-side at receipt if needed. The
+simulator's device-core path uses the same uptime semantics.
+
+**Transport realities** (mirrored by the simulator's strict-transport mode):
+notifications larger than the negotiated ATT payload (MTU − 3) fail silently
+on hardware — state snapshots (~400 B) need MTU ≥ ~460, so hosts must
+negotiate MTU (firmware supports up to 498). Writes beyond the ATT payload
+(e.g. waveform commands) travel as GATT long writes (prepared writes
+assembled by offset). The device is single-connection (`BT_MAX_CONN=1`),
+re-advertises on disconnect, and **resets trust to untrusted on every
+disconnect** (bonds persist across reboots; trust state does not survive a
+link drop).
+
 ## GATT allocation (FINAL, firmware-minted base, user-ratified 2026-07-02)
 
 Base `E3B742D4-51C9-4F0E-9D26-7A48C1F0B9xx`, last byte = ordinal:
@@ -30,7 +45,7 @@ Base `E3B742D4-51C9-4F0E-9D26-7A48C1F0B9xx`, last byte = ordinal:
 | C0 | OTA update | write+indicate | MCUmgr/SMP (firmware) |
 | C1 | State snapshot | read+notify | `DeviceStateSnapshot`; also carries `ack` envelopes |
 | C2 | Config | write | trust-gated + encrypted link; layout below |
-| C3 | Raw sensor stream | notify | opt-in via config; subscription trust-gated (Bonded+); frame payload TBD (joint proposal before bits flow) |
+| C3 | Raw sensor stream | notify | opt-in via config; subscription trust-gated (Bonded+); frame schema ratified 2026-07-09 (below) |
 
 The v0.2-era service UUID `12345678-…9abc` remains only as a discovery
 fallback (`LEGACY_SERVICE_UUID`); remove after all sides ship.
@@ -57,8 +72,12 @@ until streaming refill lands; the protocol-level cap stays 4 KiB.
 |------|-------|---------|
 | 0 | gesture sensitivity 0–255 | 0x80 |
 | 1 | raw sensor stream opt-in | 0 |
-| 2 | enabled-gesture bitmask | 0xFF |
+| 2 | enabled-gesture bitmask (below) | 0xFF |
 | 3 | HID projection enable | 1 (ON) |
+
+Gesture bitmask bit assignment (**RATIFIED 2026-07-09**, "ratify as is"):
+bit0 tap · bit1 double_tap · bit2 swipe_left · bit3 swipe_right ·
+bit4 rotate_cw · bit5 rotate_ccw · bit6 hold · bit7 reserved.
 
 Byte 3 is optional (shorter writes are accepted; approved 2026-07-07).
 `protocol::RingConfig` is the typed writer.
@@ -129,6 +148,26 @@ Listener registration follows the `EventTarget` idiom
 (`ring.addEventListener("doubletap", …)`), event payloads use camelCase
 (`confidence`, `durationMs`, `timestampMs`).
 
+## Raw sensor stream (C3) — decisions RATIFIED 2026-07-09
+
+Per the firmware proposal (`haptic-basic-firmware/proposals/
+2026-07-07-sensor-frame-schema.md`), user-ratified with platform cross-check:
+
+1. **Binary frames on C3** (no JSON envelope — 100 Hz × 6-axis JSON would be
+   ~20 KB/s of text), leading `frame_version` byte (0x01), batched samples.
+2. **i16 units** — accel in mg (sat ±32 g), gyro in deci-dps (sat ±3276 dps);
+   **20-sample batching** (~2.3 kB/s at 100 Hz; firmware reduces N at small
+   MTUs). SDK converts deci-dps→mdps (×100) for the tuning-CSV format.
+3. **Continuous while ACTIVE, suspended in IDLE** (not gesture-gated) —
+   tuning captures need continuity through gesture pauses.
+
+**⚠️ Exact byte map pending from firmware:** the proposal's arithmetic
+doesn't reconcile (states 22 B/sample + 6 B header, but the listed fields —
+6×i16 + u16 slider + u8 flags + u8 pad — sum to 16 B, and the header layout
+shown is 8 B). Firmware publishes the definitive byte map plus a golden
+vector in `conformance/`; the SDK's `SensorFrame` decoder is written against
+those, not against the proposal prose. C3 carries no bits until then.
+
 ## Trust model
 
 Deny-by-default everywhere (user decision 2026-07-02). States:
@@ -137,6 +176,10 @@ Haptic/protocol commands require Enrolled+; config read/write carries a
 **Bonded device guarantee** (see the config section — on-device Enrolled+
 awaits a trust-attestation proposal; the simulator gates config at Enrolled as
 reference-stricter behavior); raw-stream subscription and sensitive
-diagnostics require Bonded+. Degraded modes (low battery, sensor fault,
+diagnostics require Bonded+. **Device-reported trust is a subset of the
+ladder: the ring only ever reports `discovered`, `bonded`, or `revoked`**
+(bonded is the strongest state it can verify) — hosts must never require
+`enrolled`/`attested` from a device snapshot; those are host/policy-side
+states. Degraded modes (low battery, sensor fault,
 firmware mismatch, operator block) gate privileged actions independently.
 Policy denials surface as `ack{status: denied}`.
