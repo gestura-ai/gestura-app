@@ -391,7 +391,9 @@ fn gesture_to_action(gesture_type: &str) -> (&'static str, f32) {
     match gesture_type.to_lowercase().as_str() {
         "tap" => ("confirm", 0.9),
         "double_tap" => ("execute", 0.92),
-        "triple_tap" => ("cancel", 0.88),
+        // "triple_tap" removed per the approved v0.3 gesture set (2026-07-02,
+        // user decision): no device source, high false-positive risk.
+        // "shake" retained below — deferred to a later firmware rev, not dropped.
         "tilt_left" => ("previous", 0.85),
         "tilt_right" => ("next", 0.85),
         "tilt_up" => ("scroll_up", 0.8),

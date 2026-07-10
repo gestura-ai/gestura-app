@@ -136,7 +136,7 @@ impl DeviceSimulator {
                 interval.tick().await;
 
                 let mut rings_guard = rings.write().await;
-                for (_, ring) in rings_guard.iter_mut() {
+                for ring in rings_guard.values_mut() {
                     // Update battery
                     ring.update_battery();
 

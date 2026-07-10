@@ -18,6 +18,14 @@ pub enum BleEvent {
     FirmwareVersion(String),
     SimulatorStatus(String, SimulatorStatus),
     ConnectionLog(String, String), // device_id, log_message
+    /// Acknowledgement of a host command (protocol v0.3.0). `ok == false`
+    /// means the device refused it (e.g. trust gate) — `reason` says why.
+    CommandAck {
+        device_id: String,
+        sequence: u64,
+        ok: bool,
+        reason: Option<String>,
+    },
 }
 
 /// Gesture types detected from the ring
@@ -29,6 +37,10 @@ pub enum GestureType {
     TiltRight,
     TiltUp,
     TiltDown,
+    /// Ring bezel rotation, clockwise (protocol v0.3.0 device-truth kind).
+    RotateCw,
+    /// Ring bezel rotation, counter-clockwise.
+    RotateCcw,
 }
 
 /// Simulator status information
@@ -280,18 +292,6 @@ pub fn create_ring_manager() -> Box<dyn RingManager> {
     Box::new(MockRingManager)
 }
 
-/// Haptic Harmony ring specific constants
-pub mod ring_constants {
-    /// Service UUID for Haptic Harmony ring
-    pub const HAPTIC_SERVICE_UUID: &str = "12345678-1234-5678-9abc-123456789abc";
-    /// Characteristic UUID for haptic commands
-    pub const HAPTIC_COMMAND_UUID: &str = "12345678-1234-5678-9abc-123456789abd";
-    /// Characteristic UUID for gesture events
-    pub const GESTURE_EVENT_UUID: &str = "12345678-1234-5678-9abc-123456789abe";
-    /// Characteristic UUID for battery level
-    pub const BATTERY_LEVEL_UUID: &str = "12345678-1234-5678-9abc-123456789abf";
-    /// Characteristic UUID for shared state snapshots
-    pub const STATE_SNAPSHOT_UUID: &str = "12345678-1234-5678-9abc-123456789ac1";
-    /// Characteristic UUID for OTA updates
-    pub const OTA_UPDATE_UUID: &str = "12345678-1234-5678-9abc-123456789ac0";
-}
+// NOTE: the former `ring_constants` module (a duplicate UUID table) was
+// removed in the 2026-07-02 dedup (user-approved). The single source of truth
+// for ring UUIDs is `gestura_core_ring::protocol::ring_uuids`.

@@ -50,6 +50,8 @@ security = ["dep:ring", "dep:keyring", "gestura-core/security"]
 [dependencies]
 # Shared core library - provides config, error, llm_provider, mcp, gdpr, etc.
 gestura-core.workspace = true
+# Canonical Shared Semantic Protocol types + ring UUIDs (single-sourced).
+gestura-core-ring = { path = "../gestura-core-ring" }
 
 serde.workspace = true
 serde_json.workspace = true

@@ -86,7 +86,7 @@ whisper-rs = "0.14"
 
 # CLI-specific
 clap = { version = "4", features = ["derive", "env", "wrap_help"] }
-ratatui = "0.29"
+ratatui = "0.30"
 crossterm = "0.28"
 dialoguer = "0.11"
 indicatif = "0.17"
