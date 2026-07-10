@@ -2,7 +2,7 @@
 
 ## Overview
 
-Gestura is licensed under the **Gestura Prosperity License 1.0 (GPL-1.0)**, a source-available license that balances open access with sustainable development funding.
+Gestura is licensed under the **Gestura Prosperity Software License 1.1 (GPSL-1.1)**, a source-available license that balances open access with sustainable development funding. (Version 1.1, published 2026-07-10, hardens the 1.0 text: definitions, election mechanics for the revenue share, termination-and-cure rules, audit limits, trademark reservation, and venue. Anyone who received the Software under 1.0 may continue under 1.0 or adopt 1.1 at their option.)
 
 ## Quick Reference
 
@@ -44,7 +44,7 @@ Revenue is attributable to Gestura if it comes from products or services that:
 
 **Example**: If you build a voice-controlled productivity app using Gestura and earn $5M from it, and 20% of your app's value comes from voice features, you'd contribute 3% × $1M = $30,000.
 
-**Alternative**: If calculating attributable revenue is impractical, you may contribute 0.5% of total annual gross revenue instead.
+**Alternative**: You may instead elect to contribute 0.5% of total annual gross revenue. You choose 3%-attributable or 0.5%-total in your first compliance report each fiscal year; the election is binding for that year (License §8.1).
 
 ### When and how do I pay?
 
@@ -81,7 +81,7 @@ Yes! You may:
 | GPL/AGPL | Requires sharing code | No | Already open |
 | BUSL | Restricted, then free | No | After 4 years |
 | FSL | Non-compete, then free | No | After 2 years |
-| **Gestura GPL-1.0** | Free <$1M, shared >$1M | Yes (3%) | Source available |
+| **GPSL-1.1** | Free <$1M, shared >$1M | Yes (3%) | Source available |
 
 ### What if I'm not sure about my obligations?
 

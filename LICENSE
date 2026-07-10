@@ -1,197 +1,280 @@
-Gestura Prosperity License 1.0 (GPL-1.0)
-=========================================
+Gestura Prosperity Software License 1.1 (GPSL-1.1)
+====================================================
 
+SPDX-License-Identifier: LicenseRef-Gestura-Prosperity-1.1
 Copyright (c) 2026 Gestura AI LLC
 Source Code: https://github.com/gestura-ai/gestura-app
 
-Based on the Prosperity Public License 3.0.0 with Revenue Sharing provisions.
+Derived from the Prosperity Public License 3.0.0, with revenue-sharing,
+definitions, termination, audit, and trademark provisions added or revised.
 
 --------------------------------------------------------------------------------
-PURPOSE
+1. PURPOSE
 --------------------------------------------------------------------------------
 
 This license allows you to use and share this software for noncommercial
-purposes for free, use it commercially below the revenue threshold for free,
-and requires a small revenue contribution for larger commercial operations
-to sustain ongoing development.
+purposes for free, to use it commercially for free below the revenue threshold
+in Section 7.4, and requires a revenue contribution for larger commercial
+operations to sustain ongoing development. This software is source-available;
+this is not an open-source license as defined by the Open Source Initiative.
 
 --------------------------------------------------------------------------------
-AGREEMENT
+2. DEFINITIONS
 --------------------------------------------------------------------------------
 
-In order to receive this license, you have to agree to its rules. Those rules
-are both obligations under that agreement and conditions to your license.
-Don't do anything with this software that triggers a rule you can't or won't
-follow.
+"Licensor" means Gestura AI LLC, a Delaware limited liability company.
+
+"Software" means the software this license is distributed with, in source or
+compiled form, including any portion of it and any modification of it.
+
+"You" and "Your" mean the individual or legal entity exercising rights under
+this license, together with all Affiliates.
+
+"Affiliate" means any entity that controls, is controlled by, or is under
+common control with You, where "control" means ownership of more than fifty
+percent (50%) of voting interests or the power to direct management.
+
+"Use" means anything you do with the Software requiring one of the license
+grants in Sections 4 or 5, including copying, running, modifying,
+distributing, offering as a service, and embedding in a product.
+
+"Commercial Use" means any Use intended for or directed toward commercial
+advantage or monetary compensation, including internal business use.
+
+"Noncommercial Use" means any Use that is not Commercial Use.
+
+"Gross Revenue" means all revenue of You and Your Affiliates, as recognized
+under the accounting standard You ordinarily apply (GAAP, IFRS, or national
+equivalent), before any deduction of costs or expenses.
+
+"Attributable Revenue" means the portion of Gross Revenue arising from
+products or services that incorporate, are enabled by, or substantially
+depend on the Software. Where the Software is one component among several,
+Attributable Revenue may be apportioned in good faith by a documented,
+consistently applied methodology.
+
+"Fiscal Year" means Your fiscal year for financial reporting purposes.
 
 --------------------------------------------------------------------------------
-NOTICES
+3. ACCEPTANCE
 --------------------------------------------------------------------------------
 
-Make sure everyone who gets a copy of any part of this software from you, with
-or without changes, also gets the text of this license and the contributor and
-source code lines above.
+To receive this license, you must agree to its rules. Those rules are both
+obligations under this agreement and conditions to your license. Do not do
+anything with the Software that triggers a rule you cannot or will not follow.
+Exercising any right granted by this license constitutes acceptance.
 
 --------------------------------------------------------------------------------
-FREE USE CATEGORIES
+4. COPYRIGHT
 --------------------------------------------------------------------------------
 
-The following uses are FREE and do not require any payment or contribution:
-
-1. PERSONAL USE
-   Personal use for research, experiment, testing for the benefit of public
-   knowledge, personal study, private entertainment, hobby projects, amateur
-   pursuits, or religious observance, without any anticipated commercial
-   application.
-
-2. NONCOMMERCIAL ORGANIZATIONS
-   Use by any charitable organization, educational institution, public research
-   organization, public safety or health organization, environmental protection
-   organization, or government institution regardless of the source of funding.
-
-3. CONTRIBUTIONS BACK
-   Developing feedback, changes, or additions that you contribute back to
-   Gestura AI LLC on the terms of a standardized public software license such
-   as the Blue Oak Model License 1.0.0, the Apache License 2.0, the MIT license,
-   or the two-clause BSD license.
-
-4. SMALL BUSINESS USE
-   Commercial use by any entity with less than One Million United States
-   Dollars ($1,000,000 USD) in annual gross revenue in the most recent fiscal
-   year is free. Revenue from all affiliated entities under common ownership
-   or control shall be aggregated for this threshold.
-
-5. EVALUATION PERIOD
-   Commercial evaluation and trial use for up to ninety (90) days to determine
-   suitability for your needs.
+Subject to the conditions of this license, Licensor grants You a worldwide,
+non-exclusive, royalty-bearing-where-applicable license to do everything with
+the Software that would otherwise infringe Licensor's copyright in it.
 
 --------------------------------------------------------------------------------
-COMMERCIAL USE - REVENUE SHARING
+5. PATENT
 --------------------------------------------------------------------------------
 
-For commercial use by entities exceeding the Small Business threshold:
-
-1. CONTRIBUTION RATE
-   Three percent (3%) of gross revenue attributable to products or services
-   that incorporate, are enabled by, or substantially depend on this software.
-
-2. MINIMUM CONTRIBUTION
-   If calculating attributable revenue is impractical, you may alternatively
-   contribute 0.5% of total annual gross revenue.
-
-3. PAYMENT SCHEDULE
-   Contributions are due annually within ninety (90) days of fiscal year end.
-   First contribution is due after the first full fiscal year of commercial use.
-
-4. REPORTING
-   Submit annual compliance reports to licensing@gestura.ai including:
-   - Gross revenue attributable to this software
-   - Calculation methodology
-   - Contact information for verification
-
-5. APPROVED PAYMENT MECHANISMS
-   - Direct payment to Gestura AI LLC
-   - GitHub Sponsors: https://github.com/sponsors/gestura-ai
-   - Open Collective: https://opencollective.com/gestura
+Subject to the conditions of this license, Licensor grants You a worldwide,
+non-exclusive license, under patents Licensor can license or becomes able to
+license, to make, have made, use, sell, offer for sale, and import the
+Software, solely as permitted by this license.
 
 --------------------------------------------------------------------------------
-COMMERCIAL LICENSE ALTERNATIVES
+6. NOTICES
 --------------------------------------------------------------------------------
 
-For entities preferring alternative terms:
-
-1. ENTERPRISE LICENSE
-   Contact licensing@gestura.ai for fixed-fee enterprise licenses that waive
-   the revenue sharing requirement.
-
-2. PARTNER PROGRAM
-   Strategic partners may qualify for royalty-free licenses through the
-   Gestura Partner Program. Contact partnerships@gestura.ai.
-
-3. OEM LICENSE
-   For embedding in hardware products, contact oem@gestura.ai for per-unit
-   licensing terms.
+Ensure that everyone who receives a copy of any part of the Software from You,
+with or without changes, also receives the complete text of this license and
+the copyright and source-code notices at the top of this file. If You modify
+the Software, mark Your modified copies prominently as changed.
 
 --------------------------------------------------------------------------------
-DEFENSE
+7. FREE USE
 --------------------------------------------------------------------------------
 
-Don't make any legal claim against anyone accusing this software, with or
-without changes, alone or with other technology, of infringing any patent.
+The following Uses are free of any payment obligation:
+
+7.1 PERSONAL USE
+    Personal Use for research, experiment, testing for the benefit of public
+    knowledge, personal study, private entertainment, hobby projects, amateur
+    pursuits, or religious observance, without any anticipated commercial
+    application.
+
+7.2 NONCOMMERCIAL ORGANIZATIONS
+    Use by any charitable organization, educational institution, public
+    research organization, public safety or health organization, environmental
+    protection organization, or government institution, regardless of the
+    source of funding or obligations arising from the funding.
+
+7.3 CONTRIBUTIONS BACK
+    Developing feedback, changes, or additions that You contribute back to
+    Licensor under the terms of a standardized public software license such as
+    the Blue Oak Model License 1.0.0, the Apache License 2.0, the MIT license,
+    or the two-clause BSD license.
+
+7.4 SMALL BUSINESS USE
+    Commercial Use during any Fiscal Year in which the aggregate Gross Revenue
+    of You and all Your Affiliates was less than One Million United States
+    Dollars ($1,000,000 USD) in the most recently completed Fiscal Year.
+
+7.5 EVALUATION
+    Commercial evaluation and trial Use for a single period of up to ninety
+    (90) consecutive days to determine suitability for Your needs. The
+    evaluation period is available once per entity (including Affiliates);
+    continued Commercial Use after it ends is subject to Section 8.
 
 --------------------------------------------------------------------------------
-COPYRIGHT
+8. COMMERCIAL USE — REVENUE SHARING
 --------------------------------------------------------------------------------
 
-The contributor licenses you to do everything with this software that would
-otherwise infringe their copyright in it.
+For Commercial Use not covered by Section 7:
+
+8.1 CONTRIBUTION
+    For each Fiscal Year of Commercial Use, You must contribute EITHER:
+    (a) three percent (3%) of Attributable Revenue for that Fiscal Year; OR
+    (b) one half of one percent (0.5%) of Gross Revenue for that Fiscal Year.
+    You elect (a) or (b) in Your first compliance report for that Fiscal Year;
+    the election is binding for that Fiscal Year once made.
+
+8.2 SCHEDULE
+    Contributions are due within ninety (90) days after the end of each Fiscal
+    Year. The first contribution is due after the first Fiscal Year (or part
+    thereof) of Commercial Use following any evaluation period.
+
+8.3 REPORTING
+    With each contribution, submit a compliance report to licensing@gestura.ai
+    stating: the Fiscal Year covered; the election made under 8.1; the revenue
+    figures and calculation methodology used; and contact information for
+    verification. Reports are Confidential Information of You; Licensor will
+    use them only for license administration and will not disclose them except
+    as required by law.
+
+8.4 PAYMENT MECHANISMS
+    - Direct payment to Gestura AI LLC (instructions from licensing@gestura.ai)
+    - GitHub Sponsors: https://github.com/sponsors/gestura-ai
+    - Open Collective: https://opencollective.com/gestura
 
 --------------------------------------------------------------------------------
-PATENT
+9. COMMERCIAL LICENSE ALTERNATIVES
 --------------------------------------------------------------------------------
 
-The contributor licenses you to do everything with this software that would
-otherwise infringe any patents they can license or become able to license.
+These terms are not exclusive. For alternative arrangements:
+
+9.1 ENTERPRISE LICENSE — fixed-fee licenses that replace Section 8:
+    licensing@gestura.ai
+9.2 PARTNER PROGRAM — strategic partners may qualify for royalty-free terms:
+    partnerships@gestura.ai
+9.3 OEM LICENSE — per-unit terms for embedding in hardware products:
+    oem@gestura.ai
+
+A separately executed commercial agreement supersedes this license to the
+extent its terms conflict.
 
 --------------------------------------------------------------------------------
-RELIABILITY
+10. TRADEMARKS
 --------------------------------------------------------------------------------
 
-The contributor can't revoke this license.
+This license grants no rights in the trademarks, service marks, trade names,
+or logos of Licensor, including "Gestura", "Haptica", and "Harmony", except
+the minimal use necessary to comply with Section 6.
 
 --------------------------------------------------------------------------------
-EXCUSE
+11. PATENT DEFENSE
 --------------------------------------------------------------------------------
 
-You're excused for unknowingly breaking Notices if you take all practical steps
-to comply within thirty days of learning you broke the rule.
-
-You're excused for late or incorrect revenue contributions if you correct the
-deficiency within sixty (60) days of notification.
-
---------------------------------------------------------------------------------
-AUDIT
---------------------------------------------------------------------------------
-
-Gestura AI LLC reserves the right to audit compliance with revenue contribution
-obligations. Audits will be conducted by an independent third party at the
-contributor's expense if the audit reveals underreporting of more than ten
-percent (10%).
+If You make any written claim, or initiate or fund any proceeding, alleging
+that the Software (with or without changes, alone or combined with other
+technology) infringes any patent, all licenses granted to You under this
+license terminate immediately as of the date the claim is made.
 
 --------------------------------------------------------------------------------
-NO LIABILITY
+12. TERMINATION AND CURE
 --------------------------------------------------------------------------------
 
-AS FAR AS THE LAW ALLOWS, THIS SOFTWARE COMES AS IS, WITHOUT ANY WARRANTY OR
-CONDITION, AND THE CONTRIBUTOR WON'T BE LIABLE TO ANYONE FOR ANY DAMAGES
-RELATED TO THIS SOFTWARE OR THIS LICENSE, UNDER ANY KIND OF LEGAL CLAIM.
+12.1 Any violation of this license's conditions terminates Your license
+     automatically, subject to the cure provisions below.
+12.2 NOTICES CURE: For Your first violation of Section 6, Your license is
+     reinstated retroactively if You take all practical steps to comply
+     within thirty (30) days of learning of the violation.
+12.3 PAYMENT CURE: For late, incomplete, or incorrect contributions or
+     reports under Section 8, Your license is reinstated retroactively if
+     You correct the deficiency in full within sixty (60) days of written
+     notice from Licensor.
+12.4 No cure is available for a violation of Section 11, for repeated
+     violations of the same provision after a prior cure, or for knowing and
+     willful violations.
+12.5 Sections 10, 15, 16, and 17 survive any termination.
 
 --------------------------------------------------------------------------------
-GOVERNING LAW
+13. RELIABILITY
 --------------------------------------------------------------------------------
 
-This license shall be governed by the laws of the State of Delaware, United
-States, without regard to conflict of law principles.
+Licensor cannot revoke this license so long as You remain in compliance with
+its terms. Licensor may publish revised or new versions of this license; each
+version is given a distinguishing number. You may continue to Use the Software
+under the terms of the version under which You received it, or, at Your
+option, under any later version Licensor publishes.
 
 --------------------------------------------------------------------------------
-ATTRIBUTION NOTICES
+14. AUDIT
 --------------------------------------------------------------------------------
 
-This software was inspired by the architectural patterns of:
-- OpenAI Codex CLI (https://github.com/openai/codex)
-- Aider (https://github.com/Aider-AI/aider)
-- Claude Code (https://github.com/anthropics/claude-code)
-
-No code from these projects has been incorporated. These references are for
-documentation purposes only and do not imply any endorsement or affiliation.
+No more than once in any twelve (12) month period, and on at least thirty (30)
+days' written notice, Licensor may engage an independent third-party auditor,
+bound by confidentiality, to verify Your compliance with Section 8 against
+Your relevant financial records. The audit will be at Licensor's expense,
+except that if it reveals underreporting of more than ten percent (10%) for
+any Fiscal Year, You will bear the reasonable cost of the audit in addition to
+paying the deficiency.
 
 --------------------------------------------------------------------------------
-QUESTIONS
+15. NO LIABILITY
 --------------------------------------------------------------------------------
 
-For licensing questions: licensing@gestura.ai
-For partnership inquiries: partnerships@gestura.ai
-For general information: https://gestura.ai
+AS FAR AS THE LAW ALLOWS, THE SOFTWARE COMES AS IS, WITHOUT ANY WARRANTY OR
+CONDITION, AND LICENSOR WILL NOT BE LIABLE TO ANYONE FOR ANY DAMAGES RELATED
+TO THE SOFTWARE OR THIS LICENSE, UNDER ANY KIND OF LEGAL CLAIM, INCLUDING
+DIRECT, INDIRECT, INCIDENTAL, CONSEQUENTIAL, SPECIAL, OR EXEMPLARY DAMAGES.
+
+--------------------------------------------------------------------------------
+16. GOVERNING LAW AND VENUE
+--------------------------------------------------------------------------------
+
+This license is governed by the laws of the State of Delaware, United States,
+without regard to conflict-of-law principles. The state and federal courts
+located in Delaware have exclusive jurisdiction over any dispute arising from
+this license, and each party consents to their personal jurisdiction. The
+prevailing party in any such dispute is entitled to reasonable attorneys'
+fees and costs.
+
+--------------------------------------------------------------------------------
+17. SEVERABILITY; ENTIRE AGREEMENT
+--------------------------------------------------------------------------------
+
+If any provision of this license is held unenforceable, it will be reformed
+to the minimum extent necessary to make it enforceable, and the remaining
+provisions will remain in full effect. This license (together with any
+separately executed commercial agreement under Section 9) is the entire
+agreement between You and Licensor regarding the Software.
+
+--------------------------------------------------------------------------------
+18. ATTRIBUTION NOTICES
+--------------------------------------------------------------------------------
+
+This software was inspired by the architectural patterns of OpenAI Codex CLI,
+Aider, and Claude Code. No code from these projects has been incorporated.
+These references are documentation only and imply no endorsement or
+affiliation.
+
+--------------------------------------------------------------------------------
+19. QUESTIONS
+--------------------------------------------------------------------------------
+
+Licensing:    licensing@gestura.ai
+Partnerships: partnerships@gestura.ai
+General:      https://gestura.ai
 
 ================================================================================
 END OF LICENSE
