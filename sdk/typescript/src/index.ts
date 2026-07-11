@@ -85,14 +85,20 @@ function gestureToEvent(
     case "hold":
       // Firmware emits a single hold event at release with duration.
       return { name: "holdend", detail: { confidence, durationMs: g.duration_ms ?? 0 } };
+    // Unknown/missing directions are dropped, not defaulted — a malformed or
+    // future-extended payload must not masquerade as a real user gesture.
     case "swipe":
       return g.direction === "left"
         ? { name: "swipeleft", detail: { confidence } }
-        : { name: "swiperight", detail: { confidence } };
+        : g.direction === "right"
+          ? { name: "swiperight", detail: { confidence } }
+          : undefined;
     case "rotate":
       return g.direction === "cw"
         ? { name: "rotatecw", detail: { confidence } }
-        : { name: "rotateccw", detail: { confidence } };
+        : g.direction === "ccw"
+          ? { name: "rotateccw", detail: { confidence } }
+          : undefined;
     default:
       return undefined;
   }

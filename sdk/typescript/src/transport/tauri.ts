@@ -80,7 +80,18 @@ export function tauriTransport(deviceId: string, api: TauriApi): RingTransport {
     async disconnect() {
       const unlisten = await unlistenPromise;
       unlisten?.();
+      // Tear down backend subscriptions too — clearing local listeners alone
+      // would leave the backend forwarding notifications for every UUID that
+      // was never individually unsubscribed.
+      const subscribed = Array.from(listeners.keys());
       listeners.clear();
+      await Promise.all(
+        subscribed.map((uuid) =>
+          api.invoke("ring_unsubscribe", { deviceId, uuid }).catch(() => {
+            /* best-effort: the device session is ending anyway */
+          }),
+        ),
+      );
     },
   };
 }

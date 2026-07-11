@@ -480,8 +480,12 @@ pub enum SensorFrameError {
     TooShort,
     /// `frame_version` not understood by this decoder.
     UnsupportedVersion(u8),
-    /// Declared sample_count doesn't match the buffer length.
+    /// Declared sample_count doesn't match the buffer length exactly
+    /// (short payloads AND trailing bytes are both malformed frames).
     LengthMismatch { declared: usize, available: usize },
+    /// Declared sample_count exceeds the ratified 328-byte frame cap
+    /// (`sensor_frame::MAX_SAMPLES`).
+    TooManySamples(usize),
 }
 
 impl core::fmt::Display for SensorFrameError {
@@ -495,6 +499,11 @@ impl core::fmt::Display for SensorFrameError {
             } => write!(
                 f,
                 "sensor frame length mismatch: {declared} samples declared, {available} bytes of samples available",
+            ),
+            Self::TooManySamples(count) => write!(
+                f,
+                "sensor frame declares {count} samples, over the ratified cap of {}",
+                sensor_frame::MAX_SAMPLES
             ),
         }
     }
@@ -532,8 +541,13 @@ impl SensorFrame {
         let count = buf[6] as usize;
         let period_ms = buf[7];
 
+        if count > MAX_SAMPLES {
+            return Err(SensorFrameError::TooManySamples(count));
+        }
+        // Exact length required: a short payload is truncated, trailing
+        // bytes are equally malformed under the ratified layout.
         let want = HEADER_LEN + count * SAMPLE_LEN;
-        if buf.len() < want {
+        if buf.len() != want {
             return Err(SensorFrameError::LengthMismatch {
                 declared: count,
                 available: buf.len().saturating_sub(HEADER_LEN),
@@ -630,6 +644,20 @@ mod tests {
             SensorFrame::decode(&short),
             Err(SensorFrameError::LengthMismatch { .. })
         ));
+        // trailing bytes beyond the declared samples are equally malformed
+        let mut trailing = vec![0x01, 0x00, 0, 0, 0, 0, 1, 10];
+        trailing.extend_from_slice(&[0u8; 17]); // 1 sample (16B) + 1 stray byte
+        assert!(matches!(
+            SensorFrame::decode(&trailing),
+            Err(SensorFrameError::LengthMismatch { .. })
+        ));
+        // sample_count over the ratified 328-byte cap (MAX_SAMPLES = 20)
+        let mut oversized = vec![0x01, 0x00, 0, 0, 0, 0, 21, 10];
+        oversized.extend_from_slice(&[0u8; 21 * 16]);
+        assert_eq!(
+            SensorFrame::decode(&oversized),
+            Err(SensorFrameError::TooManySamples(21))
+        );
     }
 
     /// Byte-for-byte examples of what the simulator's `BleProtocolAdapter`

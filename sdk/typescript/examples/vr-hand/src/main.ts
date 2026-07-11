@@ -77,6 +77,7 @@ function startSyntheticFeed(mock: MockTransport, sensorUuid: string, gestureUuid
     mock.emit(sensorUuid, buildSensorFrame(gx, gy, 0));
   }, 100);
 
+  let sequence = 0;
   window.addEventListener("keydown", (e) => {
     const g =
       e.key === "t" ? { gesture_kind: "tap" } :
@@ -84,7 +85,23 @@ function startSyntheticFeed(mock: MockTransport, sensorUuid: string, gestureUuid
       e.key === "ArrowLeft" ? { gesture_kind: "swipe", direction: "left" } :
       e.key === "ArrowRight" ? { gesture_kind: "swipe", direction: "right" } :
       undefined;
-    if (g) mock.emit(gestureUuid, new TextEncoder().encode(JSON.stringify({ gesture: g, confidence: 0.9 })));
+    if (!g) return;
+    // The WASM decoder parses the full v0.3.0 ProtocolEnvelope — bare
+    // {gesture, confidence} JSON would decode to null and drop the event.
+    sequence += 1;
+    const now = Date.now();
+    const envelope = {
+      protocol_version: "0.3.0",
+      message_kind: "event",
+      message_id: `sim-${sequence}`,
+      sequence,
+      timestamp_ms: now,
+      payload: {
+        event_kind: "gesture",
+        event: { gesture: g, confidence: 0.9, timestamp_ms: now },
+      },
+    };
+    mock.emit(gestureUuid, new TextEncoder().encode(JSON.stringify(envelope)));
   });
 }
 
