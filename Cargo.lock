@@ -3348,6 +3348,7 @@ dependencies = [
  "gestura-core-devices",
  "gestura-core-gestures",
  "gestura-core-haptics",
+ "gestura-protocol",
  "serde",
  "serde_json",
  "tokio",
@@ -3515,6 +3516,16 @@ dependencies = [
  "which",
  "whisper-rs",
  "zbus 5.14.0",
+]
+
+[[package]]
+name = "gestura-protocol"
+version = "0.11.2"
+dependencies = [
+ "serde",
+ "serde_json",
+ "uuid",
+ "wasm-bindgen",
 ]
 
 [[package]]

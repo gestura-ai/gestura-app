@@ -410,7 +410,7 @@ pub use gestura_core::new_module::*;
 
 ## License
 
-Gestura is licensed under the **Gestura Prosperity License 1.0** (GPL-1.0), a source-available license that balances open access with sustainable development.
+Gestura is licensed under the **Gestura Prosperity Software License 1.1** (GPSL-1.1), a source-available license that balances open access with sustainable development.
 
 ### Free Use (No Cost)
 - ✅ Personal, hobby, and educational use

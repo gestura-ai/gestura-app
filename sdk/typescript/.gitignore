@@ -1,0 +1,5 @@
+# Generated artifacts — never commit.
+node_modules/
+dist/
+# wasm-pack output (npm run build:wasm) — built from crates/gestura-protocol.
+wasm/

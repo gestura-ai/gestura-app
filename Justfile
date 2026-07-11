@@ -720,7 +720,7 @@ package-macos-signed:
 		  $ gestura --help
 		
 		Support: https://gestura.app
-		License: Gestura Prosperity License 1.0
+		License: Gestura Prosperity Software License 1.1 (GPSL-1.1)
 		EOF
 
 	cd - > /dev/null

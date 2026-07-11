@@ -37,6 +37,7 @@ members = [
     "crates/gestura-core-context",
     "crates/gestura-core-intent",
     "crates/gestura-core-ring",
+    "crates/gestura-protocol",
     "crates/gestura-core-haptics",
     "crates/gestura-core-gestures",
     "crates/gestura-core-devices",
@@ -52,7 +53,7 @@ default-members = [
 [workspace.package]
 version = "0.11.2"
 edition = "2024"
-license = "LicenseRef-Gestura-Prosperity-1.0"
+license = "LicenseRef-Gestura-Prosperity-1.1"
 authors = ["Gestura AI LLC <dev@gestura.ai>"]
 repository = "https://github.com/gestura-ai/gestura-app"
 homepage = "https://gestura.ai"
