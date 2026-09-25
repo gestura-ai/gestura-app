@@ -21,7 +21,7 @@ chrono.workspace = true
 uuid.workspace = true
 gestura-core-pipeline.workspace = true
 # The gesture → action vocabulary is the SDK contract's; imported, not copied.
-gestura-protocol = { path = "../gestura-protocol" }
+gestura-protocol = { workspace = true }
 tracing = { workspace = true, optional = true }
 
 [dev-dependencies]

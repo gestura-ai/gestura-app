@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **The protocol crate and the TypeScript SDK moved to [`gestura-sdk`](https://github.com/gestura-ai/gestura-sdk)** (decision 2026-09-24; SSP v0.4 ratified 2026-09-25). `crates/gestura-protocol` and `sdk/` are gone from this repository; the workspace depends on `gestura-protocol` 0.4.0 from that repository (pinned by commit until tagged/published) and `gestura-core-ring` keeps re-exporting it as `protocol`. The payload enums are now `DeviceEvent` / `DeviceCommand` (the `Simulator*` names are deprecated aliases upstream; every use here is renamed). `SHARED_PROTOCOL_VERSION` is `0.4.0` — hosts never gated on it, and the ring keeps emitting `0.3.0` unchanged. The `Ring SDK (WASM + TypeScript)` CI job moved with the SDK; `crates/gestura-core-ring/PROTOCOL.md` is now a pointer.
+
 ### Fixed
 
 - **Config hot-reload watcher** (`gestura-core-config`): the `notify` callback called `tokio::spawn` from notify's own thread, where no runtime exists — every filesystem event panicked, and on macOS (an `extern "C"` FSEvents callback) the panic aborted the whole process, which is what intermittently killed the macOS Test Suite job. The callback now hands events to a plain thread that uses blocking primitives only, the debounce is trailing-edge (the final write of a save burst is what gets read), and the reload parses YAML/JSON by extension like `AppConfig::load_from_path` instead of always JSON (the default `config.yaml` could never reload). Covered by a plain-thread handler test, a parse-error test, and a real write→`Updated` round trip.

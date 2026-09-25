@@ -3521,13 +3521,13 @@ dependencies = [
 
 [[package]]
 name = "gestura-protocol"
-version = "0.11.2"
+version = "0.4.0"
+source = "git+https://github.com/gestura-ai/gestura-sdk?rev=65dfcb186c88e66064c63508f8f81e1ae81414cd#65dfcb186c88e66064c63508f8f81e1ae81414cd"
 dependencies = [
  "js-sys",
  "serde",
  "serde_json",
  "uuid",
- "wasm-bindgen",
 ]
 
 [[package]]

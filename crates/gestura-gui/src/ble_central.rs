@@ -16,9 +16,9 @@ use futures::StreamExt;
 // v0.3.0) — this file no longer defines any protocol shapes of its own
 // (dedup approved by user 2026-07-02).
 use gestura_core_ring::protocol::{
-    self as ring_protocol, BleBatteryData, DeviceStateSnapshot, HapticCommandPayload,
-    ProtocolEnvelope, RingConfig, SemanticGesture, SemanticHapticPattern, SemanticRotateDirection,
-    SemanticSlideDirection, SemanticSwipeDirection, SimulatorCommand, SimulatorEvent, ring_uuids,
+    self as ring_protocol, BleBatteryData, DeviceCommand, DeviceEvent, DeviceStateSnapshot,
+    HapticCommandPayload, ProtocolEnvelope, RingConfig, SemanticGesture, SemanticHapticPattern,
+    SemanticRotateDirection, SemanticSlideDirection, SemanticSwipeDirection, ring_uuids,
 };
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -1053,8 +1053,8 @@ fn parse_state_snapshot(bytes: &[u8]) -> Option<DeviceStateSnapshot> {
     // simulator form, kept as fallback.
     if let Ok(value) = serde_json::from_slice::<serde_json::Value>(bytes)
         && let Some(payload) = value.get("payload")
-        && let Ok(SimulatorEvent::StateSnapshot(snapshot)) =
-            serde_json::from_value::<SimulatorEvent>(payload.clone())
+        && let Ok(DeviceEvent::StateSnapshot(snapshot)) =
+            serde_json::from_value::<DeviceEvent>(payload.clone())
     {
         return Some(snapshot);
     }
@@ -1064,9 +1064,9 @@ fn parse_state_snapshot(bytes: &[u8]) -> Option<DeviceStateSnapshot> {
 /// Acks ride the state-snapshot characteristic as full envelopes (v0.3.0
 /// projection decision); try this when a payload isn't a snapshot.
 fn parse_ack_envelope(bytes: &[u8]) -> Option<ring_protocol::AckPayload> {
-    match serde_json::from_slice::<ProtocolEnvelope<SimulatorEvent>>(bytes) {
+    match serde_json::from_slice::<ProtocolEnvelope<DeviceEvent>>(bytes) {
         Ok(envelope) => match envelope.payload {
-            SimulatorEvent::Ack(ack) => Some(ack),
+            DeviceEvent::Ack(ack) => Some(ack),
             _ => None,
         },
         Err(_) => None,
@@ -1110,13 +1110,13 @@ fn parse_gesture_event(bytes: &[u8]) -> Option<GestureType> {
     legacy_gesture_to_app(&frame.gesture_type)
 }
 
-/// Parses a bare `ProtocolEnvelope<SimulatorEvent>` gesture, leniently
+/// Parses a bare `ProtocolEnvelope<DeviceEvent>` gesture, leniently
 /// (payload-only) so peers missing envelope metadata aren't dropped.
 fn parse_envelope_gesture(bytes: &[u8]) -> Option<GestureType> {
     let value: serde_json::Value = serde_json::from_slice(bytes).ok()?;
     let payload = value.get("payload")?;
-    match serde_json::from_value::<SimulatorEvent>(payload.clone()).ok()? {
-        SimulatorEvent::Gesture(gesture) => semantic_gesture_to_app(&gesture.gesture),
+    match serde_json::from_value::<DeviceEvent>(payload.clone()).ok()? {
+        DeviceEvent::Gesture(gesture) => semantic_gesture_to_app(&gesture.gesture),
         _ => None,
     }
 }
@@ -1172,7 +1172,7 @@ fn encode_haptic_request(request: &HapticRequest) -> Result<Vec<u8>, AppError> {
     // acks can be correlated back to the command that triggered them.
     let payload = ring_protocol::command_envelope(
         NEXT_COMMAND_SEQUENCE.fetch_add(1, Ordering::Relaxed),
-        SimulatorCommand::Haptic(HapticCommandPayload {
+        DeviceCommand::Haptic(HapticCommandPayload {
             // GUI-request → ratified-vocabulary mapping. Feel judgment calls
             // (flagged as tunable in the 2026-07-02 platform handoff):
             // a Click is a single Tick; a Notification is a DoubleTick;
@@ -1455,7 +1455,7 @@ mod tests {
             message_id: "test".to_string(),
             sequence: 9,
             timestamp_ms: 1,
-            payload: SimulatorEvent::Ack(ring_protocol::AckPayload {
+            payload: DeviceEvent::Ack(ring_protocol::AckPayload {
                 sequence: 9,
                 status: ring_protocol::AckStatus::Denied,
                 reason: Some("device is not enrolled".to_string()),
