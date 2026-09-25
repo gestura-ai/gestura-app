@@ -31,7 +31,7 @@
     "!dist/**/*.test.*"
   ],
   "scripts": {
-    "build:wasm": "cd ../../crates/gestura-protocol && wasm-pack build --release --target web --out-dir ../../sdk/typescript/wasm -- --features wasm && cd ../../sdk/typescript && node scripts/inline-wasm.mjs",
+    "build:wasm": "wasm-pack build ../../crates/gestura-protocol --release --target web --out-dir ../../sdk/typescript/wasm -- --features wasm && node scripts/inline-wasm.mjs",
     "build": "npm run build:wasm && tsc -p tsconfig.build.json",
     "pretypecheck": "node scripts/ensure-wasm.mjs",
     "typecheck": "tsc --noEmit",

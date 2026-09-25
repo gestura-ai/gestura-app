@@ -39,6 +39,11 @@ export interface GesturaWasm {
 
 let cached: Promise<GesturaWasm> | undefined;
 
+/** Resolves the wasm-bindgen module namespace as the wrapper's interface. */
+async function loadInline(): Promise<GesturaWasm> {
+  return import("../wasm/gestura_protocol_inline.js");
+}
+
 /**
  * Loads the WASM core once. With no `loader`, the inlined module is used
  * (no configuration needed anywhere). Pass a `loader` to use the streaming
@@ -50,9 +55,12 @@ let cached: Promise<GesturaWasm> | undefined;
  */
 export async function loadWasm(loader?: () => Promise<GesturaWasm>): Promise<GesturaWasm> {
   if (!cached) {
-    cached = loader
-      ? loader()
-      : (import("../wasm/gestura_protocol_inline.js") as unknown as Promise<GesturaWasm>);
+    // A failed load is not cached: the next call retries (possibly with a
+    // different loader) instead of replaying a stale rejection forever.
+    cached = (loader ? loader() : loadInline()).catch((error: unknown) => {
+      cached = undefined;
+      throw error;
+    });
   }
   return cached;
 }

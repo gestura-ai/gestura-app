@@ -14,5 +14,6 @@ const inline = join(here, "..", "wasm", "gestura_protocol_inline.js");
 if (existsSync(inline)) process.exit(0);
 
 console.log("ensure-wasm: WASM core not built yet — running `npm run build:wasm`");
-const r = spawnSync("npm", ["run", "build:wasm"], { stdio: "inherit", cwd: join(here, ".."), shell: process.platform === "win32" });
+const npm = process.platform === "win32" ? "npm.cmd" : "npm";
+const r = spawnSync(npm, ["run", "build:wasm"], { stdio: "inherit", cwd: join(here, "..") });
 process.exit(r.status ?? 1);

@@ -6,12 +6,11 @@
 //! results. This crate is the ONE source of truth for the wire format — the
 //! TS SDK never re-implements a codec.
 //!
-//! Build (from this crate dir):
-//! ```sh
-//! wasm-pack build --release --features wasm --target web
-//! ```
-//! or `--target bundler` for the Tauri/Vite frontend. The generated package
-//! lands in `pkg/`; the TS SDK depends on it.
+//! Build: `npm run build:wasm` in `sdk/typescript`, which runs
+//! `wasm-pack build --release --target web --out-dir ../../sdk/typescript/wasm -- --features wasm`
+//! on this crate and then inlines the `.wasm` (`scripts/inline-wasm.mjs`) so
+//! the SDK needs no bundler plugin. The generated files land in
+//! `sdk/typescript/wasm/` and ship inside `@gestura/ring-sdk`.
 
 use wasm_bindgen::prelude::*;
 

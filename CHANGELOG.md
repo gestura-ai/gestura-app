@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- **Ring SDK (`@gestura/ring-sdk` 0.3.1 / `gestura-protocol`)** — first end-to-end execution of the TypeScript/WASM build surfaced four defects the stubbed test suite could not see; all fixed and now covered by tests that drive the real compiled core (`sdk/typescript/src/wasm.real.test.ts`) and a new `sdk` CI job:
+- **Ring SDK (`@gestura/ring-sdk` 0.3.1 / `gestura-protocol`)** — first end-to-end execution of the TypeScript/WASM build surfaced five defects the stubbed test suite could not see; all fixed and now covered by tests that drive the real compiled core (`sdk/typescript/src/wasm.real.test.ts`) and a new `sdk` CI job:
   - every haptic command crashed in WASM (`std::time::SystemTime::now()` traps on `wasm32-unknown-unknown`); host timestamps now come from `Date.now()` on wasm32.
   - swipe and rotate mapped to `unknown_gesture` because the string-keyed table received a direction-less kind; `gestura_protocol::default_action(&SemanticGesture)` is now the one typed table (with `gesture_label`), the string form gained `swipe_*`/`rotate_*` keys, and `gestura-core-intent` imports it instead of carrying a copy.
   - the npm tarball shipped without the codec (wasm-pack's nested `.gitignore` excluded `wasm/`) and depended on an unpublishable `file:` package; the SDK is now one self-contained package built with `wasm-pack --target web` plus an inlined module (`wasm/gestura_protocol_inline.js`) that needs no bundler plugin, `fetch` or `init()` — verified in Node, Vitest, Vite and headless Chromium. Test files are no longer packed.

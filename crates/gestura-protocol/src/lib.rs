@@ -392,11 +392,11 @@ impl RingConfig {
 /// encoded through the WASM surface crash (found 2026-09-21); the browser
 /// clock is used there instead.
 pub fn current_timestamp_ms() -> u64 {
-    #[cfg(target_arch = "wasm32")]
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
     {
         js_sys::Date::now() as u64
     }
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
     {
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -410,7 +410,9 @@ pub fn current_timestamp_ms() -> u64 {
 /// vectors 2026-07-08), or the legacy simulator `BleGestureData` wrapper
 /// with the envelope embedded in `data` (still emitted by the simulator for
 /// slide/tilt, and for every gesture when built without `device-core`).
-/// Every host must accept both; this is the one place that knows the rule.
+/// Every host must accept both. This is the canonical implementation; the
+/// Rust hosts (`gestura-core-ring` backend, `gestura-gui` BLE central) still
+/// carry older copies of the same rule pending the ring-stack consolidation.
 pub fn decode_event_envelope(bytes: &[u8]) -> Option<ProtocolEnvelope<SimulatorEvent>> {
     if let Ok(envelope) = serde_json::from_slice::<ProtocolEnvelope<SimulatorEvent>>(bytes) {
         return Some(envelope);
@@ -478,8 +480,55 @@ pub fn gesture_label(gesture: &SemanticGesture) -> &'static str {
         SemanticGesture::Slide {
             direction: SemanticSlideDirection::Right,
         } => "slide_right",
-        SemanticGesture::Tilt { .. } => "tilt",
+        // Simulator-only tilt: sign picks the side, matching how every Rust
+        // host has always flattened it (`tilt_left` / `tilt_right`).
+        SemanticGesture::Tilt { angle_degrees } => {
+            if *angle_degrees >= 0.0 {
+                "tilt_right"
+            } else {
+                "tilt_left"
+            }
+        }
     }
+}
+
+/// Parses a gesture label — canonical (`swipe_left`, `rotate_cw`, …) or
+/// legacy host vocabulary (`tilt_*`, `twist_*`) — into a representative
+/// typed gesture, so the string-keyed lookup can delegate to the typed table.
+/// Legacy `tilt_*` labels come back as the equivalent `Slide` (identical
+/// action); direction-less kinds (`swipe`, `rotate`, `tilt`) and unknown
+/// labels are `None`, never guessed.
+pub fn gesture_from_label(label: &str) -> Option<SemanticGesture> {
+    Some(match label.to_ascii_lowercase().as_str() {
+        "tap" => SemanticGesture::Tap,
+        "double_tap" => SemanticGesture::DoubleTap,
+        "hold" => SemanticGesture::Hold { duration_ms: 0 },
+        "swipe_left" => SemanticGesture::Swipe {
+            direction: SemanticSwipeDirection::Left,
+        },
+        "swipe_right" => SemanticGesture::Swipe {
+            direction: SemanticSwipeDirection::Right,
+        },
+        "rotate_cw" | "twist_cw" => SemanticGesture::Rotate {
+            direction: SemanticRotateDirection::Cw,
+        },
+        "rotate_ccw" | "twist_ccw" => SemanticGesture::Rotate {
+            direction: SemanticRotateDirection::Ccw,
+        },
+        "slide_up" | "tilt_up" => SemanticGesture::Slide {
+            direction: SemanticSlideDirection::Up,
+        },
+        "slide_down" | "tilt_down" => SemanticGesture::Slide {
+            direction: SemanticSlideDirection::Down,
+        },
+        "slide_left" | "tilt_left" => SemanticGesture::Slide {
+            direction: SemanticSlideDirection::Left,
+        },
+        "slide_right" | "tilt_right" => SemanticGesture::Slide {
+            direction: SemanticSlideDirection::Right,
+        },
+        _ => return None,
+    })
 }
 
 /// The ONE gesture → default-action table, keyed on the typed gesture so a
@@ -536,26 +585,21 @@ pub fn default_action(gesture: &SemanticGesture) -> (&'static str, f32) {
 }
 
 /// String-keyed form of [`default_action`] for hosts that carry gestures as
-/// labels. Accepts the canonical labels from [`gesture_label`] plus the
-/// legacy host vocabulary (`tilt_*`, `twist_*`, `shake`) that pre-v0.3
-/// backends still emit. Bare `swipe`/`rotate` (no direction) are NOT
-/// mappable — callers that have the typed gesture should use
-/// [`default_action`].
+/// labels: parses the label with [`gesture_from_label`] and delegates, so the
+/// two forms cannot disagree. Accepts the canonical labels from
+/// [`gesture_label`] plus the legacy host vocabulary (`tilt_*`, `twist_*`,
+/// `shake`) that pre-v0.3 backends still emit. Bare `swipe`/`rotate` (no
+/// direction) are NOT mappable — callers that have the typed gesture should
+/// use [`default_action`].
 pub fn gesture_to_action(gesture_type: &str) -> (&'static str, f32) {
-    match gesture_type.to_ascii_lowercase().as_str() {
-        "tap" => ("confirm", 0.9),
-        "double_tap" => ("execute", 0.92),
-        "hold" => ("select", 0.88),
-        "swipe_left" | "slide_left" | "tilt_left" => ("previous", 0.85),
-        "swipe_right" | "slide_right" | "tilt_right" => ("next", 0.85),
-        "slide_up" | "tilt_up" => ("scroll_up", 0.8),
-        "slide_down" | "tilt_down" => ("scroll_down", 0.8),
-        "rotate_cw" | "twist_cw" => ("increase", 0.82),
-        "rotate_ccw" | "twist_ccw" => ("decrease", 0.82),
-        // Deferred to a later firmware rev, not dropped (2026-07-02).
-        "shake" => ("dismiss", 0.78),
-        _ => (UNKNOWN_ACTION, 0.5),
+    // `shake` is deferred to a later firmware rev (2026-07-02) and has no
+    // typed variant yet; its action is retained here.
+    if gesture_type.eq_ignore_ascii_case("shake") {
+        return ("dismiss", 0.78);
     }
+    gesture_from_label(gesture_type)
+        .map(|gesture| default_action(&gesture))
+        .unwrap_or((UNKNOWN_ACTION, 0.5))
 }
 
 // ---- C3 raw sensor stream (binary, not enveloped) ----
@@ -1035,18 +1079,73 @@ mod tests {
             let (typed, typed_conf) = default_action(&gesture);
             assert_eq!(typed, expected, "typed table for {gesture:?}");
             assert!(typed_conf > 0.5);
-            let (by_label, label_conf) = gesture_to_action(gesture_label(&gesture));
-            assert_eq!(by_label, typed, "string table disagrees for {gesture:?}");
-            assert_eq!(label_conf, typed_conf);
         }
-        // Legacy host vocabulary still resolves to the same actions.
-        assert_eq!(gesture_to_action("tilt_left").0, "previous");
-        assert_eq!(gesture_to_action("twist_ccw").0, "decrease");
-        assert_eq!(gesture_to_action("TAP").0, "confirm");
+        // EVERY variant the typed table can produce round-trips through its
+        // label to the identical action — simulator-only kinds included.
+        let every_variant = [
+            SemanticGesture::Tap,
+            SemanticGesture::DoubleTap,
+            SemanticGesture::Hold { duration_ms: 1 },
+            SemanticGesture::Swipe {
+                direction: SemanticSwipeDirection::Left,
+            },
+            SemanticGesture::Swipe {
+                direction: SemanticSwipeDirection::Right,
+            },
+            SemanticGesture::Rotate {
+                direction: SemanticRotateDirection::Cw,
+            },
+            SemanticGesture::Rotate {
+                direction: SemanticRotateDirection::Ccw,
+            },
+            SemanticGesture::Slide {
+                direction: SemanticSlideDirection::Up,
+            },
+            SemanticGesture::Slide {
+                direction: SemanticSlideDirection::Down,
+            },
+            SemanticGesture::Slide {
+                direction: SemanticSlideDirection::Left,
+            },
+            SemanticGesture::Slide {
+                direction: SemanticSlideDirection::Right,
+            },
+            SemanticGesture::Tilt {
+                angle_degrees: 12.5,
+            },
+            SemanticGesture::Tilt {
+                angle_degrees: -12.5,
+            },
+            SemanticGesture::Tilt { angle_degrees: 0.0 },
+        ];
+        for gesture in every_variant {
+            let typed = default_action(&gesture);
+            let label = gesture_label(&gesture);
+            assert_eq!(
+                gesture_to_action(label),
+                typed,
+                "string table disagrees with typed table for {gesture:?} (label {label})"
+            );
+            assert_ne!(
+                typed.0, UNKNOWN_ACTION,
+                "{gesture:?} must have a default action"
+            );
+        }
+        // Legacy host vocabulary still resolves to the v0.3.0 actions/confidences.
+        assert_eq!(gesture_to_action("tilt_left"), ("previous", 0.85));
+        assert_eq!(gesture_to_action("tilt_right"), ("next", 0.85));
+        assert_eq!(gesture_to_action("tilt_up"), ("scroll_up", 0.8));
+        assert_eq!(gesture_to_action("tilt_down"), ("scroll_down", 0.8));
+        assert_eq!(gesture_to_action("twist_cw"), ("increase", 0.82));
+        assert_eq!(gesture_to_action("twist_ccw"), ("decrease", 0.82));
+        assert_eq!(gesture_to_action("shake"), ("dismiss", 0.78));
+        assert_eq!(gesture_to_action("hold"), ("select", 0.88));
+        assert_eq!(gesture_to_action("TAP"), ("confirm", 0.9));
         // Direction-less kinds and unknowns are not guessed.
-        assert_eq!(gesture_to_action("swipe").0, UNKNOWN_ACTION);
-        assert_eq!(gesture_to_action("rotate").0, UNKNOWN_ACTION);
-        assert_eq!(gesture_to_action("backflip").0, UNKNOWN_ACTION);
+        assert_eq!(gesture_to_action("swipe"), (UNKNOWN_ACTION, 0.5));
+        assert_eq!(gesture_to_action("rotate"), (UNKNOWN_ACTION, 0.5));
+        assert_eq!(gesture_to_action("tilt"), (UNKNOWN_ACTION, 0.5));
+        assert_eq!(gesture_to_action("backflip"), (UNKNOWN_ACTION, 0.5));
     }
 
     /// Both gesture wire shapes decode: the bare envelope the ring notifies
@@ -1112,8 +1211,9 @@ mod tests {
                 pattern: SemanticHapticPattern::Tick,
             }),
         );
-        // 2020-01-01 in ms; guards the wasm32 branch when run under
-        // wasm-bindgen-test and the native branch here.
+        // 2020-01-01 in ms. Covers the native branch; the wasm32 branch is
+        // exercised by the TypeScript SDK's real-core tests
+        // (`sdk/typescript/src/wasm.real.test.ts`).
         assert!(envelope.timestamp_ms > 1_577_836_800_000);
         assert_eq!(envelope.sequence, 1);
     }

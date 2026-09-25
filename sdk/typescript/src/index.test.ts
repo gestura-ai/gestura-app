@@ -167,7 +167,8 @@ describe("GesturaRing", () => {
     );
     expect(onSnapshot).toHaveBeenCalledOnce();
     expect(onSnapshot.mock.calls[0]![0].detail.trust_state).toBe("bonded");
-    expect(onBattery.mock.calls[0]![0].detail).toEqual({ levelPercent: 88 });
+    // No synthetic battery event from a snapshot (the device notifies BF too).
+    expect(onBattery).not.toHaveBeenCalled();
     expect(ring.trustState).toBe("bonded");
     expect(ring.lastSnapshot?.degraded_modes).toEqual(["low_battery"]);
 

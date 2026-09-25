@@ -57,15 +57,17 @@ fallback (`LEGACY_SERVICE_UUID`); remove after all sides ship.
 ## Gesture → default action (SDK table)
 
 `gestura_protocol::default_action(&SemanticGesture)` is the ONE
-gesture→action table (the string form `gesture_to_action(label)` and the
-`gestura-core-intent` normalizer both delegate to it): tap→`confirm`,
+gesture→action table; the string form `gesture_to_action(label)` parses the
+label (`gesture_from_label`) and delegates to it, and the
+`gestura-core-intent` normalizer calls the string form: tap→`confirm`,
 double_tap→`execute`, hold→`select`, swipe left/right→`previous`/`next`,
 rotate cw/ccw→`increase`/`decrease`; simulator-only slide up/down→
 `scroll_up`/`scroll_down`, slide left/right and tilt (by sign)→
 `previous`/`next`. Canonical labels are `gesture_label()`: `tap`,
 `double_tap`, `hold`, `swipe_left`, `swipe_right`, `rotate_cw`,
-`rotate_ccw`, `slide_*`, `tilt`; the legacy host labels `tilt_*`/`twist_*`
-still resolve. A direction-less `swipe`/`rotate` label is not guessed.
+`rotate_ccw`, `slide_*`, and `tilt_left`/`tilt_right` (by sign); the legacy
+host labels `tilt_*`/`twist_*` still resolve. A direction-less
+`swipe`/`rotate`/`tilt` label is not guessed.
 
 ## Vocabulary (ratified)
 

@@ -30,7 +30,9 @@ default, so **consumers need no WASM bundler plugin, no `fetch`, and no
 `init()` call** — it works as-is in Node, Vitest, Vite, webpack and Tauri
 WebViews. Requires [`wasm-pack`](https://rustwasm.github.io/wasm-pack/) and
 the `wasm32-unknown-unknown` target (`rustup target add wasm32-unknown-unknown`).
-`npm test` builds the core automatically on a fresh clone.
+`npm test` builds the core automatically on a fresh clone; after editing the
+Rust crate, run `npm run build:wasm` again (the test hook only builds when
+the core is missing, not when it is stale).
 
 The package is self-contained (`dist/` + `wasm/`); there is no separate
 `@gestura/protocol-wasm` package.
@@ -93,9 +95,11 @@ const ring = await GesturaRing.open({ transport, wasm });
 ## Events (W3C-style names)
 
 `tap`, `doubletap`, `holdstart`/`holdend`, `swipeleft`/`swiperight`,
-`rotatecw`/`rotateccw`, plus `gesture` (every gesture, with `label`,
-`direction`, `action`, `actionConfidence`, `timestampMs`), `sensorframe`,
-`battery`, `statesnapshot`, `ack`. Both gesture wire shapes are accepted (the
+`rotatecw`/`rotateccw`, plus `gesture` (every device-truth gesture, with
+`label`, `direction`, `action`, `actionConfidence`, `timestampMs`; the
+simulator-only `slide`/`tilt` kinds are not surfaced), `sensorframe`,
+`battery` (from the battery characteristic), `statesnapshot` (trust,
+degraded modes, battery, from C1), `ack`. Both gesture wire shapes are accepted (the
 bare envelope real firmware notifies and the simulator's legacy
 `BleGestureData` wrapper). See `crates/gestura-core-ring/PROTOCOL.md` for the
 full mapping and the Matter Generic Switch alignment.

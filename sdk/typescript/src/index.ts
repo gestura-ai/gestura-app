@@ -96,13 +96,17 @@ export function trustPermits(state: TrustState | undefined, required: Exclude<Tr
   return TRUST_RANK[state] >= TRUST_RANK[required];
 }
 
-/** Detail of the catch-all `gesture` event. */
+/**
+ * Detail of the catch-all `gesture` event. Fires for every device-truth
+ * gesture (the kinds a real ring emits); the simulator-only `slide`/`tilt`
+ * kinds are not surfaced as events.
+ */
 export interface GestureEventDetail {
-  /** Wire kind: `tap`, `double_tap`, `hold`, `swipe`, `rotate`, `slide`, `tilt`. */
+  /** Wire kind: `tap`, `double_tap`, `hold`, `swipe`, `rotate`. */
   type: string;
   /** Canonical label, e.g. `swipe_left`, `rotate_cw` (direction included). */
   label: string;
-  /** Present for `swipe`/`rotate`/`slide`. */
+  /** Present for `swipe`/`rotate`. */
   direction?: string;
   /** Device classifier confidence, 0–1. */
   confidence: number;
@@ -124,7 +128,7 @@ export interface GesturaRingEventMap {
   swiperight: CustomEvent<{ confidence: number }>;
   rotatecw: CustomEvent<{ confidence: number }>;
   rotateccw: CustomEvent<{ confidence: number }>;
-  /** Any gesture, with its label and mapped default action. */
+  /** Any device-truth gesture, with its label and mapped default action. */
   gesture: CustomEvent<GestureEventDetail>;
   /** C3 raw sensor stream frame (~5/s at 100 Hz, 20-sample batches). */
   sensorframe: CustomEvent<SensorFrame>;
@@ -280,12 +284,12 @@ export class GesturaRing extends EventTarget {
         if (kind === "ack") {
           this.dispatchEvent(new CustomEvent("ack", { detail: event }));
         } else if (kind === "stateSnapshot") {
+          // The snapshot carries battery too, but the device also notifies
+          // the battery characteristic for every change — no synthetic
+          // `battery` event here, or consumers would see each change twice.
           const snapshot = event as unknown as DeviceStateSnapshot;
           this.snapshot = snapshot;
           this.dispatchEvent(new CustomEvent("statesnapshot", { detail: snapshot }));
-          this.dispatchEvent(
-            new CustomEvent("battery", { detail: { levelPercent: snapshot.battery.level_percent } }),
-          );
         } else if (kind === "battery") {
           this.dispatchEvent(
             new CustomEvent("battery", { detail: { levelPercent: event.level_percent } }),

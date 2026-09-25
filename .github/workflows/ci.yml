@@ -238,6 +238,14 @@ jobs:
     - name: Install wasm-pack
       run: cargo install wasm-pack --locked
 
+    # gestura-core-ring pulls btleplug → libdbus-sys (pkg-config `dbus-1`) and
+    # gestura-core's ring-integration check pulls cpal → alsa-sys; neither
+    # -dev package is on the runner image (same list as the test job).
+    - name: Install system dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y pkg-config libdbus-1-dev libasound2-dev
+
     - name: Setup Node.js
       uses: actions/setup-node@v4
       with:
