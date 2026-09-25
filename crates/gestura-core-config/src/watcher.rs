@@ -30,6 +30,39 @@ struct DebounceState {
     last_event: Option<Instant>,
 }
 
+/// The watched file: the path to read, plus every spelling of it that a
+/// backend may report. FSEvents on macOS delivers resolved paths
+/// (`/private/var/…` for a `/var/…` symlink), inotify and Windows deliver
+/// the path as it was watched, so an event is ours if it matches either.
+struct WatchedFile {
+    path: PathBuf,
+    aliases: Vec<PathBuf>,
+}
+
+impl WatchedFile {
+    fn new(path: PathBuf) -> Self {
+        let mut aliases = vec![path.clone()];
+        let canonical = path.canonicalize().ok().or_else(|| {
+            // The file may not exist yet (watching for its creation).
+            let parent = path.parent()?.canonicalize().ok()?;
+            Some(parent.join(path.file_name()?))
+        });
+        if let Some(canonical) = canonical
+            && !aliases.contains(&canonical)
+        {
+            aliases.push(canonical);
+        }
+        Self { path, aliases }
+    }
+
+    fn matches(&self, event: &Event) -> bool {
+        event
+            .paths
+            .iter()
+            .any(|p| self.aliases.iter().any(|alias| alias == p))
+    }
+}
+
 /// How long a burst of change events must be quiet before the file is
 /// re-read. Long enough to cover an editor's write-rename-chmod sequence.
 const DEBOUNCE_WINDOW: Duration = Duration::from_millis(100);
@@ -54,8 +87,9 @@ impl ConfigWatcher {
     ) -> Result<(Self, mpsc::Receiver<ConfigChangeEvent>), String> {
         let (tx, rx) = mpsc::channel(32);
         let debounce = Arc::new(Mutex::new(DebounceState { last_event: None }));
+        let watched = Arc::new(WatchedFile::new(config_path.clone()));
 
-        let config_path_clone = config_path.clone();
+        let watched_clone = watched.clone();
         let debounce_clone = debounce.clone();
         let tx_clone = tx.clone();
 
@@ -67,16 +101,16 @@ impl ConfigWatcher {
         // filtered out here, before any thread is spawned.
         let watcher = notify::recommended_watcher(move |res: Result<Event, notify::Error>| {
             if let Ok(event) = &res
-                && !event.paths.iter().any(|p| p == &config_path_clone)
+                && !watched_clone.matches(event)
             {
                 return;
             }
             let tx = tx_clone.clone();
-            let config_path = config_path_clone.clone();
+            let watched = watched_clone.clone();
             let debounce = debounce_clone.clone();
             std::thread::Builder::new()
                 .name("gestura-config-reload".into())
-                .spawn(move || Self::handle_event(res, &config_path, &tx, &debounce))
+                .spawn(move || Self::handle_event(res, &watched, &tx, &debounce))
                 .map(drop)
                 .unwrap_or_else(|e| tracing::error!("config reload thread failed to start: {e}"));
         })
@@ -107,13 +141,14 @@ impl ConfigWatcher {
     /// is safe here for the same reason.
     fn handle_event(
         res: Result<Event, notify::Error>,
-        config_path: &Path,
+        watched: &WatchedFile,
         tx: &mpsc::Sender<ConfigChangeEvent>,
         debounce: &Arc<Mutex<DebounceState>>,
     ) {
+        let config_path = watched.path.as_path();
         match res {
             Ok(event) => {
-                if !event.paths.iter().any(|p| p == config_path) {
+                if !watched.matches(&event) {
                     return;
                 }
                 match event.kind {
@@ -269,6 +304,33 @@ mod tests {
         let _deleted = ConfigChangeEvent::Deleted;
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn watched_file_accepts_the_resolved_spelling_of_a_symlinked_path() {
+        let temp_dir = TempDir::new().unwrap();
+        let real_dir = temp_dir.path().join("real");
+        std::fs::create_dir(&real_dir).unwrap();
+        let link_dir = temp_dir.path().join("link");
+        std::os::unix::fs::symlink(&real_dir, &link_dir).unwrap();
+
+        // Existing file, watched through the symlink.
+        let via_link = link_dir.join("config.yaml");
+        std::fs::write(&via_link, "{}").unwrap();
+        let watched = WatchedFile::new(via_link.clone());
+        let resolved = real_dir.canonicalize().unwrap().join("config.yaml");
+        assert!(watched.matches(&modify_event(&via_link).unwrap()));
+        assert!(watched.matches(&modify_event(&resolved).unwrap()));
+        assert!(!watched.matches(&modify_event(&link_dir.join("other.yaml")).unwrap()));
+
+        // Not yet created: the parent still resolves.
+        let future = WatchedFile::new(link_dir.join("later.yaml"));
+        assert!(
+            future.matches(
+                &modify_event(&real_dir.canonicalize().unwrap().join("later.yaml")).unwrap()
+            )
+        );
+    }
+
     fn modify_event(path: &Path) -> Result<Event, notify::Error> {
         use notify::event::{DataChange, ModifyKind};
         Ok(
@@ -291,33 +353,40 @@ mod tests {
 
         let (tx, mut rx) = mpsc::channel(4);
         let debounce = Arc::new(Mutex::new(DebounceState { last_event: None }));
+        let watched = Arc::new(WatchedFile::new(config_path.clone()));
 
         // Two events inside one debounce window, from two threads (as notify
         // would deliver a save burst): only the newer one may reload.
-        let spawn_event = |path: PathBuf,
+        let spawn_event = |event_path: PathBuf,
+                           watched: Arc<WatchedFile>,
                            tx: mpsc::Sender<ConfigChangeEvent>,
                            debounce: Arc<Mutex<DebounceState>>| {
             std::thread::spawn(move || {
-                ConfigWatcher::handle_event(modify_event(&path), &path, &tx, &debounce)
+                ConfigWatcher::handle_event(modify_event(&event_path), &watched, &tx, &debounce)
             })
         };
-        let first = spawn_event(config_path.clone(), tx.clone(), debounce.clone());
+        let first = spawn_event(
+            config_path.clone(),
+            watched.clone(),
+            tx.clone(),
+            debounce.clone(),
+        );
         std::thread::sleep(Duration::from_millis(10));
-        let second = spawn_event(config_path.clone(), tx.clone(), debounce.clone());
+        // The newer event arrives under the backend's resolved spelling of
+        // the same file (what FSEvents reports on macOS).
+        let second = spawn_event(
+            config_path.canonicalize().unwrap(),
+            watched.clone(),
+            tx.clone(),
+            debounce.clone(),
+        );
         // A different file in the same directory: ignored outright.
-        let foreign = {
-            let path = config_path.clone();
-            let tx = tx.clone();
-            let debounce = debounce.clone();
-            std::thread::spawn(move || {
-                ConfigWatcher::handle_event(
-                    modify_event(&path.with_file_name("other.yaml")),
-                    &path,
-                    &tx,
-                    &debounce,
-                )
-            })
-        };
+        let foreign = spawn_event(
+            config_path.with_file_name("other.yaml"),
+            watched.clone(),
+            tx.clone(),
+            debounce.clone(),
+        );
         for handle in [first, second, foreign] {
             handle.join().unwrap();
         }
