@@ -1,22 +1,31 @@
 /**
  * Typed view of the WebAssembly core generated from the `gestura-protocol`
- * Rust crate (`wasm-pack build --features wasm`). The codec lives in Rust —
- * this module only declares the shapes the wrapper consumes, so there is one
- * source of truth for the wire format and zero re-implementation in TS.
+ * Rust crate (`wasm-pack build --target web --features wasm`, then
+ * `scripts/inline-wasm.mjs`). The codec lives in Rust — this module only
+ * declares the shapes the wrapper consumes, so there is one source of truth
+ * for the wire format and zero re-implementation in TS.
  *
- * The generated package is imported lazily so the SDK can be loaded in
- * environments that initialize WASM differently (bundler vs web target).
+ * Two generated modules ship in `../wasm`:
+ * - `gestura_protocol_inline.js` — the .wasm embedded as base64, initialized
+ *   synchronously on import. Zero-config: works in Node, Vitest, Vite,
+ *   webpack and Tauri WebViews with no WASM plugin. This is the default.
+ * - `gestura_protocol.js` — the plain wasm-bindgen `web` module whose default
+ *   export `init()` fetches `gestura_protocol_bg.wasm`; ~25% smaller on the
+ *   wire for hosts that can serve the .wasm and prefer to stream it.
  */
 
-// Shape of the wasm-pack `bundler`-target module. `@gestura/protocol-wasm` is
-// the generated package name (see the SDK build script); until it's built,
-// this import is declared, not resolved.
+/** Shape of the wasm-bindgen module the wrapper consumes. */
 export interface GesturaWasm {
   protocolVersion(): string;
   ringUuids(): string;
+  /** Gesture notification (bare envelope or legacy wrapper) → JSON or undefined. */
   decodeGestureEvent(bytes: Uint8Array): string | undefined;
+  /** Any event notification → `{kind, event, sequence, timestampMs}` JSON or undefined. */
   decodeEvent(bytes: Uint8Array): string | undefined;
   decodeSensorFrame(bytes: Uint8Array): string;
+  /** Typed gesture object (JSON) → `{label, action, confidence}` JSON. */
+  gestureAction(gestureJson: string): string;
+  /** Gesture LABEL → `{action, confidence}` JSON (legacy; cannot see a direction). */
   gestureToAction(gestureType: string): string;
   encodeHapticCommand(sequence: bigint, patternJson: string): Uint8Array;
   encodeConfig(
@@ -28,18 +37,23 @@ export interface GesturaWasm {
   decodeConfig(bytes: Uint8Array): string;
 }
 
-let cached: GesturaWasm | undefined;
+let cached: Promise<GesturaWasm> | undefined;
 
 /**
- * Loads the WASM core once. `loader` lets the host app control how the
- * generated module is imported (bundler resolves `@gestura/protocol-wasm`
- * directly; a web target may need `init()` first).
+ * Loads the WASM core once. With no `loader`, the inlined module is used
+ * (no configuration needed anywhere). Pass a `loader` to use the streaming
+ * module instead, e.g.
+ * ```ts
+ * import init, * as core from "@gestura/ring-sdk/wasm";
+ * const ring = await GesturaRing.open({ transport, wasm: await loadWasm(async () => { await init(); return core; }) });
+ * ```
  */
 export async function loadWasm(loader?: () => Promise<GesturaWasm>): Promise<GesturaWasm> {
-  if (cached) return cached;
-  cached = loader
-    ? await loader()
-    : ((await import(/* @vite-ignore */ "@gestura/protocol-wasm")) as unknown as GesturaWasm);
+  if (!cached) {
+    cached = loader
+      ? loader()
+      : (import("../wasm/gestura_protocol_inline.js") as unknown as Promise<GesturaWasm>);
+  }
   return cached;
 }
 

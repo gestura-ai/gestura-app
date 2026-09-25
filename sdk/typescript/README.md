@@ -19,13 +19,21 @@ RingTransport (Tauri / Mock / Web BT) ────────────┘
 # from sdk/typescript
 npm install
 npm run build          # builds the WASM core (wasm-pack) then compiles TS
-npm test               # vitest — wrapper wiring, against MockTransport
+npm test               # vitest — wrapper wiring on a fake core + the REAL core
 ```
 
-`build:wasm` runs `wasm-pack build --features wasm --target bundler` on the
-`gestura-protocol` crate and drops the package in `./wasm`. Requires
-[`wasm-pack`](https://rustwasm.github.io/wasm-pack/) and the
-`wasm32-unknown-unknown` target (`rustup target add wasm32-unknown-unknown`).
+`build:wasm` runs `wasm-pack build --features wasm --target web` on the
+`gestura-protocol` crate into `./wasm`, then `scripts/inline-wasm.mjs`
+generates `wasm/gestura_protocol_inline.js`: the `.wasm` embedded as base64
+and initialized on import. That inlined module is what the SDK loads by
+default, so **consumers need no WASM bundler plugin, no `fetch`, and no
+`init()` call** — it works as-is in Node, Vitest, Vite, webpack and Tauri
+WebViews. Requires [`wasm-pack`](https://rustwasm.github.io/wasm-pack/) and
+the `wasm32-unknown-unknown` target (`rustup target add wasm32-unknown-unknown`).
+`npm test` builds the core automatically on a fresh clone.
+
+The package is self-contained (`dist/` + `wasm/`); there is no separate
+`@gestura/protocol-wasm` package.
 
 ## Usage
 
@@ -41,7 +49,13 @@ const ring = await GesturaRing.open({ transport });
 ring.addEventListener("doubletap", () => runCommand());
 ring.addEventListener("rotatecw", () => volumeUp());
 ring.addEventListener("gesture", (e) =>
-  console.log(e.detail.type, "→", e.detail.action)); // e.g. "double_tap → execute"
+  console.log(e.detail.label, "→", e.detail.action)); // e.g. "swipe_left → previous"
+
+// Device state: trust, degraded modes, battery (C1). The input to any gate.
+ring.addEventListener("statesnapshot", (e) => {
+  if (!e.detail.privileged_actions_enabled) disarm();
+});
+console.log(ring.trustState); // "bonded" | "discovered" | "revoked" | undefined
 
 // C3 raw sensor stream (opt-in, bonded-gated device-side)
 await ring.enableSensorStream(true);
@@ -49,12 +63,23 @@ ring.addEventListener("sensorframe", (e) => {
   for (const s of e.detail.samples) applyImu(s.ax_mg, s.ay_mg, s.az_mg, s.gx_ddps);
 });
 
-// Haptics
-await ring.sendHaptic("tick");
+// Haptics — returns the command sequence; the matching `ack` event carries it
+const seq = await ring.sendHaptic("tick");
 await ring.sendWaveform(myInt16Samples, 8000); // ≤1024 samples (device FIFO)
 
 // Config uses clobber-free read-modify-write (readable-C2)
 await ring.takeOverHid(); // suppress the ring's standalone HID projection
+await ring.close();       // restores HID (if taken over), then disconnects
+```
+
+Prefer the streaming `.wasm` (25% smaller than the inlined base64)? Pass a
+loader:
+
+```ts
+import init, * as core from "@gestura/ring-sdk/wasm";
+import { GesturaRing, loadWasm } from "@gestura/ring-sdk";
+const wasm = await loadWasm(async () => { await init(); return core; });
+const ring = await GesturaRing.open({ transport, wasm });
 ```
 
 ## Transports
@@ -62,12 +87,18 @@ await ring.takeOverHid(); // suppress the ring's standalone HID projection
 | Transport | Status | Notes |
 |---|---|---|
 | `MockTransport` | ✅ | in-memory; tests + offline example runs |
-| `tauriTransport` | 🔌 needs backend glue | bridges to gestura-gui's Rust BLE over IPC. Requires the thin `ring_write`/`ring_read`/`ring_subscribe`/`ring-notify` passthrough commands (see `src/transport/tauri.ts` header) — one Rust step. |
+| `tauriTransport` | 🔌 needs backend glue | bridges to gestura-gui's Rust BLE over IPC. Requires the thin `ring_write`/`ring_read`/`ring_subscribe`/`ring_unsubscribe`/`ring-notify` passthrough commands (see `src/transport/tauri.ts` header) — one Rust step, not yet landed. |
 | Web Bluetooth | ⏭ next | `navigator.bluetooth` against the ratified UUIDs |
 
-## Event names (W3C-style)
+## Events (W3C-style names)
 
 `tap`, `doubletap`, `holdstart`/`holdend`, `swipeleft`/`swiperight`,
-`rotatecw`/`rotateccw`, plus `gesture` (with mapped action), `sensorframe`,
-`battery`, `ack`. See PROTOCOL.md in `gestura-core-ring/` for the full mapping
-and the Matter Generic Switch alignment.
+`rotatecw`/`rotateccw`, plus `gesture` (every gesture, with `label`,
+`direction`, `action`, `actionConfidence`, `timestampMs`), `sensorframe`,
+`battery`, `statesnapshot`, `ack`. Both gesture wire shapes are accepted (the
+bare envelope real firmware notifies and the simulator's legacy
+`BleGestureData` wrapper). See `crates/gestura-core-ring/PROTOCOL.md` for the
+full mapping and the Matter Generic Switch alignment.
+
+`timestampMs` on gestures and snapshots is **device uptime**, never epoch
+time; correlate to the host clock at receipt if you need wall time.

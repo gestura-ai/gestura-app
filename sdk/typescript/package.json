@@ -1,6 +1,6 @@
 {
   "name": "@gestura/ring-sdk",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "TypeScript SDK for the Gestura Haptica Harmony B1 ring and its simulator. Wraps the Rust Shared Semantic Protocol (compiled to WebAssembly) with an ergonomic, W3C-style event API. Transport-agnostic: ships a Tauri adapter today, Web Bluetooth next.",
   "type": "module",
   "main": "./dist/index.js",
@@ -13,17 +13,29 @@
     "./tauri": {
       "types": "./dist/transport/tauri.d.ts",
       "import": "./dist/transport/tauri.js"
+    },
+    "./wasm": {
+      "types": "./wasm/gestura_protocol.d.ts",
+      "import": "./wasm/gestura_protocol.js"
+    },
+    "./wasm/inline": {
+      "types": "./wasm/gestura_protocol_inline.d.ts",
+      "import": "./wasm/gestura_protocol_inline.js"
     }
   },
   "files": [
     "dist",
+    "wasm",
     "src",
-    "wasm"
+    "!src/**/*.test.ts",
+    "!dist/**/*.test.*"
   ],
   "scripts": {
-    "build:wasm": "cd ../../crates/gestura-protocol && wasm-pack build --release --target bundler --out-dir ../../sdk/typescript/wasm -- --features wasm",
-    "build": "npm run build:wasm && tsc",
+    "build:wasm": "cd ../../crates/gestura-protocol && wasm-pack build --release --target web --out-dir ../../sdk/typescript/wasm -- --features wasm && cd ../../sdk/typescript && node scripts/inline-wasm.mjs",
+    "build": "npm run build:wasm && tsc -p tsconfig.build.json",
+    "pretypecheck": "node scripts/ensure-wasm.mjs",
     "typecheck": "tsc --noEmit",
+    "pretest": "node scripts/ensure-wasm.mjs",
     "test": "vitest run"
   },
   "keywords": [
@@ -36,6 +48,11 @@
     "wasm"
   ],
   "license": "LicenseRef-Gestura-Prosperity-1.1",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/gestura-ai/gestura-app.git",
+    "directory": "sdk/typescript"
+  },
   "peerDependencies": {
     "@tauri-apps/api": ">=2.0.0"
   },
@@ -47,8 +64,5 @@
   "devDependencies": {
     "typescript": "^5.5.0",
     "vitest": "^2.0.0"
-  },
-  "dependencies": {
-    "@gestura/protocol-wasm": "file:./wasm"
   }
 }
