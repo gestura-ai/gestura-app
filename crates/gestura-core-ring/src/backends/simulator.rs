@@ -1,7 +1,7 @@
 use crate::protocol::{
-    self, BleBatteryData, BleGestureData, HapticCommandPayload, ProtocolEnvelope, RingConfig,
-    SemanticGesture, SemanticHapticPattern, SemanticRotateDirection, SemanticSlideDirection,
-    SemanticSwipeDirection, SimulatorCommand, SimulatorEvent, ring_uuids,
+    self, BleBatteryData, BleGestureData, DeviceCommand, DeviceEvent, HapticCommandPayload,
+    ProtocolEnvelope, RingConfig, SemanticGesture, SemanticHapticPattern, SemanticRotateDirection,
+    SemanticSlideDirection, SemanticSwipeDirection, ring_uuids,
 };
 use crate::{DeviceStatus, RingBackend};
 use async_trait::async_trait;
@@ -212,15 +212,14 @@ fn haptic_to_semantic(
 /// Parses one gesture-characteristic notification payload into a `Gesture`.
 ///
 /// Accepts, in order: the current `BleGestureData` wrapper with an embedded
-/// `ProtocolEnvelope<SimulatorEvent>`, a bare envelope, and the legacy
+/// `ProtocolEnvelope<DeviceEvent>`, a bare envelope, and the legacy
 /// `SimulatorRawGesture` shape. Returns `None` (with a warning) when nothing
 /// parses — the previous implementation dropped these silently, which is how
 /// the app↔simulator format drift went unnoticed.
 fn parse_gesture_notification(value: &[u8]) -> Option<Gesture> {
     if let Ok(wrapper) = serde_json::from_slice::<BleGestureData>(value) {
-        if let Ok(envelope) =
-            serde_json::from_slice::<ProtocolEnvelope<SimulatorEvent>>(&wrapper.data)
-            && let SimulatorEvent::Gesture(event) = envelope.payload
+        if let Ok(envelope) = serde_json::from_slice::<ProtocolEnvelope<DeviceEvent>>(&wrapper.data)
+            && let DeviceEvent::Gesture(event) = envelope.payload
         {
             return Some(semantic_to_gesture(event.gesture, event.confidence));
         }
@@ -232,8 +231,8 @@ fn parse_gesture_notification(value: &[u8]) -> Option<Gesture> {
         return None;
     }
 
-    if let Ok(envelope) = serde_json::from_slice::<ProtocolEnvelope<SimulatorEvent>>(value)
-        && let SimulatorEvent::Gesture(event) = envelope.payload
+    if let Ok(envelope) = serde_json::from_slice::<ProtocolEnvelope<DeviceEvent>>(value)
+        && let DeviceEvent::Gesture(event) = envelope.payload
     {
         return Some(semantic_to_gesture(event.gesture, event.confidence));
     }
@@ -574,7 +573,7 @@ impl RingBackend for SimulatorBackend {
             let sequence = self.sequence.fetch_add(1, Ordering::Relaxed);
             let envelope = protocol::command_envelope(
                 sequence,
-                SimulatorCommand::Haptic(HapticCommandPayload {
+                DeviceCommand::Haptic(HapticCommandPayload {
                     pattern: haptic_to_semantic(&pattern, intensity, duration_ms),
                 }),
             );

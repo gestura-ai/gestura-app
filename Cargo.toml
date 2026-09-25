@@ -37,7 +37,6 @@ members = [
     "crates/gestura-core-context",
     "crates/gestura-core-intent",
     "crates/gestura-core-ring",
-    "crates/gestura-protocol",
     "crates/gestura-core-haptics",
     "crates/gestura-core-gestures",
     "crates/gestura-core-devices",
@@ -61,6 +60,10 @@ description = "Intent-first AI assistant with GUI and CLI interfaces"
 
 [workspace.dependencies]
 # Core dependencies shared across crates
+# The Shared Semantic Protocol crate lives in the standalone gestura-sdk
+# repository since 2026-09-25 (SSP v0.4.0); pinned by commit until it is
+# tagged/published. Bump the rev deliberately — it is the wire contract.
+gestura-protocol = { git = "https://github.com/gestura-ai/gestura-sdk", rev = "65dfcb186c88e66064c63508f8f81e1ae81414cd" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 serde_yaml = "0.9.34"

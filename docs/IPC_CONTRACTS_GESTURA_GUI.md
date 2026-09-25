@@ -90,7 +90,7 @@ In those cases, prefer:
 ## Externally Consumed Contract: Ring SDK Raw GATT Passthrough
 
 One IPC surface is consumed outside this repo's frontend — by
-`@gestura/ring-sdk`'s Tauri transport (`sdk/typescript/src/transport/tauri.ts`)
+`@gestura/ring-sdk`'s Tauri transport (`gestura-sdk/sdk/typescript/src/transport/tauri.ts`, in the [gestura-sdk](https://github.com/gestura-ai/gestura-sdk) repository since 2026-09-25)
 and any app that embeds the SDK inside Gestura's WebView — so its shape is a
 published contract, not an internal detail. It is a byte passthrough: the SDK's
 WASM core is the only codec, and `crates/gestura-gui/src/commands/ring_raw.rs`
@@ -112,7 +112,7 @@ canonical `gestura_protocol::ring_uuids` allocation; only external BLE devices
 internal simulator runtime answers with an explicit "unsupported" error;
 `ring-notify` is forwarded for every subscribed characteristic of a device
 and the SDK filters by UUID. Changing any of these shapes is an SDK-breaking
-change and must land in `sdk/typescript/src/transport/tauri.ts` in the same PR.
+change and must land in `gestura-sdk/sdk/typescript/src/transport/tauri.ts` (a gestura-sdk PR) together with this side.
 
 ## What This File No Longer Tries to Do
 
