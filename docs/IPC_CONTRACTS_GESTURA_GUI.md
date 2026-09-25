@@ -87,6 +87,33 @@ In those cases, prefer:
 - Rustdoc on the command handler for payload/return semantics
 - focused contract notes only when the behavior is hard to infer from source
 
+## Externally Consumed Contract: Ring SDK Raw GATT Passthrough
+
+One IPC surface is consumed outside this repo's frontend — by
+`@gestura/ring-sdk`'s Tauri transport (`sdk/typescript/src/transport/tauri.ts`)
+and any app that embeds the SDK inside Gestura's WebView — so its shape is a
+published contract, not an internal detail. It is a byte passthrough: the SDK's
+WASM core is the only codec, and `crates/gestura-gui/src/commands/ring_raw.rs`
+decodes nothing.
+
+| Direction | Name | Payload |
+|---|---|---|
+| invoke | `ring_write` | `{ deviceId: string, uuid: string, bytes: number[] }` → `void` |
+| invoke | `ring_read` | `{ deviceId, uuid }` → `number[]` |
+| invoke | `ring_subscribe` | `{ deviceId, uuid }` → `void` |
+| invoke | `ring_unsubscribe` | `{ deviceId, uuid }` → `void` |
+| invoke | `ring_active_device` | `{}` → `string` (device id), error when nothing is connected |
+| event | `ring-notify` | `{ deviceId: string, uuid: string, bytes: number[] }` (`RawNotification`) |
+
+Notes: argument keys are camelCase (`rename_all = "camelCase"` on the
+handlers); `uuid` is the characteristic UUID, lowercase hyphenated, from the
+canonical `gestura_protocol::ring_uuids` allocation; only external BLE devices
+(a real ring, or the simulator advertising over BLE) support these — the
+internal simulator runtime answers with an explicit "unsupported" error;
+`ring-notify` is forwarded for every subscribed characteristic of a device
+and the SDK filters by UUID. Changing any of these shapes is an SDK-breaking
+change and must land in `sdk/typescript/src/transport/tauri.ts` in the same PR.
+
 ## What This File No Longer Tries to Do
 
 This file no longer maintains:

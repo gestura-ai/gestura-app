@@ -29,12 +29,12 @@ async function connectRing(): Promise<GesturaRing> {
   const tauri = (globalThis as { __TAURI__?: unknown }).__TAURI__;
   if (tauri) {
     try {
-      const { tauriTransport } = await import("@gestura/ring-sdk/tauri");
+      const { tauriTransport, activeDeviceId } = await import("@gestura/ring-sdk/tauri");
       const { invoke } = await import("@tauri-apps/api/core");
       const { listen } = await import("@tauri-apps/api/event");
-      // The app resolves the connected simulator's device id (command TBD in
-      // the Tauri glue step; see the SDK's tauri.ts header).
-      const deviceId = await invoke<string>("ring_active_device");
+      // The app reports which external ring/simulator it has connected.
+      const deviceId = await activeDeviceId({ invoke });
+      if (!deviceId) throw new Error("no ring or simulator connected in the app");
       const transport = tauriTransport(deviceId, { invoke, listen });
       hud.source.textContent = `Live · simulator via Tauri (${deviceId})`;
       const ring = await GesturaRing.open({ transport });
