@@ -20,6 +20,8 @@ serde_json.workspace = true
 chrono.workspace = true
 uuid.workspace = true
 gestura-core-pipeline.workspace = true
+# The gesture → action vocabulary is the SDK contract's; imported, not copied.
+gestura-protocol = { path = "../gestura-protocol" }
 tracing = { workspace = true, optional = true }
 
 [dev-dependencies]

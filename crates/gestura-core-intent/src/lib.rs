@@ -386,24 +386,17 @@ fn normalize_chat(raw: RawInput) -> Intent {
 
 // ---- Gesture normalization ----
 
-/// Map well-known gesture types to semantic action labels.
+/// Map well-known gesture labels to semantic action labels.
+///
+/// This is the SDK contract's table (`gestura_protocol::gesture_to_action`),
+/// imported rather than duplicated: the WASM/TypeScript SDK, the ring
+/// backends and this normalizer must agree on the vocabulary, and a local
+/// copy drifted once already (the protocol table gained `swipe_*` /
+/// `rotate_*` keys this one never had). `triple_tap` was removed per the
+/// approved v0.3 gesture set (2026-07-02); `shake` is retained (deferred to a
+/// later firmware rev, not dropped).
 fn gesture_to_action(gesture_type: &str) -> (&'static str, f32) {
-    match gesture_type.to_lowercase().as_str() {
-        "tap" => ("confirm", 0.9),
-        "double_tap" => ("execute", 0.92),
-        // "triple_tap" removed per the approved v0.3 gesture set (2026-07-02,
-        // user decision): no device source, high false-positive risk.
-        // "shake" retained below — deferred to a later firmware rev, not dropped.
-        "tilt_left" => ("previous", 0.85),
-        "tilt_right" => ("next", 0.85),
-        "tilt_up" => ("scroll_up", 0.8),
-        "tilt_down" => ("scroll_down", 0.8),
-        "twist_cw" => ("increase", 0.82),
-        "twist_ccw" => ("decrease", 0.82),
-        "shake" => ("dismiss", 0.78),
-        "hold" => ("select", 0.88),
-        _ => ("unknown_gesture", 0.5),
-    }
+    gestura_protocol::gesture_to_action(gesture_type)
 }
 
 fn normalize_gesture(raw: RawInput) -> Intent {
@@ -440,7 +433,7 @@ fn normalize_gesture(raw: RawInput) -> Intent {
     }
 
     let mut context_hints = vec!["source:gesture_ring".to_string()];
-    if action == "unknown_gesture" {
+    if action == gestura_protocol::UNKNOWN_ACTION {
         context_hints.push("unmapped_gesture".to_string());
     }
 
