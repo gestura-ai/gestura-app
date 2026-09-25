@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Ring SDK (`@gestura/ring-sdk` 0.3.1 / `gestura-protocol`)** — first end-to-end execution of the TypeScript/WASM build surfaced four defects the stubbed test suite could not see; all fixed and now covered by tests that drive the real compiled core (`sdk/typescript/src/wasm.real.test.ts`) and a new `sdk` CI job:
+  - every haptic command crashed in WASM (`std::time::SystemTime::now()` traps on `wasm32-unknown-unknown`); host timestamps now come from `Date.now()` on wasm32.
+  - swipe and rotate mapped to `unknown_gesture` because the string-keyed table received a direction-less kind; `gestura_protocol::default_action(&SemanticGesture)` is now the one typed table (with `gesture_label`), the string form gained `swipe_*`/`rotate_*` keys, and `gestura-core-intent` imports it instead of carrying a copy.
+  - the npm tarball shipped without the codec (wasm-pack's nested `.gitignore` excluded `wasm/`) and depended on an unpublishable `file:` package; the SDK is now one self-contained package built with `wasm-pack --target web` plus an inlined module (`wasm/gestura_protocol_inline.js`) that needs no bundler plugin, `fetch` or `init()` — verified in Node, Vitest, Vite and headless Chromium. Test files are no longer packed.
+  - `examples/vr-hand` did not build under plain Vite (WASM ESM integration); it does now, and gained rotate/hold keys.
+  - `wasm-opt` failed on binaryen releases that do not default-enable sign-ext/mutable-globals; the crate's wasm-pack metadata now passes those flags.
+- **Ring SDK behaviour**: the TypeScript SDK decodes both gesture wire shapes (the bare envelope firmware notifies and the simulator's legacy `BleGestureData` wrapper — `gestura_protocol::decode_gesture_notification`), emits `statesnapshot` events and exposes `trustState`/`lastSnapshot` (trust and degraded modes were silently dropped before), carries `label`/`direction`/`actionConfidence`/`timestampMs` on the `gesture` event, restores the ring's HID projection on `close()` when it was taken over, and ships `trustPermits()` so `revoked` is never treated as the strongest trust state.
+- **PROTOCOL.md** now points at `crates/gestura-protocol` as the canonical contract, documents the gesture characteristic's bare-envelope truth (wrapper accepted), and records the C3 byte map as locked (2026-07-10) instead of pending.
+
 ### Added
 
 - **Core Ring Abstraction** (`gestura-core-ring`): new crate defining standard hardware abstractions for the ring (`RingBackend`, `Gesture`, `DeviceStatus`) alongside a fully-featured `SimulatorBackend`. Easily integratable via an optional `ring-integration` feature toggle:
