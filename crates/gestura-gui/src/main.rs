@@ -236,6 +236,12 @@ async fn main() {
             gestura_gui::api::send_haptic_feedback,
             gestura_gui::api::start_gesture_monitoring,
             gestura_gui::api::stop_gesture_monitoring,
+            // Raw GATT passthrough for the ring SDK's Tauri transport.
+            gestura_gui::commands::ring_write,
+            gestura_gui::commands::ring_read,
+            gestura_gui::commands::ring_subscribe,
+            gestura_gui::commands::ring_unsubscribe,
+            gestura_gui::commands::ring_active_device,
             gestura_gui::api::get_nats_status,
             gestura_gui::api::get_system_health,
             gestura_gui::api::get_metrics_summary,
@@ -518,6 +524,29 @@ async fn main() {
             tauri::async_runtime::spawn(async move {
                 orchestrator.set_observer(observer).await;
             });
+
+            // Forward raw ring notifications (the SDK's Tauri transport) as
+            // `ring-notify` events. `None` means no external BLE backend, in
+            // which case the SDK's `ring_subscribe` already refuses.
+            if let Some(mut raw_rx) = app.state::<AppState>().ring_manager.raw_notifications() {
+                let handle = app.handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    use tauri::Emitter;
+                    loop {
+                        match raw_rx.recv().await {
+                            Ok(notification) => {
+                                if let Err(e) = handle.emit("ring-notify", &notification) {
+                                    tracing::warn!(%e, "failed to emit ring-notify");
+                                }
+                            }
+                            Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                                tracing::warn!(dropped = n, "ring-notify forwarder lagged");
+                            }
+                            Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                        }
+                    }
+                });
+            }
 
             gestura_gui::tray::init_tray(app.handle())?;
             sync_hotkeys(app.handle(), &config);

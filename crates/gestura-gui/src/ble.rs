@@ -52,6 +52,27 @@ pub enum SimulatorStatus {
     Error(String),
 }
 
+/// A raw GATT characteristic notification, forwarded byte-for-byte to the
+/// ring SDK's Tauri transport as the `ring-notify` event. Field names are the
+/// SDK's wire contract (`sdk/typescript/src/transport/tauri.ts`): camelCase,
+/// `bytes` as a plain number array.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RawNotification {
+    pub device_id: String,
+    /// Characteristic UUID, lowercase hyphenated.
+    pub uuid: String,
+    pub bytes: Vec<u8>,
+}
+
+fn raw_io_unsupported() -> AppError {
+    AppError::Ble(
+        "raw characteristic I/O is only available for external BLE devices (real ring or \
+         simulator over BLE), not for the internal simulator runtime"
+            .to_string(),
+    )
+}
+
 /// Ring connection status and metadata
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct RingStatus {
@@ -120,6 +141,47 @@ pub trait RingManager: Send + Sync {
     async fn get_simulator_health(&self, device_id: &str) -> Result<SimulatorStatus, AppError>;
     /// Get connection logs for device
     async fn get_connection_logs(&self, device_id: &str) -> Result<Vec<String>, AppError>;
+
+    // ---- Raw GATT passthrough (the ring SDK's Tauri transport) ----
+    //
+    // The SDK owns the codec (WASM); the app owns the radio. These move bytes
+    // between them with NO decoding on this side, keyed by characteristic
+    // UUID. Only external BLE devices support them; the defaults let the
+    // internal/mock runtimes stay source-compatible.
+
+    /// Write `bytes` to characteristic `uuid` (write type chosen from the
+    /// characteristic's properties; long writes are the platform stack's job).
+    async fn raw_write(
+        &self,
+        _device_id: &str,
+        _uuid: uuid::Uuid,
+        _bytes: Vec<u8>,
+    ) -> Result<(), AppError> {
+        Err(raw_io_unsupported())
+    }
+    /// Read characteristic `uuid`'s current value.
+    async fn raw_read(&self, _device_id: &str, _uuid: uuid::Uuid) -> Result<Vec<u8>, AppError> {
+        Err(raw_io_unsupported())
+    }
+    /// Subscribe to notifications on `uuid`; they arrive on
+    /// [`RingManager::raw_notifications`].
+    async fn raw_subscribe(&self, _device_id: &str, _uuid: uuid::Uuid) -> Result<(), AppError> {
+        Err(raw_io_unsupported())
+    }
+    /// Unsubscribe from notifications on `uuid`.
+    async fn raw_unsubscribe(&self, _device_id: &str, _uuid: uuid::Uuid) -> Result<(), AppError> {
+        Err(raw_io_unsupported())
+    }
+    /// Stream of raw notifications for every device with a raw subscription
+    /// (one receiver per caller; `None` when this manager has no external
+    /// BLE backend).
+    fn raw_notifications(&self) -> Option<broadcast::Receiver<RawNotification>> {
+        None
+    }
+    /// The connected external device the SDK should bind to, if any.
+    async fn active_device(&self) -> Result<Option<String>, AppError> {
+        Ok(None)
+    }
 }
 
 /// Test haptic patterns specifically for simulators
@@ -290,6 +352,48 @@ impl RingManager for MockRingManager {
 /// Create appropriate ring manager (always uses mock — real BLE was never wired up)
 pub fn create_ring_manager() -> Box<dyn RingManager> {
     Box::new(MockRingManager)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The `ring-notify` payload is the SDK's wire contract
+    /// (`sdk/typescript/src/transport/tauri.ts` `NotifyPayload`): camelCase
+    /// keys and a plain byte array.
+    #[test]
+    fn raw_notification_matches_sdk_payload_shape() {
+        let n = RawNotification {
+            device_id: "dev-1".to_string(),
+            uuid: "e3b742d4-51c9-4f0e-9d26-7a48c1f0b9be".to_string(),
+            bytes: vec![1, 2, 255],
+        };
+        let json = serde_json::to_value(&n).unwrap();
+        assert_eq!(
+            json,
+            serde_json::json!({
+                "deviceId": "dev-1",
+                "uuid": "e3b742d4-51c9-4f0e-9d26-7a48c1f0b9be",
+                "bytes": [1, 2, 255]
+            })
+        );
+        let back: RawNotification = serde_json::from_value(json).unwrap();
+        assert_eq!(back, n);
+    }
+
+    /// Managers without an external BLE backend refuse raw I/O explicitly
+    /// instead of pretending, and report no active device.
+    #[tokio::test]
+    async fn raw_io_defaults_are_explicit_unsupported() {
+        let m = MockRingManager;
+        let uuid = uuid::Uuid::from_u128(0xE3B742D4_51C9_4F0E_9D26_7A48C1F0B9BD);
+        assert!(m.raw_write("x", uuid, vec![1]).await.is_err());
+        assert!(m.raw_read("x", uuid).await.is_err());
+        assert!(m.raw_subscribe("x", uuid).await.is_err());
+        assert!(m.raw_unsubscribe("x", uuid).await.is_err());
+        assert!(m.raw_notifications().is_none());
+        assert_eq!(m.active_device().await.unwrap(), None);
+    }
 }
 
 // NOTE: the former `ring_constants` module (a duplicate UUID table) was

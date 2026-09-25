@@ -3,15 +3,17 @@
  * (gestura-gui) over Tauri IPC. The app owns real BLE (btleplug /
  * CoreBluetooth); the SDK owns the codec (WASM). Bytes cross the boundary raw.
  *
- * REQUIRED BACKEND COMMANDS (thin passthroughs to add in gestura-gui — the
- * existing RingManager exposes high-level ops, not raw char I/O):
- *   invoke("ring_write",  { deviceId, uuid, bytes: number[] }) -> void
- *   invoke("ring_read",   { deviceId, uuid }) -> number[]
+ * Backend contract (provided by gestura-gui, `src/commands/ring_raw.rs`;
+ * documented in `docs/IPC_CONTRACTS_GESTURA_GUI.md`):
+ *   invoke("ring_write",       { deviceId, uuid, bytes: number[] }) -> void
+ *   invoke("ring_read",        { deviceId, uuid }) -> number[]
  *   invoke("ring_subscribe",   { deviceId, uuid }) -> void
  *   invoke("ring_unsubscribe", { deviceId, uuid }) -> void
+ *   invoke("ring_active_device") -> string   (see `activeDeviceId`)
  *   event  "ring-notify" payload { deviceId, uuid, bytes: number[] }
  * These are byte passthroughs — no decoding backend-side (the SDK/WASM does
- * that). Tracked as the one Rust glue step in the 2026-07-10 handoff.
+ * that). Only external BLE devices (a real ring, or the simulator advertising
+ * over BLE) support them; the app's internal simulator runtime refuses.
  */
 
 import type { RingTransport } from "../transport.js";
@@ -30,6 +32,19 @@ interface NotifyPayload {
   deviceId: string;
   uuid: string;
   bytes: number[];
+}
+
+/**
+ * The external ring/simulator the app currently has connected, or `undefined`
+ * when there is none (the backend errors in that case; callers usually fall
+ * back to an offline transport).
+ */
+export async function activeDeviceId(api: Pick<TauriApi, "invoke">): Promise<string | undefined> {
+  try {
+    return await api.invoke<string>("ring_active_device");
+  } catch {
+    return undefined;
+  }
 }
 
 /**

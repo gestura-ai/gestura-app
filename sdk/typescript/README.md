@@ -89,7 +89,7 @@ const ring = await GesturaRing.open({ transport, wasm });
 | Transport | Status | Notes |
 |---|---|---|
 | `MockTransport` | ✅ | in-memory; tests + offline example runs |
-| `tauriTransport` | 🔌 needs backend glue | bridges to gestura-gui's Rust BLE over IPC. Requires the thin `ring_write`/`ring_read`/`ring_subscribe`/`ring_unsubscribe`/`ring-notify` passthrough commands (see `src/transport/tauri.ts` header) — one Rust step, not yet landed. |
+| `tauriTransport` | ✅ | bridges to gestura-gui's Rust BLE over IPC (`ring_write`/`ring_read`/`ring_subscribe`/`ring_unsubscribe` + the `ring-notify` event; `activeDeviceId()` asks the app which external device is connected). Needs a gestura-app build that includes `src/commands/ring_raw.rs`. |
 | Web Bluetooth | ⏭ next | `navigator.bluetooth` against the ratified UUIDs |
 
 ## Events (W3C-style names)

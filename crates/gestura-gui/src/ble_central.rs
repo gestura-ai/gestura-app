@@ -2,7 +2,8 @@
 
 use crate::AppError;
 use crate::ble::{
-    BleEvent, GestureType, RingManager, RingStatus, SimulatorStatus, TestHapticPattern,
+    BleEvent, GestureType, RawNotification, RingManager, RingStatus, SimulatorStatus,
+    TestHapticPattern,
 };
 use crate::haptics::{HapticPattern, HapticRequest};
 use btleplug::api::{
@@ -23,11 +24,15 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
-use tokio::sync::RwLock;
+use tokio::sync::{RwLock, broadcast};
 use tokio::task::JoinHandle;
 use uuid::Uuid;
 
 const EXTERNAL_SCAN_WINDOW: Duration = Duration::from_secs(2);
+
+/// Capacity of the raw-notification broadcast. A slow consumer lags (and is
+/// told so) rather than blocking the BLE notification stream.
+const RAW_NOTIFY_CAPACITY: usize = 256;
 
 /// Monotonic command sequence (v0.3.0). Starts at 1 — sequence 0 means
 /// "unsequenced" in the protocol. Correlates with `BleEvent::CommandAck`.
@@ -50,6 +55,13 @@ pub struct ExternalBleRingManager {
     devices: Arc<RwLock<HashMap<String, CachedPeripheral>>>,
     connection_logs: Arc<RwLock<HashMap<String, Vec<String>>>>,
     gesture_tasks: Arc<RwLock<HashMap<String, JoinHandle<()>>>>,
+    /// Raw passthrough state (the SDK's Tauri transport): which
+    /// characteristics each device has raw subscriptions on, the per-device
+    /// task pumping `ValueNotification`s into `raw_tx`, and the broadcast the
+    /// `ring-notify` forwarder listens to.
+    raw_subscriptions: Arc<RwLock<HashMap<String, HashSet<Uuid>>>>,
+    raw_pumps: Arc<RwLock<HashMap<String, JoinHandle<()>>>>,
+    raw_tx: broadcast::Sender<RawNotification>,
 }
 
 impl ExternalBleRingManager {
@@ -64,12 +76,72 @@ impl ExternalBleRingManager {
             .next()
             .ok_or_else(|| AppError::Ble("No BLE adapter available".to_string()))?;
 
+        let (raw_tx, _) = broadcast::channel(RAW_NOTIFY_CAPACITY);
         Ok(Self {
             adapter,
             devices: Arc::new(RwLock::new(HashMap::new())),
             connection_logs: Arc::new(RwLock::new(HashMap::new())),
             gesture_tasks: Arc::new(RwLock::new(HashMap::new())),
+            raw_subscriptions: Arc::new(RwLock::new(HashMap::new())),
+            raw_pumps: Arc::new(RwLock::new(HashMap::new())),
+            raw_tx,
         })
+    }
+
+    /// Resolves a characteristic on a connected device for raw passthrough,
+    /// connecting (and taking over HID) first if needed.
+    async fn raw_characteristic(
+        &self,
+        device_id: &str,
+        uuid: Uuid,
+    ) -> Result<(Peripheral, Characteristic), AppError> {
+        let cached = self.ensure_connected(device_id).await?;
+        let characteristic = find_characteristic(&cached.peripheral, uuid).ok_or_else(|| {
+            AppError::Ble(format!(
+                "characteristic {uuid} not found on {device_id} (wrong device or protocol version)"
+            ))
+        })?;
+        Ok((cached.peripheral, characteristic))
+    }
+
+    /// Starts the per-device notification pump if it isn't running: every
+    /// `ValueNotification` for the device is forwarded verbatim; the SDK
+    /// filters by UUID on its side.
+    async fn ensure_raw_pump(
+        &self,
+        device_id: &str,
+        peripheral: &Peripheral,
+    ) -> Result<(), AppError> {
+        {
+            let pumps = self.raw_pumps.read().await;
+            if pumps.get(device_id).is_some_and(|task| !task.is_finished()) {
+                return Ok(());
+            }
+        }
+        let mut notifications = peripheral.notifications().await.map_err(map_ble_error)?;
+        let raw_tx = self.raw_tx.clone();
+        let device_id_owned = device_id.to_string();
+        let handle = tokio::spawn(async move {
+            while let Some(notification) = notifications.next().await {
+                // `send` only fails when nobody is listening; that is not an error.
+                let _ = raw_tx.send(RawNotification {
+                    device_id: device_id_owned.clone(),
+                    uuid: notification.uuid.to_string(),
+                    bytes: notification.value,
+                });
+            }
+        });
+        self.raw_pumps
+            .write()
+            .await
+            .insert(device_id.to_string(), handle);
+        Ok(())
+    }
+
+    async fn stop_raw_pump(&self, device_id: &str) {
+        if let Some(handle) = self.raw_pumps.write().await.remove(device_id) {
+            handle.abort();
+        }
     }
 
     pub(crate) async fn can_handle_device(&self, device_id: &str) -> bool {
@@ -537,6 +609,133 @@ impl RingManager for ExternalBleRingManager {
             .cloned()
             .unwrap_or_default())
     }
+
+    // ---- Raw GATT passthrough ----
+
+    async fn raw_write(&self, device_id: &str, uuid: Uuid, bytes: Vec<u8>) -> Result<(), AppError> {
+        let (peripheral, characteristic) = self.raw_characteristic(device_id, uuid).await?;
+        if !characteristic
+            .properties
+            .intersects(CharPropFlags::WRITE | CharPropFlags::WRITE_WITHOUT_RESPONSE)
+        {
+            return Err(AppError::Ble(format!(
+                "characteristic {uuid} is not writable"
+            )));
+        }
+        peripheral
+            .write(
+                &characteristic,
+                &bytes,
+                write_type_for(characteristic.properties),
+            )
+            .await
+            .map_err(map_ble_error)?;
+        self.record_log(
+            device_id,
+            format!("raw write {} bytes → {uuid}", bytes.len()),
+        )
+        .await;
+        Ok(())
+    }
+
+    async fn raw_read(&self, device_id: &str, uuid: Uuid) -> Result<Vec<u8>, AppError> {
+        let (peripheral, characteristic) = self.raw_characteristic(device_id, uuid).await?;
+        if !characteristic.properties.contains(CharPropFlags::READ) {
+            return Err(AppError::Ble(format!(
+                "characteristic {uuid} is not readable"
+            )));
+        }
+        peripheral
+            .read(&characteristic)
+            .await
+            .map_err(map_ble_error)
+    }
+
+    async fn raw_subscribe(&self, device_id: &str, uuid: Uuid) -> Result<(), AppError> {
+        let (peripheral, characteristic) = self.raw_characteristic(device_id, uuid).await?;
+        if !characteristic
+            .properties
+            .intersects(CharPropFlags::NOTIFY | CharPropFlags::INDICATE)
+        {
+            return Err(AppError::Ble(format!(
+                "characteristic {uuid} does not support notify/indicate"
+            )));
+        }
+        // Pump first, then subscribe, so the first notification can't slip
+        // between the two.
+        self.ensure_raw_pump(device_id, &peripheral).await?;
+        peripheral
+            .subscribe(&characteristic)
+            .await
+            .map_err(map_ble_error)?;
+        self.raw_subscriptions
+            .write()
+            .await
+            .entry(device_id.to_string())
+            .or_default()
+            .insert(uuid);
+        self.record_log(device_id, format!("raw subscribe {uuid}"))
+            .await;
+        Ok(())
+    }
+
+    async fn raw_unsubscribe(&self, device_id: &str, uuid: Uuid) -> Result<(), AppError> {
+        let remaining = {
+            let mut subs = self.raw_subscriptions.write().await;
+            let set = subs.entry(device_id.to_string()).or_default();
+            set.remove(&uuid);
+            let remaining = set.len();
+            if remaining == 0 {
+                subs.remove(device_id);
+            }
+            remaining
+        };
+        if let Some(cached) = self.get_cached_peripheral(device_id).await?
+            && let Some(characteristic) = find_characteristic(&cached.peripheral, uuid)
+        {
+            // Best-effort: the link may already be gone.
+            let _ = cached.peripheral.unsubscribe(&characteristic).await;
+        }
+        if remaining == 0 {
+            self.stop_raw_pump(device_id).await;
+        }
+        self.record_log(device_id, format!("raw unsubscribe {uuid}"))
+            .await;
+        Ok(())
+    }
+
+    fn raw_notifications(&self) -> Option<broadcast::Receiver<RawNotification>> {
+        Some(self.raw_tx.subscribe())
+    }
+
+    /// The most recently seen external device that is currently connected.
+    async fn active_device(&self) -> Result<Option<String>, AppError> {
+        let candidates: Vec<(String, Peripheral, chrono::DateTime<chrono::Utc>)> = {
+            let devices = self.devices.read().await;
+            let mut list: Vec<_> = devices
+                .iter()
+                .map(|(id, cached)| (id.clone(), cached.peripheral.clone(), cached.last_seen))
+                .collect();
+            list.sort_by_key(|entry| std::cmp::Reverse(entry.2));
+            list
+        };
+        for (device_id, peripheral, _) in candidates {
+            if peripheral.is_connected().await.unwrap_or(false) {
+                return Ok(Some(device_id));
+            }
+        }
+        Ok(None)
+    }
+}
+
+/// Picks the write type a characteristic supports; prefers the acknowledged
+/// write when both are offered so command acks stay ordered behind the write.
+fn write_type_for(properties: CharPropFlags) -> WriteType {
+    if properties.contains(CharPropFlags::WRITE) {
+        WriteType::WithResponse
+    } else {
+        WriteType::WithoutResponse
+    }
 }
 
 /// Hybrid ring manager that prefers real external BLE devices when available and
@@ -732,6 +931,70 @@ impl RingManager for HybridRingManager {
                 .await;
         }
         self.internal.get_connection_logs(device_id).await
+    }
+
+    // Raw passthrough is external-only; the internal runtime keeps the
+    // trait's explicit "unsupported" defaults.
+
+    async fn raw_write(&self, device_id: &str, uuid: Uuid, bytes: Vec<u8>) -> Result<(), AppError> {
+        if self.should_use_external(device_id).await {
+            return self
+                .external
+                .as_ref()
+                .unwrap()
+                .raw_write(device_id, uuid, bytes)
+                .await;
+        }
+        self.internal.raw_write(device_id, uuid, bytes).await
+    }
+
+    async fn raw_read(&self, device_id: &str, uuid: Uuid) -> Result<Vec<u8>, AppError> {
+        if self.should_use_external(device_id).await {
+            return self
+                .external
+                .as_ref()
+                .unwrap()
+                .raw_read(device_id, uuid)
+                .await;
+        }
+        self.internal.raw_read(device_id, uuid).await
+    }
+
+    async fn raw_subscribe(&self, device_id: &str, uuid: Uuid) -> Result<(), AppError> {
+        if self.should_use_external(device_id).await {
+            return self
+                .external
+                .as_ref()
+                .unwrap()
+                .raw_subscribe(device_id, uuid)
+                .await;
+        }
+        self.internal.raw_subscribe(device_id, uuid).await
+    }
+
+    async fn raw_unsubscribe(&self, device_id: &str, uuid: Uuid) -> Result<(), AppError> {
+        if self.should_use_external(device_id).await {
+            return self
+                .external
+                .as_ref()
+                .unwrap()
+                .raw_unsubscribe(device_id, uuid)
+                .await;
+        }
+        self.internal.raw_unsubscribe(device_id, uuid).await
+    }
+
+    fn raw_notifications(&self) -> Option<broadcast::Receiver<RawNotification>> {
+        self.external
+            .as_ref()
+            .and_then(|external| external.raw_notifications())
+    }
+
+    async fn active_device(&self) -> Result<Option<String>, AppError> {
+        match &self.external {
+            Some(external) => external.active_device().await,
+            None => Ok(None),
+        }
     }
 }
 
@@ -1047,6 +1310,22 @@ impl ExternalBleRingManager {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn raw_write_type_prefers_acknowledged_writes() {
+        assert_eq!(
+            write_type_for(CharPropFlags::WRITE | CharPropFlags::WRITE_WITHOUT_RESPONSE),
+            WriteType::WithResponse
+        );
+        assert_eq!(
+            write_type_for(CharPropFlags::WRITE),
+            WriteType::WithResponse
+        );
+        assert_eq!(
+            write_type_for(CharPropFlags::WRITE_WITHOUT_RESPONSE),
+            WriteType::WithoutResponse
+        );
+    }
 
     #[test]
     fn encode_haptic_request_uses_shared_command_shape() {
