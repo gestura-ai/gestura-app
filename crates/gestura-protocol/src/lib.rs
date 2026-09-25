@@ -381,12 +381,54 @@ impl RingConfig {
     }
 }
 
-/// Returns the current wall-clock timestamp in milliseconds.
+/// Returns the current host wall-clock timestamp in milliseconds (Unix epoch).
+///
+/// Host-minted envelopes (commands) carry host wall-clock time; device-minted
+/// envelopes carry device uptime (see PROTOCOL.md) — the two are never
+/// compared directly.
+///
+/// On `wasm32-unknown-unknown` `std::time::SystemTime::now()` is
+/// unimplemented and traps (`unreachable`), which made every haptic command
+/// encoded through the WASM surface crash (found 2026-09-21); the browser
+/// clock is used there instead.
 pub fn current_timestamp_ms() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(0)
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    {
+        js_sys::Date::now() as u64
+    }
+    #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+    {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0)
+    }
+}
+
+/// Decodes an event envelope from a notification in either wire shape: the
+/// bare `ProtocolEnvelope<SimulatorEvent>` real firmware notifies (golden
+/// vectors 2026-07-08), or the legacy simulator `BleGestureData` wrapper
+/// with the envelope embedded in `data` (still emitted by the simulator for
+/// slide/tilt, and for every gesture when built without `device-core`).
+/// Every host must accept both. This is the canonical implementation; the
+/// Rust hosts (`gestura-core-ring` backend, `gestura-gui` BLE central) still
+/// carry older copies of the same rule pending the ring-stack consolidation.
+pub fn decode_event_envelope(bytes: &[u8]) -> Option<ProtocolEnvelope<SimulatorEvent>> {
+    if let Ok(envelope) = serde_json::from_slice::<ProtocolEnvelope<SimulatorEvent>>(bytes) {
+        return Some(envelope);
+    }
+    let wrapper: BleGestureData = serde_json::from_slice(bytes).ok()?;
+    serde_json::from_slice::<ProtocolEnvelope<SimulatorEvent>>(&wrapper.data).ok()
+}
+
+/// Decodes a gesture-characteristic notification (either wire shape, see
+/// [`decode_event_envelope`]) into the gesture event it carries. `None` for
+/// non-gesture events and unparseable payloads.
+pub fn decode_gesture_notification(bytes: &[u8]) -> Option<SemanticGestureEvent> {
+    match decode_event_envelope(bytes)?.payload {
+        SimulatorEvent::Gesture(event) => Some(event),
+        _ => None,
+    }
 }
 
 /// Builds a command envelope around a payload.
@@ -403,29 +445,161 @@ pub fn command_envelope<T>(sequence: u64, payload: T) -> ProtocolEnvelope<T> {
 
 // ---- Gesture → action hint (SDK convenience) ----
 
-/// Maps a device gesture type to a semantic action label + mapping
-/// confidence. This is the lightweight lookup an SDK consumer wants without
-/// the full host-side pipeline.
-///
-/// NOTE: the AUTHORITATIVE intent normalization (multi-modality fusion of
-/// voice + chat + gesture) lives in `gestura-core-intent`. This table is the
-/// same gesture→action vocabulary, kept here so the WASM/TS SDK shares it;
-/// the two must stay in sync (follow-up: have `gestura-core-intent` import
-/// this).
-pub fn gesture_to_action(gesture_type: &str) -> (&'static str, f32) {
-    match gesture_type.to_ascii_lowercase().as_str() {
-        "tap" => ("confirm", 0.9),
-        "double_tap" => ("execute", 0.92),
-        "tilt_left" => ("previous", 0.85),
-        "tilt_right" => ("next", 0.85),
-        "tilt_up" => ("scroll_up", 0.8),
-        "tilt_down" => ("scroll_down", 0.8),
-        "twist_cw" => ("increase", 0.82),
-        "twist_ccw" => ("decrease", 0.82),
-        "shake" => ("dismiss", 0.78),
-        "hold" => ("select", 0.88),
-        _ => ("unknown_gesture", 0.5),
+/// Action label returned for gestures with no default mapping.
+pub const UNKNOWN_ACTION: &str = "unknown_gesture";
+
+/// Canonical string label of a semantic gesture, for string-keyed hosts and
+/// telemetry: `tap`, `double_tap`, `hold`, `swipe_left`, `swipe_right`,
+/// `rotate_cw`, `rotate_ccw`, `slide_up|down|left|right`, `tilt`.
+pub fn gesture_label(gesture: &SemanticGesture) -> &'static str {
+    match gesture {
+        SemanticGesture::Tap => "tap",
+        SemanticGesture::DoubleTap => "double_tap",
+        SemanticGesture::Hold { .. } => "hold",
+        SemanticGesture::Swipe {
+            direction: SemanticSwipeDirection::Left,
+        } => "swipe_left",
+        SemanticGesture::Swipe {
+            direction: SemanticSwipeDirection::Right,
+        } => "swipe_right",
+        SemanticGesture::Rotate {
+            direction: SemanticRotateDirection::Cw,
+        } => "rotate_cw",
+        SemanticGesture::Rotate {
+            direction: SemanticRotateDirection::Ccw,
+        } => "rotate_ccw",
+        SemanticGesture::Slide {
+            direction: SemanticSlideDirection::Up,
+        } => "slide_up",
+        SemanticGesture::Slide {
+            direction: SemanticSlideDirection::Down,
+        } => "slide_down",
+        SemanticGesture::Slide {
+            direction: SemanticSlideDirection::Left,
+        } => "slide_left",
+        SemanticGesture::Slide {
+            direction: SemanticSlideDirection::Right,
+        } => "slide_right",
+        // Simulator-only tilt: sign picks the side, matching how every Rust
+        // host has always flattened it (`tilt_left` / `tilt_right`).
+        SemanticGesture::Tilt { angle_degrees } => {
+            if *angle_degrees >= 0.0 {
+                "tilt_right"
+            } else {
+                "tilt_left"
+            }
+        }
     }
+}
+
+/// Parses a gesture label — canonical (`swipe_left`, `rotate_cw`, …) or
+/// legacy host vocabulary (`tilt_*`, `twist_*`) — into a representative
+/// typed gesture, so the string-keyed lookup can delegate to the typed table.
+/// Legacy `tilt_*` labels come back as the equivalent `Slide` (identical
+/// action); direction-less kinds (`swipe`, `rotate`, `tilt`) and unknown
+/// labels are `None`, never guessed.
+pub fn gesture_from_label(label: &str) -> Option<SemanticGesture> {
+    Some(match label.to_ascii_lowercase().as_str() {
+        "tap" => SemanticGesture::Tap,
+        "double_tap" => SemanticGesture::DoubleTap,
+        "hold" => SemanticGesture::Hold { duration_ms: 0 },
+        "swipe_left" => SemanticGesture::Swipe {
+            direction: SemanticSwipeDirection::Left,
+        },
+        "swipe_right" => SemanticGesture::Swipe {
+            direction: SemanticSwipeDirection::Right,
+        },
+        "rotate_cw" | "twist_cw" => SemanticGesture::Rotate {
+            direction: SemanticRotateDirection::Cw,
+        },
+        "rotate_ccw" | "twist_ccw" => SemanticGesture::Rotate {
+            direction: SemanticRotateDirection::Ccw,
+        },
+        "slide_up" | "tilt_up" => SemanticGesture::Slide {
+            direction: SemanticSlideDirection::Up,
+        },
+        "slide_down" | "tilt_down" => SemanticGesture::Slide {
+            direction: SemanticSlideDirection::Down,
+        },
+        "slide_left" | "tilt_left" => SemanticGesture::Slide {
+            direction: SemanticSlideDirection::Left,
+        },
+        "slide_right" | "tilt_right" => SemanticGesture::Slide {
+            direction: SemanticSlideDirection::Right,
+        },
+        _ => return None,
+    })
+}
+
+/// The ONE gesture → default-action table, keyed on the typed gesture so a
+/// direction can never be lost on the way in (the string form below used to
+/// receive `"swipe"`/`"rotate"` without a direction and answer
+/// `unknown_gesture` for four of the ring's seven gestures).
+///
+/// Returns `(action, mapping_confidence)`. This is the lightweight lookup an
+/// SDK consumer wants without the full host-side pipeline; the AUTHORITATIVE
+/// multi-modality normalization (voice + chat + gesture) in
+/// `gestura-core-intent` imports this same table, so the two cannot drift.
+/// Vocabulary is unchanged from v0.3.0: swipes map like the simulator-only
+/// horizontal slides/tilts (`previous`/`next`), rotations to
+/// `increase`/`decrease`.
+pub fn default_action(gesture: &SemanticGesture) -> (&'static str, f32) {
+    match gesture {
+        SemanticGesture::Tap => ("confirm", 0.9),
+        SemanticGesture::DoubleTap => ("execute", 0.92),
+        SemanticGesture::Hold { .. } => ("select", 0.88),
+        SemanticGesture::Swipe {
+            direction: SemanticSwipeDirection::Left,
+        } => ("previous", 0.85),
+        SemanticGesture::Swipe {
+            direction: SemanticSwipeDirection::Right,
+        } => ("next", 0.85),
+        SemanticGesture::Rotate {
+            direction: SemanticRotateDirection::Cw,
+        } => ("increase", 0.82),
+        SemanticGesture::Rotate {
+            direction: SemanticRotateDirection::Ccw,
+        } => ("decrease", 0.82),
+        SemanticGesture::Slide {
+            direction: SemanticSlideDirection::Up,
+        } => ("scroll_up", 0.8),
+        SemanticGesture::Slide {
+            direction: SemanticSlideDirection::Down,
+        } => ("scroll_down", 0.8),
+        SemanticGesture::Slide {
+            direction: SemanticSlideDirection::Left,
+        } => ("previous", 0.85),
+        SemanticGesture::Slide {
+            direction: SemanticSlideDirection::Right,
+        } => ("next", 0.85),
+        // Simulator-only tilt: sign picks the side, matching how every Rust
+        // host has always flattened it (`tilt_left` / `tilt_right`).
+        SemanticGesture::Tilt { angle_degrees } => {
+            if *angle_degrees >= 0.0 {
+                ("next", 0.85)
+            } else {
+                ("previous", 0.85)
+            }
+        }
+    }
+}
+
+/// String-keyed form of [`default_action`] for hosts that carry gestures as
+/// labels: parses the label with [`gesture_from_label`] and delegates, so the
+/// two forms cannot disagree. Accepts the canonical labels from
+/// [`gesture_label`] plus the legacy host vocabulary (`tilt_*`, `twist_*`,
+/// `shake`) that pre-v0.3 backends still emit. Bare `swipe`/`rotate` (no
+/// direction) are NOT mappable — callers that have the typed gesture should
+/// use [`default_action`].
+pub fn gesture_to_action(gesture_type: &str) -> (&'static str, f32) {
+    // `shake` is deferred to a later firmware rev (2026-07-02) and has no
+    // typed variant yet; its action is retained here.
+    if gesture_type.eq_ignore_ascii_case("shake") {
+        return ("dismiss", 0.78);
+    }
+    gesture_from_label(gesture_type)
+        .map(|gesture| default_action(&gesture))
+        .unwrap_or((UNKNOWN_ACTION, 0.5))
 }
 
 // ---- C3 raw sensor stream (binary, not enveloped) ----
@@ -864,6 +1038,184 @@ mod tests {
 
         // Empty read falls back to full defaults.
         assert_eq!(RingConfig::from_bytes(&[]), RingConfig::default());
+    }
+
+    /// Every device-truth gesture must map to a real action through BOTH the
+    /// typed table and the string table, and the two must agree — the
+    /// regression this guards: `gesture_to_action("swipe")` answered
+    /// `unknown_gesture` for four of the ring's seven gestures.
+    #[test]
+    fn default_action_covers_every_device_truth_gesture_and_agrees_with_labels() {
+        let device_truth = [
+            (SemanticGesture::Tap, "confirm"),
+            (SemanticGesture::DoubleTap, "execute"),
+            (SemanticGesture::Hold { duration_ms: 800 }, "select"),
+            (
+                SemanticGesture::Swipe {
+                    direction: SemanticSwipeDirection::Left,
+                },
+                "previous",
+            ),
+            (
+                SemanticGesture::Swipe {
+                    direction: SemanticSwipeDirection::Right,
+                },
+                "next",
+            ),
+            (
+                SemanticGesture::Rotate {
+                    direction: SemanticRotateDirection::Cw,
+                },
+                "increase",
+            ),
+            (
+                SemanticGesture::Rotate {
+                    direction: SemanticRotateDirection::Ccw,
+                },
+                "decrease",
+            ),
+        ];
+        for (gesture, expected) in device_truth {
+            let (typed, typed_conf) = default_action(&gesture);
+            assert_eq!(typed, expected, "typed table for {gesture:?}");
+            assert!(typed_conf > 0.5);
+        }
+        // EVERY variant the typed table can produce round-trips through its
+        // label to the identical action — simulator-only kinds included.
+        let every_variant = [
+            SemanticGesture::Tap,
+            SemanticGesture::DoubleTap,
+            SemanticGesture::Hold { duration_ms: 1 },
+            SemanticGesture::Swipe {
+                direction: SemanticSwipeDirection::Left,
+            },
+            SemanticGesture::Swipe {
+                direction: SemanticSwipeDirection::Right,
+            },
+            SemanticGesture::Rotate {
+                direction: SemanticRotateDirection::Cw,
+            },
+            SemanticGesture::Rotate {
+                direction: SemanticRotateDirection::Ccw,
+            },
+            SemanticGesture::Slide {
+                direction: SemanticSlideDirection::Up,
+            },
+            SemanticGesture::Slide {
+                direction: SemanticSlideDirection::Down,
+            },
+            SemanticGesture::Slide {
+                direction: SemanticSlideDirection::Left,
+            },
+            SemanticGesture::Slide {
+                direction: SemanticSlideDirection::Right,
+            },
+            SemanticGesture::Tilt {
+                angle_degrees: 12.5,
+            },
+            SemanticGesture::Tilt {
+                angle_degrees: -12.5,
+            },
+            SemanticGesture::Tilt { angle_degrees: 0.0 },
+        ];
+        for gesture in every_variant {
+            let typed = default_action(&gesture);
+            let label = gesture_label(&gesture);
+            assert_eq!(
+                gesture_to_action(label),
+                typed,
+                "string table disagrees with typed table for {gesture:?} (label {label})"
+            );
+            assert_ne!(
+                typed.0, UNKNOWN_ACTION,
+                "{gesture:?} must have a default action"
+            );
+        }
+        // Legacy host vocabulary still resolves to the v0.3.0 actions/confidences.
+        assert_eq!(gesture_to_action("tilt_left"), ("previous", 0.85));
+        assert_eq!(gesture_to_action("tilt_right"), ("next", 0.85));
+        assert_eq!(gesture_to_action("tilt_up"), ("scroll_up", 0.8));
+        assert_eq!(gesture_to_action("tilt_down"), ("scroll_down", 0.8));
+        assert_eq!(gesture_to_action("twist_cw"), ("increase", 0.82));
+        assert_eq!(gesture_to_action("twist_ccw"), ("decrease", 0.82));
+        assert_eq!(gesture_to_action("shake"), ("dismiss", 0.78));
+        assert_eq!(gesture_to_action("hold"), ("select", 0.88));
+        assert_eq!(gesture_to_action("TAP"), ("confirm", 0.9));
+        // Direction-less kinds and unknowns are not guessed.
+        assert_eq!(gesture_to_action("swipe"), (UNKNOWN_ACTION, 0.5));
+        assert_eq!(gesture_to_action("rotate"), (UNKNOWN_ACTION, 0.5));
+        assert_eq!(gesture_to_action("tilt"), (UNKNOWN_ACTION, 0.5));
+        assert_eq!(gesture_to_action("backflip"), (UNKNOWN_ACTION, 0.5));
+    }
+
+    /// Both gesture wire shapes decode: the bare envelope the ring notifies
+    /// and the simulator's `BleGestureData` wrapper (SDK/WASM used to accept
+    /// only the bare form, so the public simulator produced no events).
+    #[test]
+    fn decodes_bare_and_wrapped_gesture_notifications() {
+        let envelope = serde_json::json!({
+            "protocol_version": "0.3.0",
+            "message_kind": "event",
+            "message_id": "fw-9",
+            "sequence": 9,
+            "timestamp_ms": 1234,
+            "payload": {
+                "event_kind": "gesture",
+                "event": {
+                    "gesture": { "gesture_kind": "rotate", "direction": "ccw" },
+                    "confidence": 0.91,
+                    "timestamp_ms": 1234
+                }
+            }
+        });
+        let bare = serde_json::to_vec(&envelope).unwrap();
+        let wrapped = serde_json::to_vec(&serde_json::json!({
+            "gesture_type": "rotate",
+            "timestamp": 1234,
+            "confidence": 0.91,
+            "data": bare.clone()
+        }))
+        .unwrap();
+
+        for bytes in [&bare, &wrapped] {
+            let event = decode_gesture_notification(bytes).expect("gesture must decode");
+            assert_eq!(
+                event.gesture,
+                SemanticGesture::Rotate {
+                    direction: SemanticRotateDirection::Ccw
+                }
+            );
+            assert_eq!(default_action(&event.gesture).0, "decrease");
+            let envelope = decode_event_envelope(bytes).unwrap();
+            assert_eq!(envelope.sequence, 9);
+        }
+
+        // Non-gesture envelopes and garbage are `None`, never a panic.
+        let ack = serde_json::to_vec(&serde_json::json!({
+            "protocol_version": "0.3.0", "message_kind": "event", "message_id": "a",
+            "sequence": 0, "timestamp_ms": 0,
+            "payload": { "event_kind": "ack", "event": { "sequence": 1, "status": "ok", "reason": null } }
+        }))
+        .unwrap();
+        assert!(decode_gesture_notification(&ack).is_none());
+        assert!(decode_event_envelope(&ack).is_some());
+        assert!(decode_gesture_notification(b"not json").is_none());
+        assert!(decode_gesture_notification(b"{}").is_none());
+    }
+
+    #[test]
+    fn command_envelope_is_stamped_with_host_time() {
+        let envelope = command_envelope(
+            1,
+            SimulatorCommand::Haptic(HapticCommandPayload {
+                pattern: SemanticHapticPattern::Tick,
+            }),
+        );
+        // 2020-01-01 in ms. Covers the native branch; the wasm32 branch is
+        // exercised by the TypeScript SDK's real-core tests
+        // (`sdk/typescript/src/wasm.real.test.ts`).
+        assert!(envelope.timestamp_ms > 1_577_836_800_000);
+        assert_eq!(envelope.sequence, 1);
     }
 
     #[test]

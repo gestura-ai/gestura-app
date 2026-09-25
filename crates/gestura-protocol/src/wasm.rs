@@ -6,18 +6,18 @@
 //! results. This crate is the ONE source of truth for the wire format — the
 //! TS SDK never re-implements a codec.
 //!
-//! Build (from this crate dir):
-//! ```sh
-//! wasm-pack build --release --features wasm --target web
-//! ```
-//! or `--target bundler` for the Tauri/Vite frontend. The generated package
-//! lands in `pkg/`; the TS SDK depends on it.
+//! Build: `npm run build:wasm` in `sdk/typescript`, which runs
+//! `wasm-pack build --release --target web --out-dir ../../sdk/typescript/wasm -- --features wasm`
+//! on this crate and then inlines the `.wasm` (`scripts/inline-wasm.mjs`) so
+//! the SDK needs no bundler plugin. The generated files land in
+//! `sdk/typescript/wasm/` and ship inside `@gestura/ring-sdk`.
 
 use wasm_bindgen::prelude::*;
 
 use crate::{
-    HapticCommandPayload, ProtocolEnvelope, RingConfig, SemanticHapticPattern, SensorFrame,
-    SimulatorCommand, SimulatorEvent, command_envelope, gesture_to_action, ring_uuids,
+    HapticCommandPayload, RingConfig, SemanticGesture, SemanticHapticPattern, SensorFrame,
+    SimulatorCommand, SimulatorEvent, command_envelope, decode_event_envelope,
+    decode_gesture_notification, default_action, gesture_label, gesture_to_action, ring_uuids,
 };
 
 /// The ratified Shared Semantic Protocol version this module implements.
@@ -44,39 +44,69 @@ pub fn ring_uuids_json() -> String {
     .to_string()
 }
 
-/// Decodes a notification from the gesture characteristic — the bare
-/// `ProtocolEnvelope<SimulatorEvent>` the ring emits. Returns the gesture as
-/// JSON `{gesture, confidence, timestampMs}` (with `gesture` = the semantic
-/// gesture object), or `null` if the payload isn't a gesture event.
+/// Decodes a notification from the gesture characteristic in either wire
+/// shape — the bare `ProtocolEnvelope<SimulatorEvent>` real firmware emits,
+/// or the simulator's legacy `BleGestureData` wrapper. Returns the gesture as
+/// JSON `{gesture, label, action, actionConfidence, confidence, timestampMs}`
+/// (`gesture` = the semantic gesture object, `label` = canonical string form
+/// such as `swipe_left`, `action` = the default-action mapping), or `null`
+/// if the payload isn't a gesture event.
 #[wasm_bindgen(js_name = decodeGestureEvent)]
 pub fn decode_gesture_event(bytes: &[u8]) -> Option<String> {
-    let envelope: ProtocolEnvelope<SimulatorEvent> = serde_json::from_slice(bytes).ok()?;
-    match envelope.payload {
-        SimulatorEvent::Gesture(ev) => Some(
-            serde_json::json!({
-                "gesture": ev.gesture,
-                "confidence": ev.confidence,
-                "timestampMs": ev.timestamp_ms,
-            })
-            .to_string(),
-        ),
-        _ => None,
-    }
+    let ev = decode_gesture_notification(bytes)?;
+    let (action, action_confidence) = default_action(&ev.gesture);
+    Some(
+        serde_json::json!({
+            "gesture": ev.gesture,
+            "label": gesture_label(&ev.gesture),
+            "action": action,
+            "actionConfidence": action_confidence,
+            "confidence": ev.confidence,
+            "timestampMs": ev.timestamp_ms,
+        })
+        .to_string(),
+    )
 }
 
 /// Decodes a full envelope notification (gesture / battery / state snapshot /
-/// ack) into `{kind, event}` JSON, so the TS layer can route any state-
-/// characteristic notification. `null` on a non-envelope payload.
+/// ack, bare or wrapped) into `{kind, event, sequence, timestampMs}` JSON, so
+/// the TS layer can route any characteristic notification. `null` on a
+/// non-envelope payload.
 #[wasm_bindgen(js_name = decodeEvent)]
 pub fn decode_event(bytes: &[u8]) -> Option<String> {
-    let envelope: ProtocolEnvelope<SimulatorEvent> = serde_json::from_slice(bytes).ok()?;
+    let envelope = decode_event_envelope(bytes)?;
     let (kind, event) = match &envelope.payload {
         SimulatorEvent::Gesture(e) => ("gesture", serde_json::to_value(e).ok()?),
         SimulatorEvent::Battery(e) => ("battery", serde_json::to_value(e).ok()?),
         SimulatorEvent::StateSnapshot(e) => ("stateSnapshot", serde_json::to_value(e).ok()?),
         SimulatorEvent::Ack(e) => ("ack", serde_json::to_value(e).ok()?),
     };
-    Some(serde_json::json!({ "kind": kind, "event": event }).to_string())
+    Some(
+        serde_json::json!({
+            "kind": kind,
+            "event": event,
+            "sequence": envelope.sequence,
+            "timestampMs": envelope.timestamp_ms,
+        })
+        .to_string(),
+    )
+}
+
+/// Maps a semantic gesture object (JSON, e.g. `{"gesture_kind":"swipe",
+/// "direction":"left"}`) to `{label, action, confidence}` via the typed
+/// default-action table. Prefer this over `gestureToAction`, which takes a
+/// label and cannot see a direction.
+#[wasm_bindgen(js_name = gestureAction)]
+pub fn gesture_action_json(gesture_json: &str) -> Result<String, JsError> {
+    let gesture: SemanticGesture =
+        serde_json::from_str(gesture_json).map_err(|e| JsError::new(&e.to_string()))?;
+    let (action, confidence) = default_action(&gesture);
+    Ok(serde_json::json!({
+        "label": gesture_label(&gesture),
+        "action": action,
+        "confidence": confidence,
+    })
+    .to_string())
 }
 
 /// Decodes a C3 raw sensor frame (binary) into JSON. Throws on malformed
@@ -87,7 +117,10 @@ pub fn decode_sensor_frame(bytes: &[u8]) -> Result<String, JsError> {
     serde_json::to_string(&frame).map_err(|e| JsError::new(&e.to_string()))
 }
 
-/// Maps a gesture type string to `{action, confidence}` JSON.
+/// Maps a gesture LABEL (`tap`, `swipe_left`, `rotate_cw`, legacy `tilt_*` /
+/// `twist_*`) to `{action, confidence}` JSON. A bare kind such as `"swipe"`
+/// has no direction and maps to `unknown_gesture` — use `gestureAction` with
+/// the full gesture object instead.
 #[wasm_bindgen(js_name = gestureToAction)]
 pub fn gesture_to_action_json(gesture_type: &str) -> String {
     let (action, confidence) = gesture_to_action(gesture_type);

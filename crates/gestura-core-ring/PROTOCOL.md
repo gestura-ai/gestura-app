@@ -1,12 +1,16 @@
 # Haptica Harmony B1 — Shared Semantic Protocol
 
-**Canonical definition: `src/protocol.rs` in this crate** (user decision
-2026-07-02: the contract's home is the gestura-app SDK). The simulator
+**Canonical definition: the `gestura-protocol` crate**
+(`crates/gestura-protocol/src/lib.rs`; user decision 2026-07-02 placed the
+contract's home in the gestura-app SDK, and 2026-07-10 factored it into that
+dependency-free crate so it compiles to WebAssembly for the TypeScript SDK).
+This crate re-exports it as `gestura_core_ring::protocol`. The simulator
 (`haptic-harmony-simulator/src/protocol.rs`) and the ring firmware mirror it.
 Changes are shared-contract governed: propose → cross-check with the firmware
 lane → user confirms → land everywhere.
 
-Current version: **0.3.0** (see the version changelog in `src/protocol.rs`).
+Current version: **0.3.0** (see the version changelog at the top of
+`crates/gestura-protocol/src/lib.rs`).
 
 ## Transport
 
@@ -40,7 +44,7 @@ Base `E3B742D4-51C9-4F0E-9D26-7A48C1F0B9xx`, last byte = ordinal:
 |----|------|-------|-------|
 | BC | Ring service | — | |
 | BD | Haptic command | write | trust-gated (Enrolled+) |
-| BE | Gesture event | notify | `BleGestureData` wrapper w/ embedded envelope |
+| BE | Gesture event | notify | bare `ProtocolEnvelope<SimulatorEvent>` (firmware truth, golden vectors 2026-07-08); the simulator's legacy `BleGestureData` wrapper (envelope in `data`) is still accepted by every host — `protocol::decode_gesture_notification` handles both |
 | BF | Battery level | read+notify | raw byte or `BleBatteryData` JSON |
 | C0 | OTA update | write+indicate | MCUmgr/SMP (firmware) |
 | C1 | State snapshot | read+notify | `DeviceStateSnapshot`; also carries `ack` envelopes |
@@ -49,6 +53,21 @@ Base `E3B742D4-51C9-4F0E-9D26-7A48C1F0B9xx`, last byte = ordinal:
 
 The v0.2-era service UUID `12345678-…9abc` remains only as a discovery
 fallback (`LEGACY_SERVICE_UUID`); remove after all sides ship.
+
+## Gesture → default action (SDK table)
+
+`gestura_protocol::default_action(&SemanticGesture)` is the ONE
+gesture→action table; the string form `gesture_to_action(label)` parses the
+label (`gesture_from_label`) and delegates to it, and the
+`gestura-core-intent` normalizer calls the string form: tap→`confirm`,
+double_tap→`execute`, hold→`select`, swipe left/right→`previous`/`next`,
+rotate cw/ccw→`increase`/`decrease`; simulator-only slide up/down→
+`scroll_up`/`scroll_down`, slide left/right and tilt (by sign)→
+`previous`/`next`. Canonical labels are `gesture_label()`: `tap`,
+`double_tap`, `hold`, `swipe_left`, `swipe_right`, `rotate_cw`,
+`rotate_ccw`, `slide_*`, and `tilt_left`/`tilt_right` (by sign); the legacy
+host labels `tilt_*`/`twist_*` still resolve. A direction-less
+`swipe`/`rotate`/`tilt` label is not guessed.
 
 ## Vocabulary (ratified)
 
@@ -161,12 +180,17 @@ Per the firmware proposal (`haptic-basic-firmware/proposals/
 3. **Continuous while ACTIVE, suspended in IDLE** (not gesture-gated) —
    tuning captures need continuity through gesture pauses.
 
-**⚠️ Exact byte map pending from firmware:** the proposal's arithmetic
-doesn't reconcile (states 22 B/sample + 6 B header, but the listed fields —
-6×i16 + u16 slider + u8 flags + u8 pad — sum to 16 B, and the header layout
-shown is 8 B). Firmware publishes the definitive byte map plus a golden
-vector in `conformance/`; the SDK's `SensorFrame` decoder is written against
-those, not against the proposal prose. C3 carries no bits until then.
+**Byte map — LOCKED 2026-07-10** (firmware `sensor_frame.h`, golden vector
+`conformance/vectors/sensor_frame.expected`): 8-byte header
+(`frame_version`=0x01, `flags` bit0 = touch valid, `t0_ms` u32 LE,
+`sample_count` u8, `period_ms` u8) followed by `sample_count` × 16-byte
+samples (ax/ay/az mg i16, gx/gy/gz deci-dps i16, `slider_pos` u16,
+`touch_flags` u8 bit0 = touched, pad u8), all little-endian; at most 20
+samples (328 B). `SensorFrame::decode` in `gestura-protocol` matches the
+golden vector byte-for-byte and rejects short, over-long and trailing-byte
+frames. (The original 2026-07-07 proposal's arithmetic did not reconcile —
+22 B/sample was stated, 16 B was meant — which is why the decoder was written
+against the firmware header and vector, not the proposal prose.)
 
 ## Trust model
 

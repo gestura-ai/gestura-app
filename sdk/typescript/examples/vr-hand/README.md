@@ -22,7 +22,8 @@ npm run dev            # http://localhost:5173
 It falls back to a `MockTransport` with a synthetic motion feed. The frames it
 generates are built to the real `sensor_frame.h` byte layout, so the WASM
 decoder parses them exactly as it would device frames. Keys <kbd>T</kbd>
-<kbd>D</kbd> <kbd>←</kbd> <kbd>→</kbd> trigger gestures.
+<kbd>D</kbd> <kbd>H</kbd> <kbd>←</kbd> <kbd>→</kbd> <kbd>↑</kbd> <kbd>↓</kbd> trigger tap,
+double-tap, hold, swipe and rotate.
 
 **Live against the simulator (inside the Gestura app):**
 1. Build the SDK's WASM core: `cd ../.. && npm run build`.

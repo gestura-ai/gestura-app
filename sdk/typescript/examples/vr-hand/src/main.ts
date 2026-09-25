@@ -47,20 +47,11 @@ async function connectRing(): Promise<GesturaRing> {
 
   // Offline: MockTransport + a synthetic IMU/gesture feed.
   const mock = new MockTransport();
-  const uuids = await mockUuids();
   const ring = await GesturaRing.open({ transport: mock });
   hud.source.textContent = "Offline demo · synthetic motion (no ring)";
-  startSyntheticFeed(mock, uuids.rawSensorStream, uuids.gestureEvent);
+  // The SDK reports the ratified UUID allocation from the WASM core.
+  startSyntheticFeed(mock, ring.ringUuids.rawSensorStream, ring.ringUuids.gestureEvent);
   return ring;
-}
-
-// In offline mode we don't have the WASM core loaded to report UUIDs, so use
-// the ratified constants directly for the mock feed.
-async function mockUuids() {
-  return {
-    gestureEvent: "e3b742d4-51c9-4f0e-9d26-7a48c1f0b9be",
-    rawSensorStream: "e3b742d4-51c9-4f0e-9d26-7a48c1f0b9c3",
-  };
 }
 
 /**
@@ -84,6 +75,9 @@ function startSyntheticFeed(mock: MockTransport, sensorUuid: string, gestureUuid
       e.key === "d" ? { gesture_kind: "double_tap" } :
       e.key === "ArrowLeft" ? { gesture_kind: "swipe", direction: "left" } :
       e.key === "ArrowRight" ? { gesture_kind: "swipe", direction: "right" } :
+      e.key === "ArrowUp" ? { gesture_kind: "rotate", direction: "cw" } :
+      e.key === "ArrowDown" ? { gesture_kind: "rotate", direction: "ccw" } :
+      e.key === "h" ? { gesture_kind: "hold", duration_ms: 800 } :
       undefined;
     if (!g) return;
     // The WASM decoder parses the full v0.3.0 ProtocolEnvelope — bare

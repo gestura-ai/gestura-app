@@ -21,12 +21,25 @@ wasm-bindgen = { version = "0.2", optional = true }
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 uuid = { version = "1.0", features = ["v4", "js"] }
 
+# `std::time::SystemTime::now()` is unimplemented on wasm32-unknown-unknown
+# (it traps with `unreachable`), so host timestamps come from `Date.now()`.
+# (wasm32-wasi has a real clock and keeps the std path.)
+[target.'cfg(all(target_arch = "wasm32", target_os = "unknown"))'.dependencies]
+js-sys = "0.3"
+
 [features]
 default = []
 wasm = ["dep:wasm-bindgen"]
 
-# rustc emits bulk-memory ops (memory.copy) by default; wasm-pack invokes
-# wasm-opt without feature flags, so pass them explicitly or -O fails
-# validation.
+# rustc's wasm32 baseline emits bulk-memory, non-trapping float→int,
+# sign-extension and mutable-globals ops; wasm-pack invokes wasm-opt without
+# feature flags, so pass them explicitly or `-O` fails validation on older
+# binaryen releases (verified: binaryen 108 rejects sign-ext without it).
 [package.metadata.wasm-pack.profile.release]
-wasm-opt = ["-O", "--enable-bulk-memory", "--enable-nontrapping-float-to-int"]
+wasm-opt = [
+    "-O",
+    "--enable-bulk-memory",
+    "--enable-nontrapping-float-to-int",
+    "--enable-sign-ext",
+    "--enable-mutable-globals",
+]

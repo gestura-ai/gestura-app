@@ -9,8 +9,10 @@
  *
  * @example
  * ```ts
- * const ring = await GesturaRing.open({ transport, wasm });
+ * const ring = await GesturaRing.open({ transport });
  * ring.addEventListener("doubletap", () => console.log("execute!"));
+ * ring.addEventListener("gesture", (e) => console.log(e.detail.label, "→", e.detail.action));
+ * ring.addEventListener("statesnapshot", (e) => console.log("trust:", e.detail.trust_state));
  * ring.addEventListener("sensorframe", (e) => render(e.detail.samples));
  * await ring.sendHaptic("tick");
  * await ring.enableSensorStream(true);
@@ -22,7 +24,8 @@ import type { RingTransport } from "./transport.js";
 
 export type { RingTransport } from "./transport.js";
 export { MockTransport } from "./transport.js";
-export type { GesturaWasm } from "./wasm.js";
+export { loadWasm } from "./wasm.js";
+export type { GesturaWasm, RingUuids } from "./wasm.js";
 
 /** Semantic haptic patterns (ratified v0.3 vocabulary). */
 export type HapticPattern = "confirm" | "error" | "tick" | "doubleTick";
@@ -47,6 +50,74 @@ export interface SensorFrame {
   samples: SensorSample[];
 }
 
+/**
+ * Trust ladder (PROTOCOL.md). A REAL ring only ever reports `discovered`,
+ * `bonded` or `revoked`; `enrolled`/`attested` are host/policy-side states.
+ * `revoked` is not "above" `attested` — it fails closed. Compare with
+ * {@link trustPermits}, never lexically or by position.
+ */
+export type TrustState = "discovered" | "bonded" | "enrolled" | "attested" | "revoked";
+
+export type DegradedMode = "low_battery" | "sensor_fault" | "firmware_mismatch" | "operator_blocked";
+
+export interface BatterySnapshot {
+  level_percent: number;
+  is_charging: boolean;
+  voltage: number;
+  temperature_celsius: number;
+  health: string;
+  time_remaining_minutes: number | null;
+}
+
+/** Device state snapshot (C1), the input to any host-side safety gate. */
+export interface DeviceStateSnapshot {
+  battery: BatterySnapshot;
+  trust_state: TrustState;
+  degraded_modes: DegradedMode[];
+  firmware_version: string;
+  protocol_version: string;
+  revocation_reason: string | null;
+  privileged_actions_enabled: boolean;
+}
+
+const TRUST_RANK: Record<Exclude<TrustState, "revoked">, number> = {
+  discovered: 0,
+  bonded: 1,
+  enrolled: 2,
+  attested: 3,
+};
+
+/**
+ * True when `state` satisfies `required` on the trust ladder. `revoked`
+ * never permits anything, whatever is required.
+ */
+export function trustPermits(state: TrustState | undefined, required: Exclude<TrustState, "revoked">): boolean {
+  if (state === undefined || state === "revoked") return false;
+  return TRUST_RANK[state] >= TRUST_RANK[required];
+}
+
+/**
+ * Detail of the catch-all `gesture` event. Fires for every device-truth
+ * gesture (the kinds a real ring emits); the simulator-only `slide`/`tilt`
+ * kinds are not surfaced as events.
+ */
+export interface GestureEventDetail {
+  /** Wire kind: `tap`, `double_tap`, `hold`, `swipe`, `rotate`. */
+  type: string;
+  /** Canonical label, e.g. `swipe_left`, `rotate_cw` (direction included). */
+  label: string;
+  /** Present for `swipe`/`rotate`. */
+  direction?: string;
+  /** Device classifier confidence, 0–1. */
+  confidence: number;
+  /** Default action from the SDK's gesture→action table (see PROTOCOL.md). */
+  action: string;
+  /** Mapping confidence of `action`, 0–1. */
+  actionConfidence: number;
+  /** Device uptime ms of the gesture (never epoch time). */
+  timestampMs: number;
+}
+
 /** Event map for `GesturaRing` (W3C-style lowercase names). */
 export interface GesturaRingEventMap {
   tap: CustomEvent<{ confidence: number }>;
@@ -57,11 +128,13 @@ export interface GesturaRingEventMap {
   swiperight: CustomEvent<{ confidence: number }>;
   rotatecw: CustomEvent<{ confidence: number }>;
   rotateccw: CustomEvent<{ confidence: number }>;
-  /** Any gesture, with the mapped semantic action (see PROTOCOL.md). */
-  gesture: CustomEvent<{ type: string; confidence: number; action: string }>;
+  /** Any device-truth gesture, with its label and mapped default action. */
+  gesture: CustomEvent<GestureEventDetail>;
   /** C3 raw sensor stream frame (~5/s at 100 Hz, 20-sample batches). */
   sensorframe: CustomEvent<SensorFrame>;
   battery: CustomEvent<{ levelPercent: number }>;
+  /** Full device state (trust, degraded modes, battery) — C1 notifications. */
+  statesnapshot: CustomEvent<DeviceStateSnapshot>;
   ack: CustomEvent<{ sequence: number; status: string; reason: string | null }>;
 }
 
@@ -70,6 +143,16 @@ interface SemanticGesture {
   direction?: string;
   duration_ms?: number;
   angle_degrees?: number;
+}
+
+/** What `decodeGestureEvent` returns (see `gestura-protocol/src/wasm.rs`). */
+interface DecodedGesture {
+  gesture: SemanticGesture;
+  label: string;
+  action: string;
+  actionConfidence: number;
+  confidence: number;
+  timestampMs: number;
 }
 
 /** Maps a decoded semantic gesture to its W3C event name + detail. */
@@ -106,7 +189,7 @@ function gestureToEvent(
 
 export interface OpenOptions {
   transport: RingTransport;
-  /** Optional explicit WASM loader (bundler target resolves automatically). */
+  /** Optional explicit WASM core (defaults to the inlined module). */
   wasm?: GesturaWasm;
 }
 
@@ -118,6 +201,8 @@ export interface OpenOptions {
 export class GesturaRing extends EventTarget {
   private seq = 1n;
   private unsubscribers: Array<() => void> = [];
+  private hidSuppressed = false;
+  private snapshot: DeviceStateSnapshot | undefined;
 
   private constructor(
     private readonly transport: RingTransport,
@@ -141,28 +226,42 @@ export class GesturaRing extends EventTarget {
     return this.wasm.protocolVersion();
   }
 
+  /** Ring GATT UUIDs (from the canonical Rust allocation). */
+  get ringUuids(): RingUuids {
+    return this.uuids;
+  }
+
+  /** Last device state snapshot received, if any. */
+  get lastSnapshot(): DeviceStateSnapshot | undefined {
+    return this.snapshot;
+  }
+
+  /** Trust state from the last snapshot; `undefined` until one arrives. */
+  get trustState(): TrustState | undefined {
+    return this.snapshot?.trust_state;
+  }
+
   private wire(): void {
-    // Gesture characteristic → gesture events.
+    // Gesture characteristic → gesture events. The core accepts both wire
+    // shapes (bare envelope from firmware, legacy simulator wrapper).
     this.unsubscribers.push(
       this.transport.onNotify(this.uuids.gestureEvent, (bytes) => {
         const json = this.wasm.decodeGestureEvent(bytes);
         if (!json) return;
-        const parsed = JSON.parse(json) as { gesture: SemanticGesture; confidence: number };
+        const parsed = JSON.parse(json) as DecodedGesture;
         const mapped = gestureToEvent(parsed.gesture, parsed.confidence);
         if (!mapped) return;
         this.dispatchEvent(new CustomEvent(mapped.name, { detail: mapped.detail }));
-        const action = JSON.parse(this.wasm.gestureToAction(parsed.gesture.gesture_kind)) as {
-          action: string;
+        const detail: GestureEventDetail = {
+          type: parsed.gesture.gesture_kind,
+          label: parsed.label,
+          ...(parsed.gesture.direction !== undefined ? { direction: parsed.gesture.direction } : {}),
+          confidence: parsed.confidence,
+          action: parsed.action,
+          actionConfidence: parsed.actionConfidence,
+          timestampMs: parsed.timestampMs,
         };
-        this.dispatchEvent(
-          new CustomEvent("gesture", {
-            detail: {
-              type: parsed.gesture.gesture_kind,
-              confidence: parsed.confidence,
-              action: action.action,
-            },
-          }),
-        );
+        this.dispatchEvent(new CustomEvent("gesture", { detail }));
       }),
     );
 
@@ -184,6 +283,13 @@ export class GesturaRing extends EventTarget {
         const { kind, event } = JSON.parse(json) as { kind: string; event: Record<string, unknown> };
         if (kind === "ack") {
           this.dispatchEvent(new CustomEvent("ack", { detail: event }));
+        } else if (kind === "stateSnapshot") {
+          // The snapshot carries battery too, but the device also notifies
+          // the battery characteristic for every change — no synthetic
+          // `battery` event here, or consumers would see each change twice.
+          const snapshot = event as unknown as DeviceStateSnapshot;
+          this.snapshot = snapshot;
+          this.dispatchEvent(new CustomEvent("statesnapshot", { detail: snapshot }));
         } else if (kind === "battery") {
           this.dispatchEvent(
             new CustomEvent("battery", { detail: { levelPercent: event.level_percent } }),
@@ -230,7 +336,9 @@ export class GesturaRing extends EventTarget {
       throw new RangeError(`waveform too large: ${samples.length} > 1024-sample device FIFO`);
     }
     const bytes = new Uint8Array(samples.buffer, samples.byteOffset, samples.byteLength);
-    const data = btoa(String.fromCharCode(...bytes));
+    let bin = "";
+    for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]!);
+    const data = btoa(bin);
     return this.writeHaptic(
       JSON.stringify({ pattern_kind: "waveform", data, sample_rate_hz: sampleRateHz, intensity }),
     );
@@ -270,6 +378,7 @@ export class GesturaRing extends EventTarget {
       next.hidEnabled,
     );
     await this.transport.write(this.uuids.config, bytes);
+    if (patch.hidEnabled !== undefined) this.hidSuppressed = !patch.hidEnabled;
   }
 
   /** Opt in/out of the C3 raw sensor stream (config byte 1). */
@@ -277,12 +386,32 @@ export class GesturaRing extends EventTarget {
     await this.setConfig({ rawStreamOptIn: enabled });
   }
 
-  /** Suppress the ring's standalone HID projection while the app owns it. */
+  /**
+   * Suppress the ring's standalone HID projection while the app owns it
+   * (PROTOCOL.md "HID coexistence"). Restored automatically by {@link close}.
+   */
   async takeOverHid(): Promise<void> {
     await this.setConfig({ hidEnabled: false });
   }
 
+  /** Restore the ring's standalone HID projection (the release half of takeover). */
+  async releaseHid(): Promise<void> {
+    await this.setConfig({ hidEnabled: true });
+  }
+
+  /**
+   * Releases the ring: restores HID if this session suppressed it (so the
+   * ring keeps working as a standalone remote after the app goes away),
+   * detaches listeners and disconnects the transport.
+   */
   async close(): Promise<void> {
+    if (this.hidSuppressed) {
+      try {
+        await this.releaseHid();
+      } catch {
+        /* best-effort: the link may already be gone */
+      }
+    }
     this.unsubscribers.forEach((u) => u());
     this.unsubscribers = [];
     await this.transport.disconnect();
